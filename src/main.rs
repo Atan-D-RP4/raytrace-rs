@@ -1,6 +1,8 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 
+mod vec3;
+
 fn main() {
     let image_width = 256;
     let image_height = 256;
