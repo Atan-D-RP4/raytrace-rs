@@ -30,7 +30,7 @@ fn hit_sphere(center: &Point3, radius: f64, ray: &Ray) -> bool {
 fn ray_color(ray: &Ray) -> Color3 {
     // Vec3::from(0., 0., 0.)
     // =========================
-    if !hit_sphere(&Vec3::from(0., 0., -1.), 0.5, ray) {
+    if hit_sphere(&Vec3::from(0., 0., -1.), 0.5, ray) {
         return Vec3::from(1., 0., 0.);
     }
 
@@ -49,7 +49,7 @@ fn main() {
 
     let viewport_height = 2.0;
     let viewport_width = (image_width as f64 / image_height as f64) * viewport_height;
-    let focal_length = 2.0;
+    let focal_length = 1.0;
     let camera_center = Point3::new();
 
     let viewport_u = Vec3::from(viewport_width, 0., 0.);
@@ -72,7 +72,7 @@ fn main() {
         .open(file_path)
         .expect("Unable to create or open file");
 
-    file.write_all(format!("P3\n {image_height} {image_width}\n255\n").as_bytes())
+    file.write_all(format!("P3\n {image_width} {image_height}\n255\n").as_bytes())
         .expect("Unable to write to file");
 
     let mut output = String::new();
