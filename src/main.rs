@@ -1,7 +1,21 @@
+mod vec3;
+mod ray;
+
 use std::fs::OpenOptions;
 use std::io::Write;
 
-mod vec3;
+use vec3::{Point3, Vec3};
+
+fn write_color(buffer: &mut String, color: Vec3) {
+    let icolor = color * 255.999;
+    buffer.push_str(
+        format!(
+            "{} {} {}\n",
+            icolor.x as i32, icolor.y as i32, icolor.z as i32
+        )
+        .as_str(),
+    );
+}
 
 fn main() {
     let image_width = 256;
@@ -25,15 +39,13 @@ fn main() {
         print!("\rScanlines remaining: {}", image_height - j);
         std::io::stdout().flush().unwrap();
         (0..image_width).for_each(|i| {
-            let r = i as f32 / (image_width - 1) as f32;
-            let g = j as f32 / (image_height - 1) as f32;
-            let b = 0.0;
+            let color = Vec3 {
+                x: i as f64 / (image_width - 1) as f64,
+                y: j as f64 / (image_height - 1) as f64,
+                z: 0.0,
+            };
 
-            let ir = (255.999 * r) as i32;
-            let ig = (255.999 * g) as i32;
-            let ib = (255.999 * b) as i32;
-
-            output.push_str(format!("{ir} {ig} {ib}\n").as_str());
+            write_color(&mut output, color);
         });
     });
 

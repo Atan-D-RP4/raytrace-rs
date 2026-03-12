@@ -1,10 +1,24 @@
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vec3 {
     pub x: f64,
     pub y: f64,
     pub z: f64,
 }
 
-pub type Point3 = Vec3;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point3(Vec3);
+
+impl From<Vec3> for Point3 {
+    fn from(v: Vec3) -> Self {
+        Point3(v)
+    }
+}
+
+impl From<Point3> for Vec3 {
+    fn from(p: Point3) -> Self {
+        p.0
+    }
+}
 
 impl Vec3 {
     pub fn new() -> Self {
