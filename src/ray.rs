@@ -13,6 +13,6 @@ impl Ray {
     pub fn at(&self, t: f64) -> Point3 {
         let origin: Vec3 = self.origin.into();
         let direction = self.direction;
-        Point3::from(origin + direction * t)
+        origin + direction * t
     }
 }

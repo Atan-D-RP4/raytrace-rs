@@ -5,20 +5,8 @@ pub struct Vec3 {
     pub z: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Point3(Vec3);
-
-impl From<Vec3> for Point3 {
-    fn from(v: Vec3) -> Self {
-        Point3(v)
-    }
-}
-
-impl From<Point3> for Vec3 {
-    fn from(p: Point3) -> Self {
-        p.0
-    }
-}
+pub type Point3 = Vec3;
+pub type Color3 = Vec3;
 
 impl Vec3 {
     pub fn new() -> Self {
