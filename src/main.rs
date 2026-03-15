@@ -1,11 +1,17 @@
+mod hittable;
+mod interval;
 mod ray;
+mod sphere;
 mod vec3;
 
 use std::fs::OpenOptions;
 use std::io::Write;
 
+use hittable::Hittable;
+use interval::Interval;
 use ray::Ray;
-use vec3::{Color3, Point3, Vec3, dot, unit_vector};
+use sphere::Sphere;
+use vec3::{Color3, Point3, Vec3, unit_vector};
 
 fn write_color(buffer: &mut String, color: Color3) {
     let icolor = color * 255.999;
@@ -18,31 +24,9 @@ fn write_color(buffer: &mut String, color: Color3) {
     );
 }
 
-fn hit_sphere(center: &Point3, radius: f64, ray: &Ray) -> f64 {
-    let origin_center = *center - ray.origin;
-    let a = ray.direction.length_squared(); // Simplified from: `dot(&ray.direction, &ray.direction)`, which equals current `a`
-    let h = dot(&ray.direction, &origin_center); // if b = -2h
-    let c = origin_center.length_squared() - (radius * radius); // Simplified same as `a`
-    let discriminant = (h * h) - (a * c); // Simplified form (-b ± sqrt(b*b - 4*a*c)) / 2*a
-
-    if discriminant < 0.0 {
-        -1.0
-    } else {
-        (h - discriminant.sqrt()) / a
-    }
-}
-
-fn ray_color(ray: &Ray) -> Color3 {
-    // Vec3::from(0., 0., 0.)
-    // =========================
-    let circle_radius = 0.5;
-    let circle_center = Vec3::from(0., 0., -1.);
-    let t = hit_sphere(&circle_center, circle_radius, ray);
-
-    if t > 0.0 {
-        let n = unit_vector(ray.at(t) - Vec3::from(0., 0., -1.0));
-        let n = (n + 1.0);
-        return 0.5 * n;
+fn ray_color(ray: &Ray, world: &Vec<Box<dyn Hittable>>) -> Color3 {
+    if let Some(record) = world.hit(ray, Interval::from(0., f64::INFINITY)) {
+        return 0.5 * (record.normal + Color3::from(1., 1., 1.));
     }
 
     let unit_direction = unit_vector(ray.direction);
@@ -60,7 +44,7 @@ fn main() {
 
     let viewport_height = 2.0;
     let viewport_width = (image_width as f64 / image_height as f64) * viewport_height;
-    let focal_length = 1.0;
+    let focal_length = 0.5;
     let camera_center = Point3::new();
 
     let viewport_u = Vec3::from(viewport_width, 0., 0.);
@@ -88,6 +72,11 @@ fn main() {
 
     let mut output = String::new();
 
+    let world: Vec<Box<dyn Hittable>> = vec![
+        Box::new(Sphere::new(&Point3::from(-1.0, 0., -1.), 0.5)),
+        Box::new(Sphere::new(&Point3::from(1., 0., -1.), 0.5)),
+    ];
+
     (0..image_height).for_each(|j| {
         print!("\rScanlines remaining: {}", image_height - j);
         std::io::stdout().flush().unwrap();
@@ -97,7 +86,7 @@ fn main() {
             let ray_direction = pixel_center - camera_center;
 
             let ray = Ray::new(camera_center, ray_direction);
-            let color = ray_color(&ray);
+            let color = ray_color(&ray, &world);
 
             write_color(&mut output, color);
         });
