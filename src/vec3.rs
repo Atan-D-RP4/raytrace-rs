@@ -80,6 +80,18 @@ impl std::ops::Mul for Vec3 {
     }
 }
 
+impl std::ops::Add<f64> for Vec3 {
+    type Output = Vec3;
+
+    fn add(self, t: f64) -> Vec3 {
+        Self {
+            x: self.x + t,
+            y: self.y + t,
+            z: self.z + t,
+        }
+    }
+}
+
 impl std::ops::Mul<f64> for Vec3 {
     type Output = Self;
 

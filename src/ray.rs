@@ -11,7 +11,7 @@ impl Ray {
     }
 
     pub fn at(&self, t: f64) -> Point3 {
-        let origin: Vec3 = self.origin.into();
+        let origin: Vec3 = self.origin;
         let direction = self.direction;
         origin + direction * t
     }
