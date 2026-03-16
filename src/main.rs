@@ -19,7 +19,7 @@ fn main() {
     let image_width = 800;
     let aspect_ratio = 16.0 / 9.0;
     let viewport_height = 5.0;
-    let focal_length = 5.0;
+    let focal_length = 1.0;
 
     let mut camera = Camera::from(aspect_ratio, image_width, viewport_height, focal_length);
 
