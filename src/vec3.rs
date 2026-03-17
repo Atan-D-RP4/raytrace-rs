@@ -21,6 +21,22 @@ impl Vec3 {
         Self { x, y, z }
     }
 
+    pub fn random() -> Self {
+        Self::from(
+            rand::random::<f64>(),
+            rand::random::<f64>(),
+            rand::random::<f64>(),
+        )
+    }
+
+    pub fn random_range(min: f64, max: f64) -> Self {
+        Self::from(
+            rand::random::<f64>() * (max - min) + min,
+            rand::random::<f64>() * (max - min) + min,
+            rand::random::<f64>() * (max - min) + min,
+        )
+    }
+
     pub fn length_squared(&self) -> f64 {
         self.x * self.x + self.y * self.y + self.z * self.z
     }
@@ -181,11 +197,13 @@ impl std::fmt::Display for Vec3 {
 
 // --- Free functions ---
 
-pub fn dot(u: &Vec3, v: &Vec3) -> f64 {
+#[inline(always)]
+pub const fn dot(u: &Vec3, v: &Vec3) -> f64 {
     u.x * v.x + u.y * v.y + u.z * v.z
 }
 
-pub fn cross(u: &Vec3, v: &Vec3) -> Vec3 {
+#[inline(always)]
+pub const fn cross(u: &Vec3, v: &Vec3) -> Vec3 {
     Vec3 {
         x: u.y * v.z - u.z * v.y,
         y: u.z * v.x - u.x * v.z,
@@ -193,7 +211,34 @@ pub fn cross(u: &Vec3, v: &Vec3) -> Vec3 {
     }
 }
 
+#[inline(always)]
 pub fn unit_vector(v: Vec3) -> Vec3 {
     let len = v.length();
     v / len
+}
+
+#[inline(always)]
+pub fn random_unit_vector() -> Vec3 {
+    loop {
+        let point = Vec3::random_range(-1.0, 1.0);
+        let len_squared = point.length_squared();
+        if len_squared > 1e_160 || len_squared <= 1.0 {
+            return point / len_squared.sqrt();
+        }
+    }
+}
+
+#[inline(always)]
+pub fn random_on_hemisphere(normal: &Vec3) -> Vec3 {
+    let on_unit_sphere = random_unit_vector();
+    if dot(&on_unit_sphere, normal) > 0.0 {
+        on_unit_sphere
+    } else {
+        -on_unit_sphere
+    }
+}
+
+#[inline(always)]
+pub fn reflect(v: &Vec3, n: &Vec3) -> Vec3 {
+    *v - 2.0 * dot(v, n) * *n
 }

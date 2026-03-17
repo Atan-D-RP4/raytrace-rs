@@ -20,8 +20,15 @@ fn main() {
     let aspect_ratio = 16.0 / 9.0;
     let viewport_height = 5.0;
     let focal_length = 1.0;
+    let max_depth = 50;
 
-    let mut camera = Camera::from(aspect_ratio, image_width, viewport_height, focal_length);
+    let mut camera = Camera::from(
+        aspect_ratio,
+        image_width,
+        viewport_height,
+        focal_length,
+        max_depth,
+    );
 
     let world: Vec<Box<dyn Hittable>> = vec![
         Box::new(Sphere::new(&Point3::from(-0.6, 0., -1.), 0.5)),
