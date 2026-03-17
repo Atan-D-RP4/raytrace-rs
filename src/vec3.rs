@@ -1,3 +1,5 @@
+use rand::RngExt;
+
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct Vec3 {
     pub x: f64,
@@ -30,10 +32,11 @@ impl Vec3 {
     }
 
     pub fn random_range(min: f64, max: f64) -> Self {
+        let mut rng = rand::rng();
         Self::from(
-            rand::random::<f64>() * (max - min) + min,
-            rand::random::<f64>() * (max - min) + min,
-            rand::random::<f64>() * (max - min) + min,
+            rng.random_range(min..max),
+            rng.random_range(min..max),
+            rng.random_range(min..max),
         )
     }
 
@@ -227,23 +230,28 @@ pub fn unit_vector(v: Vec3) -> Vec3 {
 }
 
 #[inline(always)]
-pub fn random_unit_vector() -> Vec3 {
+pub fn random_in_unit_disk() -> Vec3 {
+    let mut rng = rand::rng();
     loop {
-        let point = Vec3::random_range(-1.0, 1.0);
-        let len_squared = point.length_squared();
-        if len_squared > 1e_160 || len_squared <= 1.0 {
-            return point / len_squared.sqrt();
+        let point = Vec3::from(
+            rng.random_range(-1.0..1.0),
+            rng.random_range(-1.0..1.0),
+            0.0,
+        );
+        if point.length_squared() < 1.0 {
+            return point;
         }
     }
 }
 
 #[inline(always)]
-pub fn random_on_hemisphere(normal: &Vec3) -> Vec3 {
-    let on_unit_sphere = random_unit_vector();
-    if dot(&on_unit_sphere, normal) > 0.0 {
-        on_unit_sphere
-    } else {
-        -on_unit_sphere
+pub fn random_unit_vector() -> Vec3 {
+    loop {
+        let point = Vec3::random_range(-1.0, 1.0);
+        let len_squared = point.length_squared();
+        if 1e-160 < len_squared && len_squared <= 1.0 {
+            return point / len_squared.sqrt();
+        }
     }
 }
 

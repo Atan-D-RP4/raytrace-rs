@@ -1,7 +1,7 @@
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::vec3::{Vec3, dot};
+use crate::vec3::{dot, Vec3};
 
 pub struct HitRecord {
     pub t: f64,
