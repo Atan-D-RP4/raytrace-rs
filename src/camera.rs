@@ -3,44 +3,22 @@ use rayon::prelude::*;
 use crate::Interval;
 use crate::hittable::Hittable;
 use crate::ray::Ray;
-use crate::vec3::{Color3, Point3, Vec3, random_unit_vector, unit_vector};
+use crate::vec3::{Color3, Point3, Vec3, cross, unit_vector};
 
 const INTENSITY: Interval = Interval::from(0., 0.999);
 
-#[inline(always)]
-fn linear_to_gamma(linear_component: f64) -> f64 {
-    if linear_component > 0. {
-        linear_component.sqrt()
-    } else {
-        0.
-    }
-}
-
-#[inline(always)]
-fn write_color(buffer: &mut String, pixel_color: Color3) {
-    // Apply a linear to gamma transform for gamma 2
-    let mut rbyte = linear_to_gamma(pixel_color.x);
-    let mut gbyte = linear_to_gamma(pixel_color.y);
-    let mut bbyte = linear_to_gamma(pixel_color.z);
-
-    // Translate the [0,1] component values to the byte range [0,255].
-    rbyte = 256.0 * INTENSITY.clamp(rbyte);
-    gbyte = 256.0 * INTENSITY.clamp(gbyte);
-    bbyte = 256.0 * INTENSITY.clamp(bbyte);
-
-    buffer.push_str(format!("{} {} {}\n", rbyte as i32, gbyte as i32, bbyte as i32).as_str());
-}
-
 #[derive(Default, Clone, Copy)]
 pub struct Camera {
-    pub aspect_ratio: f64,
-    pub image_width: i32,
-    pub image_height: i32,
-    pub focal_length: f64,
-    pub viewport_height: f64,
-    pub samples_per_pixel: i32,
-    pub max_depth: i32,
-    center: Point3,
+    pub aspect_ratio: f64,      // Ratio of the image width to height.
+    pub image_width: i32,       // Rendered image width in pixels.
+    pub image_height: i32,      // Rendered image height in pixels.
+    pub samples_per_pixel: i32, // Number of rays to sample per pixel for anti-aliasing.
+    pub max_depth: i32,         // Maximum ray bounce depth for ray color calculations.
+    pub vfov: f64,              // Vertical field of view in degrees.
+    pub look_from: Point3,      // Camera position in world space.
+    pub look_at: Point3,        // Point in world space that the camera is looking at.
+    pub vup: Vec3, // "Up" direction for the camera, used to determine the camera's orientation.
+
     pixel00_loc: Point3,
     pixel_delta_u: Point3,
     pixel_delta_v: Point3,
@@ -48,44 +26,50 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn from(
-        aspect_ratio: f64,
-        image_width: i32,
-        viewport_height: f64,
-        focal_length: f64,
-        max_depth: i32,
-    ) -> Self {
-        Self {
-            aspect_ratio,
-            image_width,
-            viewport_height,
-            focal_length,
-            samples_per_pixel: 100,
-            max_depth,
-            ..Default::default()
-        }
+    pub fn new() -> Self {
+        Default::default()
     }
 
     fn initialize(&mut self) {
         self.image_height = ((self.image_width as f64 / self.aspect_ratio) as i32).max(1);
 
-        self.center = Point3::new();
+        self.pixel_samples_scale = 1.0 / self.samples_per_pixel as f64;
 
-        let viewport_width =
-            (self.image_width as f64 / self.image_height as f64) * self.viewport_height;
+        let center = self.look_from;
+        self.vup = Vec3::from(0., 1., 0.);
 
-        let viewport_u = Vec3::from(viewport_width, 0., 0.);
-        let viewport_v = Vec3::from(0., -self.viewport_height, 0.);
+        let focal_length = (self.look_from - self.look_at).length();
+        let theta = self.vfov.to_radians();
 
+        let h = (theta / 2.0).tan();
+
+        // Determine the viewport dimensions based on the vertical field of view and aspect ratio. The
+        // viewport is the plane that the camera rays will be cast through, and is centered at focal_length
+        // units in front of the camera origin.
+        let viewport_height = 2.0 * h * focal_length;
+        let viewport_width = viewport_height * (self.image_width as f64 / self.image_height as f64);
+
+        let w = unit_vector(self.look_from - self.look_at);
+        let u = unit_vector(cross(&self.vup, &w));
+        let v = cross(&w, &u);
+
+        // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
+        // the u and v directions. These are used to calculate the ray direction for each pixel.
+        let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
+        // Vector across viewport vertical edge, negated because the v vector points up but the image coordinates increase downwards.
+        let viewport_v = viewport_height * -v;
+
+        // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
+        // the u and v directions. These are used to calculate the ray direction for each pixel
+        // by dividing the viewport dimensions by the image dimensions.
         self.pixel_delta_u = viewport_u / self.image_width as f64;
         self.pixel_delta_v = viewport_v / self.image_height as f64;
 
-        self.pixel_samples_scale = 1.0 / self.samples_per_pixel as f64;
-
-        let viewport_upper_left = self.center
-            - Vec3::from(0., 0., self.focal_length)
-            - (viewport_u / 2.0)
-            - (viewport_v / 2.0);
+        // Calculate the location of the upper left pixel, which is the starting point for calculating
+        // the ray directions for each pixel. This is done by starting at the camera center,
+        // moving forward by focal_length units, and then moving left and up by half the viewport dimensions.
+        let viewport_upper_left =
+            center - (focal_length * w) - (viewport_u / 2.0) - (viewport_v / 2.0);
 
         self.pixel00_loc = viewport_upper_left + 0.5 * (self.pixel_delta_u + self.pixel_delta_v);
     }
@@ -130,7 +114,9 @@ impl Camera {
             + ((u + offset.x) * self.pixel_delta_u)
             + ((v + offset.y) * self.pixel_delta_v);
 
-        Ray::new(self.center, pixel_sample - self.center)
+        // The center of the camera is the ray origin, and the ray direction is the vector from the
+        // camera center to the pixel sample location.
+        Ray::new(self.look_from, pixel_sample - self.look_from)
     }
 
     pub fn ray_color(&self, ray: &Ray, depth: i32, world: &Vec<Box<dyn Hittable>>) -> Color3 {
@@ -154,4 +140,28 @@ impl Camera {
         let t = 0.5 * (unit_direction.y + 1.0);
         ((1.0 - t) * unit_vector) + (t * gradient_vector)
     }
+}
+
+#[inline(always)]
+fn linear_to_gamma(linear_component: f64) -> f64 {
+    if linear_component > 0. {
+        linear_component.sqrt()
+    } else {
+        0.
+    }
+}
+
+#[inline(always)]
+fn write_color(buffer: &mut String, pixel_color: Color3) {
+    // Apply a linear to gamma transform for gamma 2
+    let mut rbyte = linear_to_gamma(pixel_color.x);
+    let mut gbyte = linear_to_gamma(pixel_color.y);
+    let mut bbyte = linear_to_gamma(pixel_color.z);
+
+    // Translate the [0,1] component values to the byte range [0,255].
+    rbyte = 256.0 * INTENSITY.clamp(rbyte);
+    gbyte = 256.0 * INTENSITY.clamp(gbyte);
+    bbyte = 256.0 * INTENSITY.clamp(bbyte);
+
+    buffer.push_str(format!("{} {} {}\n", rbyte as i32, gbyte as i32, bbyte as i32).as_str());
 }

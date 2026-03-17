@@ -19,20 +19,6 @@ use self::material::Material;
 use self::vec3::Color3;
 
 fn main() {
-    let image_width = 800;
-    let aspect_ratio = 16.0 / 9.0;
-    let viewport_height = 5.0;
-    let focal_length = 1.0;
-    let max_depth = 50;
-
-    let mut camera = Camera::from(
-        aspect_ratio,
-        image_width,
-        viewport_height,
-        focal_length,
-        max_depth,
-    );
-
     let material_ground = Material::Lambertian {
         albedo: Color3::from(0.8, 0.8, 0.0),
     };
@@ -72,11 +58,21 @@ fn main() {
             &material_right,
         )),
         Box::new(Sphere::new(
-            &Point3::from(0., 1., -1.),
+            &Point3::from(-1., 0., -2.),
             0.4,
             &material_bubble,
         )),
     ];
+
+    let mut camera = Camera::new();
+
+    camera.image_width = 800;
+    camera.aspect_ratio = 16.0 / 9.0;
+    camera.max_depth = 50;
+    camera.look_from = Point3::from(3., 3., 2.);
+    camera.look_at = Point3::from(0., 0., -1.);
+    camera.vfov = 90.0;
+    camera.samples_per_pixel = 50;
 
     let rendered_buffer = camera.render(&world);
 
@@ -89,7 +85,7 @@ fn main() {
         .open(file_path)
         .expect("Unable to create or open file");
 
-    file.write_all(format!("P3\n{image_width} {}\n255\n", camera.image_height).as_bytes())
+    file.write_all(format!("P3\n{} {}\n255\n", camera.image_width, camera.image_height).as_bytes())
         .expect("Unable to write to file");
 
     println!();
