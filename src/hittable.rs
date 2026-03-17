@@ -1,4 +1,5 @@
 use crate::interval::Interval;
+use crate::material::Material;
 use crate::ray::Ray;
 use crate::vec3::{Vec3, dot};
 
@@ -7,15 +8,17 @@ pub struct HitRecord {
     pub point: Vec3,
     pub normal: Vec3,
     pub front_face: bool,
+    pub material: Material,
 }
 
 impl HitRecord {
-    pub fn new(t: f64, point: Vec3, normal: Vec3) -> Self {
+    pub fn new(t: f64, point: Vec3, normal: Vec3, mat: &Material) -> Self {
         Self {
             t,
             point,
             normal,
             front_face: false,
+            material: *mat,
         }
     }
 

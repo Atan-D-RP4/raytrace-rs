@@ -140,10 +140,11 @@ impl Camera {
         }
 
         if let Some(record) = world.hit(ray, Interval::from(0.001, f64::INFINITY)) {
-            // let direction = random_on_hemisphere(&record.normal);
-            let direction = record.normal + random_unit_vector();
-            // return 0.5 * (record.normal + Color3::from(1., 1., 1.));
-            return 0.25 * self.ray_color(&Ray::new(record.point, direction), depth - 1, world);
+            if let Some(scatter) = record.material.scatter(ray, &record) {
+                return scatter.attenuation * self.ray_color(&scatter.scattered, depth - 1, world);
+            } else {
+                return Color3::from(0., 0., 0.);
+            }
         }
 
         let unit_direction = unit_vector(ray.direction);
