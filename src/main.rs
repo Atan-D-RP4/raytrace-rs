@@ -43,9 +43,11 @@ fn main() {
         albedo: Color3::from(0.8, 0.8, 0.8),
         fuzz: 0.3,
     };
-    let material_right = Material::Metal {
-        albedo: Color3::from(0.8, 0.6, 0.2),
-        fuzz: 1.0,
+    let material_right = Material::Dielectric {
+        refractive_idx: 1.0 / 1.33,
+    };
+    let material_bubble = Material::Dielectric {
+        refractive_idx: 1.33,
     };
 
     let world: Vec<Box<dyn Hittable>> = vec![
@@ -68,6 +70,11 @@ fn main() {
             &Point3::from(1., 0., -1.),
             0.5,
             &material_right,
+        )),
+        Box::new(Sphere::new(
+            &Point3::from(0., 1., -1.),
+            0.4,
+            &material_bubble,
         )),
     ];
 

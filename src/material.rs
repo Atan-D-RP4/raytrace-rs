@@ -1,6 +1,6 @@
 use crate::hittable::HitRecord;
 use crate::ray::Ray;
-use crate::vec3::{Color3, Vec3, dot, random_unit_vector, reflect};
+use crate::vec3::{Color3, Vec3, dot, random_unit_vector, reflect, refract, unit_vector};
 
 pub struct Scatter {
     pub attenuation: Color3,
@@ -45,7 +45,37 @@ impl Material {
                     None
                 }
             }
-            Material::Dielectric { refractive_idx: _ } => Some(Scatter::new(Vec3::new(), *ray)),
+            Material::Dielectric { refractive_idx } => {
+                let attenuation = Color3::from(1., 1., 1.);
+                let ri = if record.front_face {
+                    1.0 / refractive_idx
+                } else {
+                    *refractive_idx
+                };
+                let unit_dir = unit_vector(ray.direction);
+
+                let cos_theta = dot(&(-unit_dir), &record.normal).min(1.0);
+                let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+
+                let direction = if ri * sin_theta > 1.0
+                    || self.reflectance(cos_theta, ri) > rand::random::<f64>()
+                {
+                    reflect(&unit_dir, &record.normal)
+                } else {
+                    refract(&unit_dir, &record.normal, ri)
+                };
+
+                let scattered = Ray::new(record.point, direction);
+
+                Some(Scatter::new(attenuation, scattered))
+            }
         }
+    }
+
+    fn reflectance(&self, cosine: f64, refractive_idx: f64) -> f64 {
+        // Schlick's approximation for reflectance
+        let r0 = (1.0 - refractive_idx) / (1.0 + refractive_idx);
+        let r0 = r0 * r0;
+        r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
     }
 }
