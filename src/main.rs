@@ -11,6 +11,7 @@ use std::io::Write;
 
 use hittable::Hittable;
 use interval::Interval;
+use rand::RngExt;
 use sphere::Sphere;
 use vec3::{Point3, Vec3};
 
@@ -24,6 +25,7 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
     let ground_material = Material::Lambertian {
         albedo: Color3::from(0.5, 0.5, 0.5),
     };
+
     world.push(Box::new(Sphere::new(
         &Point3::from(0., -1000., 0.),
         1000.,
@@ -32,7 +34,7 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
 
     (-11..11).for_each(|a| {
         (-11..11).for_each(|b| {
-            let material_flag = rand::random::<u8>();
+            let world_seed = rand::random::<u8>();
             let center = Point3::from(
                 a as f64 + 0.9 * rand::random::<f64>(),
                 0.2,
@@ -40,11 +42,11 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
             );
 
             if (center - Point3::from(4., 0.2, 0.)).length() > 0.9 {
-                let material = if material_flag.is_multiple_of(3) {
+                let material = if world_seed.is_multiple_of(3) {
                     Material::Lambertian {
                         albedo: Color3::random() * Color3::random(),
                     }
-                } else if material_flag % 3 == 1 {
+                } else if world_seed % 3 == 1 {
                     Material::Metal {
                         albedo: Color3::random_range(0.5, 1.0),
                         fuzz: rand::random::<f64>() * 0.5,
@@ -55,7 +57,18 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
                     }
                 };
 
-                world.push(Box::new(Sphere::new(&center, 0.2, &material)));
+                if world_seed.is_multiple_of(5) {
+                    let target_center =
+                        center + Vec3::from(0., rand::rng().random_range(-0.5..0.5), 0.);
+                    world.push(Box::new(Sphere::new_moving(
+                        &center,
+                        &target_center,
+                        0.2,
+                        &material,
+                    )));
+                } else {
+                    world.push(Box::new(Sphere::new(&center, 0.2, &material)));
+                }
             }
         })
     });
@@ -85,8 +98,8 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
     )));
 
     camera.aspect_ratio = 16.0 / 9.0;
-    camera.image_width = 1200;
-    camera.samples_per_pixel = 500;
+    camera.image_width = 400;
+    camera.samples_per_pixel = 50;
     camera.max_depth = 50;
 
     camera.vfov = 20.0;

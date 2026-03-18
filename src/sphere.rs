@@ -5,15 +5,29 @@ use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3, dot};
 
 pub struct Sphere {
-    center: Vec3,
+    center: Ray,
     pub radius: f64,
     pub material: Material,
 }
 
 impl Sphere {
+    // A Static sphere
     pub fn new(center: &Point3, radius: f64, mat: &Material) -> Self {
         Self {
-            center: *center,
+            center: Ray::new(*center, Vec3::from(0., 0., 0.)),
+            radius: radius.max(0.0),
+            material: *mat,
+        }
+    }
+
+    pub fn new_moving(
+        center_start: &Point3,
+        center_end: &Point3,
+        radius: f64,
+        mat: &Material,
+    ) -> Self {
+        Self {
+            center: Ray::new(*center_start, *center_end - *center_start),
             radius: radius.max(0.0),
             material: *mat,
         }
@@ -22,7 +36,8 @@ impl Sphere {
 
 impl Hittable for Sphere {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
-        let origin_center = self.center - ray.origin;
+        let current_center = self.center.at(ray.time);
+        let origin_center = current_center - ray.origin;
         let a = ray.direction.length_squared(); // Simplified from: `dot(&ray.direction, &ray.direction)`, which equals current `a`
         let h = dot(&ray.direction, &origin_center); // if b = -2h
         let c = origin_center.length_squared() - (self.radius * self.radius); // Simplified same as `a`
@@ -44,7 +59,7 @@ impl Hittable for Sphere {
         }
 
         let point = ray.at(root);
-        let outward_normal = (point - self.center) / self.radius;
+        let outward_normal = (point - current_center) / self.radius;
 
         let mut hit_rec = HitRecord::new(root, point, outward_normal, &self.material);
         hit_rec.set_face_normal(ray, &outward_normal);

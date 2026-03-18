@@ -32,13 +32,16 @@ impl Material {
                     scatter_direction = record.normal;
                 }
 
-                let scattered_ray = Ray::new(record.point, scatter_direction);
+                let scattered_ray = Ray::new_with_time(record.point, scatter_direction, ray.time);
                 Some(Scatter::new(*albedo, scattered_ray))
             }
             Material::Metal { albedo, fuzz } => {
                 let reflected = reflect(&ray.direction.unit_vector(), &record.normal);
-                let scattered_ray =
-                    Ray::new(record.point, reflected + (*fuzz * random_unit_vector()));
+                let scattered_ray = Ray::new_with_time(
+                    record.point,
+                    reflected + (*fuzz * random_unit_vector()),
+                    ray.time,
+                );
                 if dot(&scattered_ray.direction, &record.normal) > 0.0 {
                     Some(Scatter::new(*albedo, scattered_ray))
                 } else {
@@ -65,7 +68,7 @@ impl Material {
                     refract(&unit_dir, &record.normal, ri)
                 };
 
-                let scattered = Ray::new(record.point, direction);
+                let scattered = Ray::new_with_time(record.point, direction, ray.time);
 
                 Some(Scatter::new(attenuation, scattered))
             }

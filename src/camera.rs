@@ -150,7 +150,7 @@ impl Camera {
 
         // The center of the camera is the ray origin, and the ray direction is the vector from the
         // camera center to the pixel sample location.
-        Ray::new(ray_origin, ray_direction)
+        Ray::new_with_time(ray_origin, ray_direction, rand::random::<f64>())
     }
 
     pub fn ray_color(
