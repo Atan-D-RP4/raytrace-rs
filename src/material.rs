@@ -1,6 +1,6 @@
 use crate::hittable::HitRecord;
 use crate::ray::Ray;
-use crate::vec3::{dot, random_unit_vector, reflect, refract, unit_vector, Color3, Vec3};
+use crate::vec3::{Color3, dot, random_unit_vector, reflect, refract, unit_vector};
 
 pub struct Scatter {
     pub attenuation: Color3,
