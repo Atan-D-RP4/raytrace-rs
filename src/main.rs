@@ -1,3 +1,5 @@
+mod aabb;
+mod bvh;
 mod camera;
 mod hittable;
 mod interval;
@@ -8,16 +10,16 @@ mod vec3;
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::Arc;
 
+use bvh::BvhNode;
+use camera::Camera;
 use hittable::Hittable;
 use interval::Interval;
+use material::Material;
 use rand::RngExt;
 use sphere::Sphere;
-use vec3::{Point3, Vec3};
-
-use self::camera::Camera;
-use self::material::Material;
-use self::vec3::Color3;
+use vec3::{Color3, Point3, Vec3};
 
 fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
     let mut world: Vec<Box<dyn Hittable>> = Vec::new();
@@ -57,7 +59,7 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
                     }
                 };
 
-                if world_seed.is_multiple_of(5) {
+                if world_seed.is_multiple_of(2) {
                     let target_center =
                         center + Vec3::from(0., rand::rng().random_range(-0.5..0.5), 0.);
                     world.push(Box::new(Sphere::new_moving(
@@ -180,8 +182,17 @@ fn main() {
     let mut camera = Camera::new();
 
     let world = create_randomized_world(&mut camera);
+    let mut world = world
+        .into_iter()
+        .map(|b| Arc::from(b) as Arc<dyn Hittable>)
+        .collect::<Vec<Arc<dyn Hittable>>>();
+    let world_len = world.len();
+    let world = BvhNode::new(&mut world, 0, world_len);
 
+    let start = std::time::Instant::now();
     let rendered_buffer = camera.render(&world);
+    let end = std::time::Instant::now();
+    println!("Time to render scene: {:?}", end - start);
 
     // Create or open a file
     let file_path = "output.ppm";

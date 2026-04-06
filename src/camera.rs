@@ -85,7 +85,7 @@ impl Camera {
         self.defocus_disk_v = v * defocus_radius;
     }
 
-    pub fn render(&mut self, world: &Vec<Box<dyn Hittable>>) -> Vec<u8> {
+    pub fn render(&mut self, world: &dyn Hittable) -> Vec<u8> {
         self.initialize();
         let camera_snapshot = *self;
         let total_pixels = self.image_height * self.image_width;
@@ -153,12 +153,7 @@ impl Camera {
         Ray::new_with_time(ray_origin, ray_direction, rand::random::<f64>())
     }
 
-    pub fn ray_color(
-        &self,
-        initial_ray: &Ray,
-        depth: i32,
-        world: &Vec<Box<dyn Hittable>>,
-    ) -> Color3 {
+    pub fn ray_color(&self, initial_ray: &Ray, depth: i32, world: &dyn Hittable) -> Color3 {
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
 

@@ -1,3 +1,4 @@
+#[derive(Debug, Clone, Copy)]
 pub struct Interval {
     pub min: f64,
     pub max: f64,
@@ -19,6 +20,12 @@ impl Interval {
             min: f64::NEG_INFINITY,
             max: f64::INFINITY,
         }
+    }
+
+    pub fn from_intervals(a: &Interval, b: &Interval) -> Self {
+        let min = if a.min <= b.min { a.min } else { b.min };
+        let max = if a.max >= b.max { a.max } else { b.max };
+        Self { min, max }
     }
 
     pub const fn from(min: f64, max: f64) -> Self {
@@ -45,5 +52,11 @@ impl Interval {
         } else {
             value
         }
+    }
+
+    pub fn expand(&mut self, delta: f64) {
+        let padding = delta / 2.0;
+        self.min -= padding;
+        self.max += padding;
     }
 }

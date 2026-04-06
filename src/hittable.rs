@@ -1,10 +1,11 @@
+use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
 use crate::vec3::{Vec3, dot};
 
 pub struct HitRecord {
-    pub t: f64,
+    pub time: f64,
     pub point: Vec3,
     pub normal: Vec3,
     pub front_face: bool,
@@ -14,7 +15,7 @@ pub struct HitRecord {
 impl HitRecord {
     pub fn new(t: f64, point: Vec3, normal: Vec3, mat: &Material) -> Self {
         Self {
-            t,
+            time: t,
             point,
             normal,
             front_face: false,
@@ -34,6 +35,7 @@ impl HitRecord {
 
 pub trait Hittable: Send + Sync {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord>;
+    fn bounding_box(&self) -> Aabb;
 }
 
 impl Hittable for Vec<Box<dyn Hittable>> {
@@ -43,11 +45,17 @@ impl Hittable for Vec<Box<dyn Hittable>> {
 
         self.iter().for_each(|object| {
             if let Some(record) = object.hit(ray, Interval::from(ray_t.min, closest)) {
-                closest = record.t;
+                closest = record.time;
                 result = Some(record);
             }
         });
 
         result
+    }
+
+    fn bounding_box(&self) -> Aabb {
+        self.iter().fold(Aabb::new(), |acc, obj| {
+            Aabb::merge(acc, obj.bounding_box())
+        })
     }
 }
