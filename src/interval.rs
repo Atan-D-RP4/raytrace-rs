@@ -16,10 +16,7 @@ impl Interval {
     };
 
     pub fn new() -> Self {
-        Self {
-            min: f64::NEG_INFINITY,
-            max: f64::INFINITY,
-        }
+        Self::EMPTY
     }
 
     pub fn from_intervals(a: &Interval, b: &Interval) -> Self {

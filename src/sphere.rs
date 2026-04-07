@@ -36,9 +36,9 @@ impl Sphere {
         let box1 = Aabb::from_points(&(center.at(0.) - rvec), &(center.at(0.) + rvec));
         let box2 = Aabb::from_points(&(center.at(1.) - rvec), &(center.at(1.) + rvec));
         Self {
-            center: Ray::new(*center_start, *center_end - *center_start),
+            center,
             radius: radius.max(0.0),
-            material: *mat,
+            material: mat.clone(),
             bbox: Aabb::merge(box1, box2),
         }
     }
