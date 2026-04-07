@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use image::{Pixel, Rgba32FImage};
+use image::Rgba32FImage;
 
 use crate::interval::Interval;
 use crate::vec3::{Color3, Point3};

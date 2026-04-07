@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::hittable::HitRecord;
 use crate::ray::Ray;
 use crate::texture::Texture;
-use crate::vec3::{dot, random_unit_vector, reflect, refract, unit_vector, Color3};
+use crate::vec3::{Color3, dot, random_unit_vector, reflect, refract, unit_vector};
 
 pub struct Scatter {
     pub attenuation: Color3,

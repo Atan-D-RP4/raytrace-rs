@@ -10,11 +10,9 @@ mod sphere;
 mod texture;
 mod vec3;
 
-use std::fs::OpenOptions;
-use std::io::Write;
-
 use bvh::BvhNode;
 use camera::Camera;
+use image::{ImageBuffer, Rgb, RgbImage};
 use scene::Scene;
 
 fn main() {
@@ -28,19 +26,16 @@ fn main() {
     let mut camera = Camera::from_config(&config);
 
     let start = std::time::Instant::now();
-    let rendered_buffer = camera.render(world);
+    let (width, height, rgb_data) = camera.render(world);
     let end = std::time::Instant::now();
     println!("Time to render scene: {:?}", end - start);
 
-    let file_path = "earth_sphere.ppm";
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(file_path)
-        .expect("Unable to create or open file");
+    let mut img: RgbImage = ImageBuffer::new(width, height);
+    for (i, pixel) in rgb_data.chunks(3).enumerate() {
+        let x = (i as u32) % width;
+        let y = (i as u32) / width;
+        img.put_pixel(x, y, Rgb([pixel[0], pixel[1], pixel[2]]));
+    }
 
-    println!();
-    file.write_all(&rendered_buffer)
-        .expect("Unable to write to file");
+    img.save("earth_sphere.png").expect("Failed to save image");
 }

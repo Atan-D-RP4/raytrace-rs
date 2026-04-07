@@ -5,9 +5,7 @@ use rayon::prelude::*;
 use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::{cross, random_in_unit_disk, unit_vector, Color3, Point3, Vec3};
-
-const INTENSITY: Interval = Interval::from(0., 0.999);
+use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk, unit_vector};
 
 #[derive(Default, Clone, Copy)]
 pub struct CameraConfig {
@@ -149,8 +147,8 @@ impl Camera {
         // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
         // the u and v directions. These are used to calculate the ray direction for each pixel.
         let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
-                                             // Vector across viewport vertical edge, negated because the v vector points up but the image coordinates increase downwards.
-        let viewport_v = viewport_height * -v;
+        let viewport_v = viewport_height * -v; // Vector across viewport vertical edge
+        // Negated because the v vector points up but the image coordinates increase downwards.
 
         // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
         // the u and v directions. These are used to calculate the ray direction for each pixel
@@ -176,25 +174,36 @@ impl Camera {
         self.defocus_disk_v = v * defocus_radius;
     }
 
-    pub fn render(&mut self, world: Arc<dyn Hittable>) -> Vec<u8> {
+    /// Renders the scene and returns (width, height, RGB pixel data).
+    ///
+    /// Uses parallel iteration over pixel chunks for performance.
+    /// Each chunk writes RGB triples directly into the output buffer.
+    pub fn render(&mut self, world: Arc<dyn Hittable>) -> (u32, u32, Vec<u8>) {
         self.initialize();
         let camera_snapshot = *self;
         let total_pixels = self.image_height * self.image_width;
 
-        let header_size = 32;
-        let pixel_data_size = total_pixels as usize * 3;
-        let mut output = Vec::with_capacity(header_size + pixel_data_size);
-        write_header(&mut output, self.image_width, self.image_height);
+        // Single flat buffer: avoids millions of small Vec allocations.
+        // Format: [R, G, B, R, G, B, ...] for each pixel.
+        let mut output = vec![0u8; total_pixels as usize * 3];
 
-        let pixels: Vec<Vec<u8>> = (0..total_pixels)
-            .into_par_iter()
-            .map(|idx| {
-                let i = idx % camera_snapshot.image_width;
-                let j = idx / camera_snapshot.image_width;
+        // Parallel chunked writes: each thread writes RGB directly to its slice.
+        // par_chunks_mut(3) gives mutable slices of exactly 3 bytes (one pixel).
+        output
+            .par_chunks_mut(3)
+            .enumerate()
+            .for_each(|(idx, chunk)| {
+                // Convert flat index to 2D pixel coordinates.
+                // Image coordinate origin: top-left (i increases right, j increases down).
+                let i = idx as i32 % camera_snapshot.image_width;
+                let j = idx as i32 / camera_snapshot.image_width;
 
+                // Accumulate samples for anti-aliasing.
+                // Each sample uses a randomly offset ray within the pixel area.
                 let pixel_color = (0..camera_snapshot.samples_per_pixel).fold(
                     Color3::from(0., 0., 0.),
                     |acc, _| {
+                        // Random offset in [0,1) places sample anywhere in pixel cell.
                         let u = i as f64 + rand::random::<f64>();
                         let v = j as f64 + rand::random::<f64>();
 
@@ -203,18 +212,15 @@ impl Camera {
                     },
                 );
 
-                let mut buffer = Vec::with_capacity(3);
-                write_color(
-                    &mut buffer,
-                    pixel_color * camera_snapshot.pixel_samples_scale,
-                );
-                buffer
-            })
-            .collect();
+                // Scale by sample count and apply gamma correction.
+                // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
+                let scaled = pixel_color * camera_snapshot.pixel_samples_scale;
+                chunk[0] = linear_to_gamma(scaled.x) as u8;
+                chunk[1] = linear_to_gamma(scaled.y) as u8;
+                chunk[2] = linear_to_gamma(scaled.z) as u8;
+            });
 
-        pixels.iter().for_each(|pixel| output.extend(pixel));
-
-        output
+        (self.image_width as u32, self.image_height as u32, output)
     }
 
     // Returns the vector to a random point in the [-.5,-.5]-[+.5,+.5] unit square.
@@ -281,26 +287,4 @@ fn linear_to_gamma(linear_component: f64) -> f64 {
     } else {
         0.
     }
-}
-
-#[inline(always)]
-fn write_color(buffer: &mut Vec<u8>, pixel_color: Color3) {
-    // Apply a linear to gamma transform for gamma 2
-    let mut rbyte = linear_to_gamma(pixel_color.x);
-    let mut gbyte = linear_to_gamma(pixel_color.y);
-    let mut bbyte = linear_to_gamma(pixel_color.z);
-
-    // Translate the [0,1] component values to the byte range [0,255].
-    rbyte = 256.0 * INTENSITY.clamp(rbyte);
-    gbyte = 256.0 * INTENSITY.clamp(gbyte);
-    bbyte = 256.0 * INTENSITY.clamp(bbyte);
-
-    buffer.push(rbyte as u8);
-    buffer.push(gbyte as u8);
-    buffer.push(bbyte as u8);
-}
-
-fn write_header(buffer: &mut Vec<u8>, width: i32, height: i32) {
-    let header = format!("P6\n{} {}\n255\n", width, height);
-    buffer.extend(header.as_bytes());
 }
