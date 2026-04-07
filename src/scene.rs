@@ -7,7 +7,8 @@ use crate::hittable::Hittable;
 use crate::material::Material;
 use crate::sphere::Sphere;
 use crate::texture::{
-    CheckerTexture, ImageTexture, MappedTexture, PointScaleMapping, SolidColor, Texture,
+    CheckerTexture, ImageTexture, MappedTexture, PointScaleMapping, SolidColor, SphericalMapping,
+    Texture,
 };
 use crate::vec3::{Color3, Point3, Vec3};
 
@@ -123,9 +124,11 @@ impl Scene {
             Ok(tex) => tex,
             Err(e) => panic!("Failed to load to image as Texture: {:?}", e),
         };
-        let checker = Arc::new(Material::Lambertian {
-            tex: Arc::new(image_tex),
-        });
+        let image_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(
+            Arc::new(SphericalMapping),
+            Arc::new(image_tex),
+        ));
+        let checker = Arc::new(Material::Lambertian { tex: image_tex });
 
         scene.add_sphere(Point3::from(0., 0., 0.), 2., checker);
 

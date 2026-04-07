@@ -15,6 +15,7 @@ pub struct HitRecord {
     pub v: f64,
 
     pub point: Vec3,
+    pub geometry_normal: Vec3,
     pub normal: Vec3,
     pub front_face: bool,
     pub material: Arc<Material>,
@@ -27,6 +28,7 @@ impl HitRecord {
             u: 0.0,
             v: 0.0,
             point,
+            geometry_normal: normal,
             normal,
             front_face: false,
             material: mat,
@@ -34,6 +36,7 @@ impl HitRecord {
     }
 
     pub fn set_face_normal(&mut self, ray: &Ray, outward_normal: &Vec3) {
+        self.geometry_normal = *outward_normal;
         self.front_face = dot(&ray.direction, outward_normal) < 0.;
         self.normal = if self.front_face {
             *outward_normal
@@ -43,7 +46,7 @@ impl HitRecord {
     }
 
     pub fn texture_coords(&self) -> TextureCoords {
-        TextureCoords::new(self.u, self.v, self.point)
+        TextureCoords::new(self.u, self.v, self.point, self.geometry_normal)
     }
 }
 

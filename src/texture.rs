@@ -1,3 +1,4 @@
+use std::f64::consts::PI;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,15 +16,27 @@ pub struct TextureCoords {
     pub u: f64,
     pub v: f64,
     pub point: Point3,
+    pub geometry_normal: Vec3,
 }
 
 impl TextureCoords {
-    pub fn new(u: f64, v: f64, point: Point3) -> Self {
-        Self { u, v, point }
+    pub fn new(u: f64, v: f64, point: Point3, geometry_normal: Vec3) -> Self {
+        Self {
+            u,
+            v,
+            point,
+            geometry_normal,
+        }
     }
 
     pub fn with_point(mut self, point: Point3) -> Self {
         self.point = point;
+        self
+    }
+
+    pub fn with_uv(mut self, u: f64, v: f64) -> Self {
+        self.u = u;
+        self.v = v;
         self
     }
 }
@@ -65,6 +78,21 @@ impl PointScaleMapping {
 impl TextureMapping for PointScaleMapping {
     fn map(&self, coords: TextureCoords) -> TextureCoords {
         coords.with_point(coords.point * self.inv_scale)
+    }
+}
+
+pub struct SphericalMapping;
+
+impl TextureMapping for SphericalMapping {
+    fn map(&self, coords: TextureCoords) -> TextureCoords {
+        let p = coords.point.unit_vector();
+        let theta = (-p.y).acos();
+        let phi = -p.z.atan2(p.x) + PI;
+
+        let u = phi / (2.0 * PI);
+        let v = theta / PI;
+
+        coords.with_uv(u, v)
     }
 }
 
