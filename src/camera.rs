@@ -1,9 +1,9 @@
 use rayon::prelude::*;
 
-use crate::Interval;
 use crate::hittable::Hittable;
 use crate::ray::Ray;
-use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk, unit_vector};
+use crate::vec3::{cross, random_in_unit_disk, unit_vector, Color3, Point3, Vec3};
+use crate::Interval;
 
 const INTENSITY: Interval = Interval::from(0., 0.999);
 
@@ -58,7 +58,7 @@ impl Camera {
         // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
         // the u and v directions. These are used to calculate the ray direction for each pixel.
         let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
-        // Vector across viewport vertical edge, negated because the v vector points up but the image coordinates increase downwards.
+                                             // Vector across viewport vertical edge, negated because the v vector points up but the image coordinates increase downwards.
         let viewport_v = viewport_height * -v;
 
         // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in

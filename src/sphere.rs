@@ -19,7 +19,7 @@ impl Sphere {
         Self {
             center: Ray::new(*center, Vec3::from(0., 0., 0.)),
             radius: radius.max(0.0),
-            material: *mat,
+            material: mat.clone(),
             bbox: Aabb::from_points(&(*center - rvec), &(*center + rvec)),
         }
     }

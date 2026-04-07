@@ -8,6 +8,11 @@ use crate::vec3::{Vec3, dot};
 
 pub struct HitRecord {
     pub time: f64,
+
+    // surface co-ords
+    pub u: f64,
+    pub v: f64,
+
     pub point: Vec3,
     pub normal: Vec3,
     pub front_face: bool,
@@ -18,6 +23,8 @@ impl HitRecord {
     pub fn new(t: f64, point: Vec3, normal: Vec3, mat: Arc<Material>) -> Self {
         Self {
             time: t,
+            u: 0.0,
+            v: 0.0,
             point,
             normal,
             front_face: false,

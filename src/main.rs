@@ -6,6 +6,7 @@ mod interval;
 mod material;
 mod ray;
 mod sphere;
+mod texture;
 mod vec3;
 
 use std::fs::OpenOptions;
@@ -21,11 +22,17 @@ use rand::RngExt;
 use sphere::Sphere;
 use vec3::{Color3, Point3, Vec3};
 
+use self::texture::{CheckerTexture, SolidColor};
+
 fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
     let mut world: Vec<Box<dyn Hittable>> = Vec::new();
 
     let ground_material = Material::Lambertian {
-        albedo: Color3::from(0.5, 0.5, 0.5),
+        tex: Arc::new(CheckerTexture::from_color(
+            0.32,
+            Color3::from(0.2, 0.4, 0.1),
+            Color3::from(0.9, 0.9, 0.9),
+        )),
     };
 
     world.push(Box::new(Sphere::new(
@@ -46,7 +53,7 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
             if (center - Point3::from(4., 0.2, 0.)).length() > 0.9 {
                 let material = if world_seed.is_multiple_of(3) {
                     Material::Lambertian {
-                        albedo: Color3::random() * Color3::random(),
+                        tex: Arc::new(SolidColor::new(Color3::random() * Color3::random())),
                     }
                 } else if world_seed % 3 == 1 {
                     Material::Metal {
@@ -87,7 +94,7 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
         &Point3::from(-4., 1., 0.),
         1.,
         &Material::Lambertian {
-            albedo: Color3::from(0.4, 0.2, 0.1),
+            tex: Arc::new(SolidColor::new(Color3::from(0.4, 0.2, 0.1))),
         },
     )));
     world.push(Box::new(Sphere::new(
@@ -117,10 +124,10 @@ fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
 
 fn create_simple_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
     let material_ground = Material::Lambertian {
-        albedo: Color3::from(0.8, 0.8, 0.0),
+        tex: Arc::new(SolidColor::new(Color3::from(0.8, 0.8, 0.0))),
     };
     let material_center = Material::Lambertian {
-        albedo: Color3::from(0.1, 0.2, 0.5),
+        tex: Arc::new(SolidColor::new(Color3::from(0.1, 0.2, 0.5))),
     };
     let material_left = Material::Dielectric {
         refractive_idx: 1.50,

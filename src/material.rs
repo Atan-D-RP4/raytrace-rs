@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use crate::hittable::HitRecord;
 use crate::ray::Ray;
+use crate::texture::Texture;
 use crate::vec3::{Color3, dot, random_unit_vector, reflect, refract, unit_vector};
 
 pub struct Scatter {
@@ -16,9 +19,9 @@ impl Scatter {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub enum Material {
-    Lambertian { albedo: Color3 },
+    Lambertian { tex: Arc<dyn Texture> },
     Metal { albedo: Color3, fuzz: f64 },
     Dielectric { refractive_idx: f64 },
 }
@@ -26,14 +29,15 @@ pub enum Material {
 impl Material {
     pub fn scatter(&self, ray: &Ray, record: &HitRecord) -> Option<Scatter> {
         match self {
-            Material::Lambertian { albedo } => {
+            Material::Lambertian { tex } => {
                 let mut scatter_direction = record.normal + random_unit_vector();
                 if scatter_direction.near_zero() {
                     scatter_direction = record.normal;
                 }
 
                 let scattered_ray = Ray::new_with_time(record.point, scatter_direction, ray.time);
-                Some(Scatter::new(*albedo, scattered_ray))
+                let attenuation = tex.value(record.u, record.v, &record.point);
+                Some(Scatter::new(attenuation, scattered_ray))
             }
             Material::Metal { albedo, fuzz } => {
                 let reflected = reflect(&ray.direction.unit_vector(), &record.normal);
