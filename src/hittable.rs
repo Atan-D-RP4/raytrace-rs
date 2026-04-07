@@ -4,6 +4,7 @@ use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
+use crate::texture::TextureCoords;
 use crate::vec3::{Vec3, dot};
 
 pub struct HitRecord {
@@ -39,6 +40,10 @@ impl HitRecord {
         } else {
             -(*outward_normal)
         }
+    }
+
+    pub fn texture_coords(&self) -> TextureCoords {
+        TextureCoords::new(self.u, self.v, self.point)
     }
 }
 

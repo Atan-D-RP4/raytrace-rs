@@ -36,7 +36,7 @@ impl Material {
                 }
 
                 let scattered_ray = Ray::new_with_time(record.point, scatter_direction, ray.time);
-                let attenuation = tex.value(record.u, record.v, &record.point);
+                let attenuation = tex.value(&record.texture_coords());
                 Some(Scatter::new(attenuation, scattered_ray))
             }
             Material::Metal { albedo, fuzz } => {

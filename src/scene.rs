@@ -6,8 +6,17 @@ use crate::camera::CameraConfig;
 use crate::hittable::Hittable;
 use crate::material::Material;
 use crate::sphere::Sphere;
-use crate::texture::{CheckerTexture, ImageTexture, SolidColor};
+use crate::texture::{
+    CheckerTexture, ImageTexture, MappedTexture, PointScaleMapping, SolidColor, Texture,
+};
 use crate::vec3::{Color3, Point3, Vec3};
+
+fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
+    Arc::new(MappedTexture::new(
+        Arc::new(PointScaleMapping::from_uniform(scale)),
+        Arc::new(CheckerTexture::from_color(even, odd)),
+    ))
+}
 
 pub struct Scene {
     config: CameraConfig,
@@ -138,11 +147,11 @@ impl Scene {
         let mut scene = Self::new();
 
         let checker = Arc::new(Material::Lambertian {
-            tex: Arc::new(CheckerTexture::from_color(
+            tex: checker_texture(
                 0.32,
                 Color3::from(0.2, 0.4, 0.1),
                 Color3::from(0.9, 0.9, 0.9),
-            )),
+            ),
         });
         scene.add_sphere(Point3::from(0., -10., 0.), 10., checker.clone());
         scene.add_sphere(Point3::from(0., 10., 0.), 10., checker);
@@ -165,11 +174,11 @@ impl Scene {
         let mut scene = Self::new();
 
         let ground_material = Arc::new(Material::Lambertian {
-            tex: Arc::new(CheckerTexture::from_color(
+            tex: checker_texture(
                 0.32,
                 Color3::from(0.2, 0.4, 0.1),
                 Color3::from(0.9, 0.9, 0.9),
-            )),
+            ),
         });
         scene.add_sphere(Point3::from(0., -1000., 0.), 1000., ground_material);
 

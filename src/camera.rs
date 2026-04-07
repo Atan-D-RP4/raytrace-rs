@@ -215,9 +215,9 @@ impl Camera {
                 // Scale by sample count and apply gamma correction.
                 // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
                 let scaled = pixel_color * camera_snapshot.pixel_samples_scale;
-                chunk[0] = linear_to_gamma(scaled.x) as u8;
-                chunk[1] = linear_to_gamma(scaled.y) as u8;
-                chunk[2] = linear_to_gamma(scaled.z) as u8;
+                chunk[0] = (256.0 * linear_to_gamma(scaled.x).clamp(0.0, 0.999)) as u8;
+                chunk[1] = (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8;
+                chunk[2] = (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8;
             });
 
         (self.image_width as u32, self.image_height as u32, output)
