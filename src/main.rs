@@ -9,6 +9,7 @@ mod scene;
 mod sphere;
 mod texture;
 mod vec3;
+mod perlin;
 
 use bvh::BvhNode;
 use camera::Camera;

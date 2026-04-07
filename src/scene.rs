@@ -7,14 +7,13 @@ use crate::hittable::Hittable;
 use crate::material::Material;
 use crate::sphere::Sphere;
 use crate::texture::{
-    CheckerTexture, ImageTexture, MappedTexture, PointScaleMapping, SolidColor, SphericalMapping,
-    Texture,
+    CheckerTexture, ImageTexture, MappedTexture, SolidColor, Texture, TextureMapping,
 };
 use crate::vec3::{Color3, Point3, Vec3};
 
 fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
     Arc::new(MappedTexture::new(
-        Arc::new(PointScaleMapping::from_uniform(scale)),
+        TextureMapping::point_scale_uniform(scale),
         Arc::new(CheckerTexture::from_color(even, odd)),
     ))
 }
@@ -125,7 +124,7 @@ impl Scene {
             Err(e) => panic!("Failed to load to image as Texture: {:?}", e),
         };
         let image_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(
-            Arc::new(SphericalMapping),
+            TextureMapping::Spherical,
             Arc::new(image_tex),
         ));
         let checker = Arc::new(Material::Lambertian { tex: image_tex });

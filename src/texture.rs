@@ -7,30 +7,71 @@ use image::Rgba32FImage;
 use crate::interval::Interval;
 use crate::vec3::{Color3, Point3, Vec3};
 
-/// Geometry fills this with the coordinates it knows how to produce at a hit point.
+/// Geometry fills this with the surface data that mappings and textures need.
 ///
-/// UV-mapped textures read `u` and `v`, while procedural textures can use the
-/// full 3D hit position stored in `point`.
+/// `points.world` is the immutable hit position in world space, `points.mapping`
+/// is geometry-provided mapping space (for spheres, the unit-sphere point), and
+/// `points.texture` is the mutable 3D coordinate that 3D mappings shape for procedural textures.
+#[derive(Debug, Clone, Copy)]
+pub struct TexturePoints {
+    pub world: Point3,
+    pub mapping: Point3,
+    pub texture: Point3,
+}
+
+impl TexturePoints {
+    pub fn new(world: Point3, mapping: Point3) -> Self {
+        Self {
+            world,
+            mapping,
+            texture: world,
+        }
+    }
+
+    pub fn with_texture(mut self, texture: Point3) -> Self {
+        self.texture = texture;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TextureDerivatives {
+    pub dpdx: Vec3,
+    pub dpdy: Vec3,
+    pub dudx: f64,
+    pub dudy: f64,
+    pub dvdx: f64,
+    pub dvdy: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TextureCoords {
     pub u: f64,
     pub v: f64,
-    pub point: Point3,
+    pub points: TexturePoints,
     pub geometry_normal: Vec3,
+    pub derivatives: TextureDerivatives,
 }
 
 impl TextureCoords {
-    pub fn new(u: f64, v: f64, point: Point3, geometry_normal: Vec3) -> Self {
+    pub fn new(
+        u: f64,
+        v: f64,
+        world_point: Point3,
+        mapping_point: Point3,
+        geometry_normal: Vec3,
+    ) -> Self {
         Self {
             u,
             v,
-            point,
+            points: TexturePoints::new(world_point, mapping_point),
             geometry_normal,
+            derivatives: TextureDerivatives::default(),
         }
     }
 
-    pub fn with_point(mut self, point: Point3) -> Self {
-        self.point = point;
+    pub fn with_texture_point(mut self, point: Point3) -> Self {
+        self.points = self.points.with_texture(point);
         self
     }
 
@@ -41,58 +82,39 @@ impl TextureCoords {
     }
 }
 
-/// Mappings adapt geometry-space coordinates into the coordinate space expected
-/// by a particular texture.
-pub trait TextureMapping: Send + Sync {
-    fn map(&self, coords: TextureCoords) -> TextureCoords;
+pub enum TextureMapping {
+    Identity,
+    PointScale { inv_scale: Vec3 },
+    Spherical,
 }
 
-/// The default mapping passes coordinates through unchanged.
-pub struct IdentityMapping;
-
-impl TextureMapping for IdentityMapping {
-    fn map(&self, coords: TextureCoords) -> TextureCoords {
-        coords
-    }
-}
-
-/// Scales the 3D hit point before a procedural texture sees it.
-///
-/// This keeps cell sizing logic in the mapping layer instead of baking it into
-/// each procedural texture implementation.
-pub struct PointScaleMapping {
-    inv_scale: Vec3,
-}
-
-impl PointScaleMapping {
-    pub fn from_uniform(scale: f64) -> Self {
+impl TextureMapping {
+    pub fn point_scale_uniform(scale: f64) -> Self {
         assert!(scale > 0.0, "texture scale must be positive");
         let inv_scale = 1.0 / scale;
 
-        Self {
+        Self::PointScale {
             inv_scale: Vec3::from(inv_scale, inv_scale, inv_scale),
         }
     }
-}
 
-impl TextureMapping for PointScaleMapping {
-    fn map(&self, coords: TextureCoords) -> TextureCoords {
-        coords.with_point(coords.point * self.inv_scale)
-    }
-}
+    pub fn map(&self, coords: TextureCoords) -> TextureCoords {
+        match self {
+            TextureMapping::Identity => coords,
+            TextureMapping::PointScale { inv_scale } => {
+                coords.with_texture_point(coords.points.texture * *inv_scale)
+            }
+            TextureMapping::Spherical => {
+                let p = coords.points.mapping.unit_vector();
+                let theta = (-p.y).acos();
+                let phi = -p.z.atan2(p.x) + PI;
 
-pub struct SphericalMapping;
+                let u = phi / (2.0 * PI);
+                let v = theta / PI;
 
-impl TextureMapping for SphericalMapping {
-    fn map(&self, coords: TextureCoords) -> TextureCoords {
-        let p = coords.point.unit_vector();
-        let theta = (-p.y).acos();
-        let phi = -p.z.atan2(p.x) + PI;
-
-        let u = phi / (2.0 * PI);
-        let v = theta / PI;
-
-        coords.with_uv(u, v)
+                coords.with_uv(u, v)
+            }
+        }
     }
 }
 
@@ -103,12 +125,12 @@ pub trait Texture: Send + Sync {
 /// A compositional texture wrapper that applies a mapping before delegating to
 /// another texture.
 pub struct MappedTexture {
-    mapping: Arc<dyn TextureMapping>,
+    mapping: TextureMapping,
     texture: Arc<dyn Texture>,
 }
 
 impl MappedTexture {
-    pub fn new(mapping: Arc<dyn TextureMapping>, texture: Arc<dyn Texture>) -> Self {
+    pub fn new(mapping: TextureMapping, texture: Arc<dyn Texture>) -> Self {
         Self { mapping, texture }
     }
 }
@@ -162,9 +184,9 @@ impl CheckerTexture {
 
 impl Texture for CheckerTexture {
     fn value(&self, coords: &TextureCoords) -> Color3 {
-        let x = coords.point.x.floor() as i32;
-        let y = coords.point.y.floor() as i32;
-        let z = coords.point.z.floor() as i32;
+        let x = coords.points.texture.x.floor() as i32;
+        let y = coords.points.texture.y.floor() as i32;
+        let z = coords.points.texture.z.floor() as i32;
 
         if (x + y + z) % 2 == 0 {
             self.even.value(coords)

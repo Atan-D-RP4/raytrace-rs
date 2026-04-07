@@ -5,7 +5,7 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
 use crate::texture::TextureCoords;
-use crate::vec3::{Vec3, dot};
+use crate::vec3::{dot, Vec3};
 
 pub struct HitRecord {
     pub time: f64,
@@ -15,6 +15,7 @@ pub struct HitRecord {
     pub v: f64,
 
     pub point: Vec3,
+    pub mapping_point: Vec3,
     pub geometry_normal: Vec3,
     pub normal: Vec3,
     pub front_face: bool,
@@ -22,12 +23,13 @@ pub struct HitRecord {
 }
 
 impl HitRecord {
-    pub fn new(t: f64, point: Vec3, normal: Vec3, mat: Arc<Material>) -> Self {
+    pub fn new(t: f64, point: Vec3, mapping_point: Vec3, normal: Vec3, mat: Arc<Material>) -> Self {
         Self {
             time: t,
             u: 0.0,
             v: 0.0,
             point,
+            mapping_point,
             geometry_normal: normal,
             normal,
             front_face: false,
@@ -46,7 +48,13 @@ impl HitRecord {
     }
 
     pub fn texture_coords(&self) -> TextureCoords {
-        TextureCoords::new(self.u, self.v, self.point, self.geometry_normal)
+        TextureCoords::new(
+            self.u,
+            self.v,
+            self.point,
+            self.mapping_point,
+            self.geometry_normal,
+        )
     }
 }
 

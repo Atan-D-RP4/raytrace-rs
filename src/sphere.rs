@@ -6,7 +6,7 @@ use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::vec3::{Point3, Vec3, dot};
+use crate::vec3::{dot, Point3, Vec3};
 
 pub struct Sphere {
     center: Ray,
@@ -82,7 +82,13 @@ impl Hittable for Sphere {
         let point = ray.at(root);
         let outward_normal = (point - current_center) / self.radius;
 
-        let mut hit_rec = HitRecord::new(root, point, outward_normal, self.material.clone());
+        let mut hit_rec = HitRecord::new(
+            root,
+            point,
+            outward_normal,
+            outward_normal,
+            self.material.clone(),
+        );
         hit_rec.set_face_normal(ray, &outward_normal);
 
         (hit_rec.u, hit_rec.v) = self.get_sphere_uv(&outward_normal);
