@@ -5,203 +5,33 @@ mod hittable;
 mod interval;
 mod material;
 mod ray;
+mod scene;
 mod sphere;
 mod texture;
 mod vec3;
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::Arc;
 
 use bvh::BvhNode;
 use camera::Camera;
-use hittable::Hittable;
-use interval::Interval;
-use material::Material;
-use rand::RngExt;
-use sphere::Sphere;
-use vec3::{Color3, Point3, Vec3};
-
-use self::texture::{CheckerTexture, SolidColor};
-
-fn create_randomized_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
-    let mut world: Vec<Box<dyn Hittable>> = Vec::new();
-
-    let ground_material = Material::Lambertian {
-        tex: Arc::new(CheckerTexture::from_color(
-            0.32,
-            Color3::from(0.2, 0.4, 0.1),
-            Color3::from(0.9, 0.9, 0.9),
-        )),
-    };
-
-    world.push(Box::new(Sphere::new(
-        &Point3::from(0., -1000., 0.),
-        1000.,
-        &ground_material,
-    )));
-
-    (-11..11).for_each(|a| {
-        (-11..11).for_each(|b| {
-            let world_seed = rand::random::<u8>();
-            let center = Point3::from(
-                a as f64 + 0.9 * rand::random::<f64>(),
-                0.2,
-                b as f64 + 0.9 * rand::random::<f64>(),
-            );
-
-            if (center - Point3::from(4., 0.2, 0.)).length() > 0.9 {
-                let material = if world_seed.is_multiple_of(3) {
-                    Material::Lambertian {
-                        tex: Arc::new(SolidColor::new(Color3::random() * Color3::random())),
-                    }
-                } else if world_seed % 3 == 1 {
-                    Material::Metal {
-                        albedo: Color3::random_range(0.5, 1.0),
-                        fuzz: rand::random::<f64>() * 0.5,
-                    }
-                } else {
-                    Material::Dielectric {
-                        refractive_idx: 1.5,
-                    }
-                };
-
-                if world_seed.is_multiple_of(2) {
-                    let target_center =
-                        center + Vec3::from(0., rand::rng().random_range(-0.5..0.5), 0.);
-                    world.push(Box::new(Sphere::new_moving(
-                        &center,
-                        &target_center,
-                        0.2,
-                        &material,
-                    )));
-                } else {
-                    world.push(Box::new(Sphere::new(&center, 0.2, &material)));
-                }
-            }
-        })
-    });
-
-    world.push(Box::new(Sphere::new(
-        &Point3::from(0., 1., 0.),
-        1.,
-        &Material::Dielectric {
-            refractive_idx: 1.5,
-        },
-    )));
-
-    world.push(Box::new(Sphere::new(
-        &Point3::from(-4., 1., 0.),
-        1.,
-        &Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.4, 0.2, 0.1))),
-        },
-    )));
-    world.push(Box::new(Sphere::new(
-        &Point3::from(4., 1., 0.),
-        1.,
-        &Material::Metal {
-            albedo: Color3::from(0.7, 0.6, 0.5),
-            fuzz: 0.0,
-        },
-    )));
-
-    camera.aspect_ratio = 16.0 / 9.0;
-    camera.image_width = 400;
-    camera.samples_per_pixel = 50;
-    camera.max_depth = 50;
-
-    camera.vfov = 20.0;
-    camera.look_from = Point3::from(13., 2., 3.);
-    camera.look_at = Point3::from(0., 0., 0.);
-    camera.vup = Vec3::from(0., 1., 0.);
-
-    camera.defocus_angle = 0.6;
-    camera.focus_distance = 10.0;
-
-    world
-}
-
-fn create_simple_world(camera: &mut Camera) -> Vec<Box<dyn Hittable>> {
-    let material_ground = Material::Lambertian {
-        tex: Arc::new(SolidColor::new(Color3::from(0.8, 0.8, 0.0))),
-    };
-    let material_center = Material::Lambertian {
-        tex: Arc::new(SolidColor::new(Color3::from(0.1, 0.2, 0.5))),
-    };
-    let material_left = Material::Dielectric {
-        refractive_idx: 1.50,
-    };
-    let material_bubble = Material::Dielectric {
-        refractive_idx: 1.0 / 1.50,
-    };
-    let material_right = Material::Metal {
-        albedo: Color3::from(0.8, 0.6, 0.2),
-        fuzz: 1.0,
-    };
-
-    let world: Vec<Box<dyn Hittable>> = vec![
-        Box::new(Sphere::new(
-            &Point3::from(0., -100.5, -1.),
-            100.,
-            &material_ground,
-        )),
-        Box::new(Sphere::new(
-            &Point3::from(0., 0., -1.2),
-            0.5,
-            &material_center,
-        )),
-        Box::new(Sphere::new(
-            &Point3::from(-1., 0., -1.),
-            0.5,
-            &material_left,
-        )),
-        Box::new(Sphere::new(
-            &Point3::from(-1., 0., -1.),
-            0.4,
-            &material_bubble,
-        )),
-        Box::new(Sphere::new(
-            &Point3::from(1., 0., -1.),
-            0.5,
-            &material_right,
-        )),
-    ];
-
-    camera.samples_per_pixel = 25;
-
-    camera.image_width = 800;
-    camera.aspect_ratio = 16.0 / 9.0;
-    camera.max_depth = 50;
-
-    camera.vfov = 20.0;
-    camera.look_from = Point3::from(-2., 2., 1.);
-    camera.look_at = Point3::from(0., 0., -1.);
-    camera.vup = Vec3::from(0., 1., 0.);
-
-    camera.defocus_angle = 10.0;
-    camera.focus_distance = 3.4;
-
-    world
-}
+use scene::Scene;
 
 fn main() {
-    let mut camera = Camera::new();
+    let scene = Scene::random_world();
+    let config = *scene.config();
+    let mut objects = scene.into_objects();
 
-    let world = create_randomized_world(&mut camera);
-    let mut world = world
-        .into_iter()
-        .map(|b| Arc::from(b) as Arc<dyn Hittable>)
-        .collect::<Vec<Arc<dyn Hittable>>>();
-    let world_len = world.len();
-    let world = BvhNode::new(&mut world, 0, world_len);
+    let world_len = objects.len();
+    let world = std::sync::Arc::new(BvhNode::new(&mut objects, 0, world_len));
+
+    let mut camera = Camera::from_config(&config);
 
     let start = std::time::Instant::now();
-    let rendered_buffer = camera.render(&world);
+    let rendered_buffer = camera.render(world);
     let end = std::time::Instant::now();
     println!("Time to render scene: {:?}", end - start);
 
-    // Create or open a file
     let file_path = "output.ppm";
     let mut file = OpenOptions::new()
         .write(true)

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
@@ -8,13 +10,12 @@ use crate::vec3::{Point3, Vec3, dot};
 pub struct Sphere {
     center: Ray,
     pub radius: f64,
-    pub material: Material,
+    pub material: Arc<Material>,
     bbox: Aabb,
 }
 
 impl Sphere {
-    // A Static sphere
-    pub fn new(center: &Point3, radius: f64, mat: &Material) -> Self {
+    pub fn new(center: &Point3, radius: f64, mat: Arc<Material>) -> Self {
         let rvec = Vec3::from(radius, radius, radius);
         Self {
             center: Ray::new(*center, Vec3::from(0., 0., 0.)),
@@ -24,12 +25,11 @@ impl Sphere {
         }
     }
 
-    // A Moving sphere
     pub fn new_moving(
         center_start: &Point3,
         center_end: &Point3,
         radius: f64,
-        mat: &Material,
+        mat: Arc<Material>,
     ) -> Self {
         let rvec = Vec3::from(radius, radius, radius);
         let center = Ray::new(*center_start, *center_end - *center_start);
@@ -38,7 +38,7 @@ impl Sphere {
         Self {
             center,
             radius: radius.max(0.0),
-            material: mat.clone(),
+            material: mat,
             bbox: Aabb::merge(box1, box2),
         }
     }
@@ -71,7 +71,7 @@ impl Hittable for Sphere {
         let point = ray.at(root);
         let outward_normal = (point - current_center) / self.radius;
 
-        let mut hit_rec = HitRecord::new(root, point, outward_normal, self.material.clone().into());
+        let mut hit_rec = HitRecord::new(root, point, outward_normal, self.material.clone());
         hit_rec.set_face_normal(ray, &outward_normal);
 
         Some(hit_rec)

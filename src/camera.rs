@@ -1,28 +1,100 @@
+use std::sync::Arc;
+
 use rayon::prelude::*;
 
 use crate::hittable::Hittable;
+use crate::interval::Interval;
 use crate::ray::Ray;
 use crate::vec3::{cross, random_in_unit_disk, unit_vector, Color3, Point3, Vec3};
-use crate::Interval;
 
 const INTENSITY: Interval = Interval::from(0., 0.999);
 
 #[derive(Default, Clone, Copy)]
-pub struct Camera {
-    pub aspect_ratio: f64,      // Ratio of the image width to height.
-    pub image_width: i32,       // Rendered image width in pixels.
-    pub image_height: i32,      // Rendered image height in pixels.
-    pub samples_per_pixel: i32, // Number of rays to sample per pixel for anti-aliasing.
-    pub max_depth: i32,         // Maximum ray bounce depth for ray color calculations.
-    pub vfov: f64,              // Vertical field of view in degrees.
-    pub look_from: Point3,      // Camera position in world space.
-    pub look_at: Point3,        // Point in world space that the camera is looking at.
-    pub vup: Vec3, // "Up" direction for the camera, used to determine the camera's orientation.
-    pub defocus_angle: f64, // Angle in degrees representing the amount of defocus for depth of field effects.
-    pub focus_distance: f64, // Distance from the camera to the focal plane for depth of field effects.
+pub struct CameraConfig {
+    pub aspect_ratio: f64,      // Image width / height
+    pub image_width: i32,       // Rendered image width in pixels
+    pub samples_per_pixel: i32, // Rays per pixel for anti-aliasing
+    pub max_depth: i32,         // Maximum ray bounce depth
+    pub vfov: f64,              // Vertical field of view (degrees)
+    pub look_from: Point3,      // Camera position
+    pub look_at: Point3,        // Look target
+    pub vup: Vec3,              // Up direction
+    pub defocus_angle: f64,     // Depth of field angle
+    pub focus_distance: f64,    // Focal plane distance
+}
 
-    defocus_disk_u: Vec3, // Vector representing the horizontal defocus disk for depth of field effects.
-    defocus_disk_v: Vec3, // Vector representing the vertical defocus disk for depth
+impl CameraConfig {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn aspect_ratio(mut self, ratio: f64) -> Self {
+        self.aspect_ratio = ratio;
+        self
+    }
+
+    pub fn image_width(mut self, width: i32) -> Self {
+        self.image_width = width;
+        self
+    }
+
+    pub fn samples_per_pixel(mut self, samples: i32) -> Self {
+        self.samples_per_pixel = samples;
+        self
+    }
+
+    pub fn max_depth(mut self, depth: i32) -> Self {
+        self.max_depth = depth;
+        self
+    }
+
+    pub fn vfov(mut self, vfov: f64) -> Self {
+        self.vfov = vfov;
+        self
+    }
+
+    pub fn look_from(mut self, point: Point3) -> Self {
+        self.look_from = point;
+        self
+    }
+
+    pub fn look_at(mut self, point: Point3) -> Self {
+        self.look_at = point;
+        self
+    }
+
+    pub fn vup(mut self, vup: Vec3) -> Self {
+        self.vup = vup;
+        self
+    }
+
+    pub fn defocus_angle(mut self, angle: f64) -> Self {
+        self.defocus_angle = angle;
+        self
+    }
+
+    pub fn focus_distance(mut self, distance: f64) -> Self {
+        self.focus_distance = distance;
+        self
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct Camera {
+    aspect_ratio: f64,
+    image_width: i32,
+    image_height: i32,
+    samples_per_pixel: i32,
+    max_depth: i32,
+    vfov: f64,
+    look_from: Point3,
+    look_at: Point3,
+    vup: Vec3,
+    defocus_angle: f64,
+    focus_distance: f64,
+
+    defocus_disk_u: Vec3,
+    defocus_disk_v: Vec3,
     pixel00_loc: Point3,
     pixel_delta_u: Point3,
     pixel_delta_v: Point3,
@@ -30,6 +102,25 @@ pub struct Camera {
 }
 
 impl Camera {
+    pub fn from_config(config: &CameraConfig) -> Self {
+        let mut camera = Self {
+            aspect_ratio: config.aspect_ratio,
+            image_width: config.image_width,
+            image_height: 0,
+            samples_per_pixel: config.samples_per_pixel,
+            max_depth: config.max_depth,
+            vfov: config.vfov,
+            look_from: config.look_from,
+            look_at: config.look_at,
+            vup: config.vup,
+            defocus_angle: config.defocus_angle,
+            focus_distance: config.focus_distance,
+            ..Default::default()
+        };
+        camera.initialize();
+        camera
+    }
+
     pub fn new() -> Self {
         Default::default()
     }
@@ -85,13 +176,11 @@ impl Camera {
         self.defocus_disk_v = v * defocus_radius;
     }
 
-    pub fn render(&mut self, world: &dyn Hittable) -> Vec<u8> {
+    pub fn render(&mut self, world: Arc<dyn Hittable>) -> Vec<u8> {
         self.initialize();
         let camera_snapshot = *self;
         let total_pixels = self.image_height * self.image_width;
 
-        // Header size: P6\nwidth height\n255\n (roughly 20-30 bytes)
-        // Pixel data: 3 bytes per pixel
         let header_size = 32;
         let pixel_data_size = total_pixels as usize * 3;
         let mut output = Vec::with_capacity(header_size + pixel_data_size);
@@ -110,7 +199,7 @@ impl Camera {
                         let v = j as f64 + rand::random::<f64>();
 
                         let ray = camera_snapshot.get_ray(u, v);
-                        acc + camera_snapshot.ray_color(&ray, camera_snapshot.max_depth, world)
+                        acc + camera_snapshot.ray_color(&ray, camera_snapshot.max_depth, &*world)
                     },
                 );
 
