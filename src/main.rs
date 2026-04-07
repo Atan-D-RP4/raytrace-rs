@@ -18,7 +18,7 @@ use camera::Camera;
 use scene::Scene;
 
 fn main() {
-    let scene = Scene::random_world();
+    let scene = Scene::earth_sphere();
     let config = *scene.config();
     let mut objects = scene.into_objects();
 
@@ -32,7 +32,7 @@ fn main() {
     let end = std::time::Instant::now();
     println!("Time to render scene: {:?}", end - start);
 
-    let file_path = "output.ppm";
+    let file_path = "earth_sphere.ppm";
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)

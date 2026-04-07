@@ -1,5 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
 
+use image::{Pixel, Rgba32FImage};
+
+use crate::interval::Interval;
 use crate::vec3::{Color3, Point3};
 
 pub trait Texture: Send + Sync {
@@ -63,5 +67,33 @@ impl Texture for CheckerTexture {
         } else {
             self.odd.value(u, v, point)
         }
+    }
+}
+
+pub struct ImageTexture {
+    image: Rgba32FImage,
+}
+
+impl ImageTexture {
+    pub fn new<P: AsRef<Path>>(filename: P) -> image::ImageResult<Self> {
+        let image = image::open(filename)?.to_rgba32f();
+        Ok(Self { image })
+    }
+}
+
+impl Texture for ImageTexture {
+    fn value(&self, u: f64, v: f64, _point: &Point3) -> Color3 {
+        if self.image.height() == 0 {
+            return Color3::from(0., 1., 1.);
+        }
+
+        let u = Interval::from(0., 1.).clamp(u);
+        let v = 1.0 - Interval::from(0., 1.).clamp(v);
+
+        let i = (u * self.image.width() as f64).min((self.image.width() - 1) as f64);
+        let j = (v * self.image.height() as f64).min((self.image.height() - 1) as f64);
+        let pixel = self.image.get_pixel(i as u32, j as u32);
+
+        Color3::from(pixel[0] as f64, pixel[1] as f64, pixel[2] as f64)
     }
 }

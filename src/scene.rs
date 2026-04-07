@@ -6,7 +6,7 @@ use crate::camera::CameraConfig;
 use crate::hittable::Hittable;
 use crate::material::Material;
 use crate::sphere::Sphere;
-use crate::texture::{CheckerTexture, SolidColor};
+use crate::texture::{CheckerTexture, ImageTexture, SolidColor};
 use crate::vec3::{Color3, Point3, Vec3};
 
 pub struct Scene {
@@ -25,6 +25,14 @@ impl Scene {
     pub fn with_config(mut self, config: CameraConfig) -> Self {
         self.config = config;
         self
+    }
+
+    pub fn config(&self) -> &CameraConfig {
+        &self.config
+    }
+
+    pub fn into_objects(self) -> Vec<Arc<dyn Hittable>> {
+        self.objects
     }
 
     pub fn aspect_ratio(mut self, ratio: f64) -> Self {
@@ -95,6 +103,62 @@ impl Scene {
             radius,
             material,
         )));
+    }
+}
+
+impl Scene {
+    pub fn earth_sphere() -> Self {
+        let mut scene = Self::new();
+
+        let image_tex = match ImageTexture::new("./earthmap.jpg") {
+            Ok(tex) => tex,
+            Err(e) => panic!("Failed to load to image as Texture: {:?}", e),
+        };
+        let checker = Arc::new(Material::Lambertian {
+            tex: Arc::new(image_tex),
+        });
+
+        scene.add_sphere(Point3::from(0., 0., 0.), 2., checker);
+
+        scene.config.aspect_ratio = 16.0 / 9.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 50;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 20.0;
+        scene.config.look_from = Point3::from(13., 2., 3.);
+        scene.config.look_at = Point3::from(0., 0., 0.);
+        scene.config.vup = Vec3::from(0., 1., 0.);
+        scene.config.defocus_angle = 0.6;
+        scene.config.focus_distance = 10.0;
+
+        scene
+    }
+
+    pub fn checkered_spheres() -> Self {
+        let mut scene = Self::new();
+
+        let checker = Arc::new(Material::Lambertian {
+            tex: Arc::new(CheckerTexture::from_color(
+                0.32,
+                Color3::from(0.2, 0.4, 0.1),
+                Color3::from(0.9, 0.9, 0.9),
+            )),
+        });
+        scene.add_sphere(Point3::from(0., -10., 0.), 10., checker.clone());
+        scene.add_sphere(Point3::from(0., 10., 0.), 10., checker);
+
+        scene.config.aspect_ratio = 16.0 / 9.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 50;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 20.0;
+        scene.config.look_from = Point3::from(13., 2., 3.);
+        scene.config.look_at = Point3::from(0., 0., 0.);
+        scene.config.vup = Vec3::from(0., 1., 0.);
+        scene.config.defocus_angle = 0.6;
+        scene.config.focus_distance = 10.0;
+
+        scene
     }
 
     pub fn random_world() -> Self {
@@ -169,7 +233,7 @@ impl Scene {
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
-        scene.config.image_width = 400;
+        scene.config.image_width = 800;
         scene.config.samples_per_pixel = 50;
         scene.config.max_depth = 50;
         scene.config.vfov = 20.0;
@@ -220,14 +284,6 @@ impl Scene {
         scene.config.focus_distance = 3.4;
 
         scene
-    }
-
-    pub fn config(&self) -> &CameraConfig {
-        &self.config
-    }
-
-    pub fn into_objects(self) -> Vec<Arc<dyn Hittable>> {
-        self.objects
     }
 }
 

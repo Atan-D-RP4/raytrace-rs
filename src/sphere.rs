@@ -1,3 +1,4 @@
+use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
@@ -42,6 +43,16 @@ impl Sphere {
             bbox: Aabb::merge(box1, box2),
         }
     }
+
+    pub fn get_sphere_uv(&self, point: &Point3) -> (f64, f64) {
+        let theta = (-point.y).acos();
+        let phi = -point.z.atan2(point.x) + PI;
+
+        let u = phi / (2.0 * PI);
+        let v = theta / PI;
+
+        (u, v)
+    }
 }
 
 impl Hittable for Sphere {
@@ -73,6 +84,8 @@ impl Hittable for Sphere {
 
         let mut hit_rec = HitRecord::new(root, point, outward_normal, self.material.clone());
         hit_rec.set_face_normal(ray, &outward_normal);
+
+        (hit_rec.u, hit_rec.v) = self.get_sphere_uv(&outward_normal);
 
         Some(hit_rec)
     }

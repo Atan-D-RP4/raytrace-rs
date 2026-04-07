@@ -242,6 +242,7 @@ impl Camera {
         Ray::new_with_time(ray_origin, ray_direction, rand::random::<f64>())
     }
 
+    // Monte-Carlo Path Tracing implementation
     pub fn ray_color(&self, initial_ray: &Ray, depth: i32, world: &dyn Hittable) -> Color3 {
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
