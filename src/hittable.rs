@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
@@ -9,17 +11,17 @@ pub struct HitRecord {
     pub point: Vec3,
     pub normal: Vec3,
     pub front_face: bool,
-    pub material: Material,
+    pub material: Arc<Material>,
 }
 
 impl HitRecord {
-    pub fn new(t: f64, point: Vec3, normal: Vec3, mat: &Material) -> Self {
+    pub fn new(t: f64, point: Vec3, normal: Vec3, mat: Arc<Material>) -> Self {
         Self {
             time: t,
             point,
             normal,
             front_face: false,
-            material: *mat,
+            material: mat,
         }
     }
 
@@ -54,8 +56,7 @@ impl Hittable for Vec<Box<dyn Hittable>> {
     }
 
     fn bounding_box(&self) -> Aabb {
-        self.iter().fold(Aabb::new(), |acc, obj| {
-            Aabb::merge(acc, obj.bounding_box())
-        })
+        self.iter()
+            .fold(Aabb::new(), |acc, obj| Aabb::merge(acc, obj.bounding_box()))
     }
 }
