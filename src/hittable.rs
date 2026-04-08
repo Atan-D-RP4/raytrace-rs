@@ -7,22 +7,42 @@ use crate::ray::Ray;
 use crate::texture::TextureCoords;
 use crate::vec3::{Vec3, dot};
 
+/// A path-tracer hit payload used to build texture/material evaluation inputs.
+///
+/// Stores hit time, UVs, world/mapping-space points, normals, and material.
+/// Face orientation is resolved by [`HitRecord::set_face_normal`].
+///
+/// TODO(renderer-agnostic): introduce a `SurfaceInteraction` type and convert
+/// from `HitRecord` so rasterizer/GPU/hybrid/SDF backends can share mapping code.
 pub struct HitRecord {
+    /// Ray parameter `t` at the intersection point.
     pub time: f64,
 
     // surface co-ords
+    /// Surface U coordinate from primitive UV parameterization.
+    // TODO(mapping-2d3d): move UVs into a dedicated 2D mapping payload.
     pub u: f64,
+    /// Surface V coordinate from primitive UV parameterization.
     pub v: f64,
 
+    /// World-space intersection position.
+    // TODO(mapping-2d3d): move 3D mapping inputs into a dedicated 3D mapping payload.
     pub point: Vec3,
+    /// Mapping-space position consumed by texture mappings.
     pub mapping_point: Vec3,
+    /// Outward geometric normal before face-orientation or shading adjustments.
+    // TODO(displacement): keep pre- and post-displacement geometric normals.
     pub geometry_normal: Vec3,
+    /// Shading normal oriented against the incoming ray direction.
     pub normal: Vec3,
+    /// Whether the ray hit the outward-facing side of the surface.
     pub front_face: bool,
+    /// Material attached to the intersected primitive.
     pub material: Arc<Material>,
 }
 
 impl HitRecord {
+    /// Creates a hit record with default UVs and unresolved face orientation.
     pub fn new(t: f64, point: Vec3, mapping_point: Vec3, normal: Vec3, mat: Arc<Material>) -> Self {
         Self {
             time: t,
@@ -37,6 +57,9 @@ impl HitRecord {
         }
     }
 
+    /// Ensures shading normal opposes the incoming ray direction.
+    ///
+    /// `geometry_normal` preserves the outward normal from geometry.
     pub fn set_face_normal(&mut self, ray: &Ray, outward_normal: &Vec3) {
         self.geometry_normal = *outward_normal;
         self.front_face = dot(&ray.direction, outward_normal) < 0.;
@@ -47,7 +70,10 @@ impl HitRecord {
         }
     }
 
+    /// Builds the texture-evaluation context derived from this hit.
     pub fn texture_coords(&self) -> TextureCoords {
+        // TODO(renderer-agnostic): move this to `impl From<&HitRecord> for SurfaceInteraction`
+        // once texture mapping/evaluation is decoupled from path-tracer hit records.
         TextureCoords::new(
             self.u,
             self.v,
@@ -58,8 +84,12 @@ impl HitRecord {
     }
 }
 
+/// Trait for ray-testable scene primitives with BVH-compatible bounds.
 pub trait Hittable: Send + Sync {
+    /// Returns the closest hit inside `[ray_t.min, ray_t.max]`, if any.
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord>;
+
+    /// Returns a conservative world-space AABB for acceleration structures.
     fn bounding_box(&self) -> Aabb;
 }
 

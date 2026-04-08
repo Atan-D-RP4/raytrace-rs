@@ -5,13 +5,24 @@ use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::ray::Ray;
 
+/// A binary BVH node for accelerating ray-scene intersection queries.
 pub struct BvhNode {
+    /// Left child subtree or leaf primitive.
     left: Arc<dyn Hittable>,
+    /// Right child subtree or leaf primitive.
     right: Arc<dyn Hittable>,
+    /// World-space bounds enclosing both children.
     bbox: Aabb,
 }
 
 impl BvhNode {
+    /// Builds a BVH subtree from `objects[start..end]`.
+    ///
+    /// Strategy:
+    /// - compute merged bounds for this span,
+    /// - choose longest axis,
+    /// - sort by min bound on that axis,
+    /// - recurse on two halves.
     pub fn new(objects: &mut Vec<Arc<dyn Hittable>>, start: usize, end: usize) -> Self {
         let obj_span = end - start;
         let mut bbox = Aabb::new();
@@ -43,10 +54,12 @@ impl BvhNode {
 
 impl Hittable for BvhNode {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+        // Prune entire subtree if node bounds are missed.
         if !self.bbox.hit(ray, ray_t) {
             return None;
         }
 
+        // Hit left first, then clamp right traversal to nearest left hit time.
         let hit_left = self.left.hit(ray, ray_t);
         let hit_right = self.right.hit(
             ray,

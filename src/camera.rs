@@ -1,3 +1,14 @@
+//! Camera and reference CPU rendering implementation.
+//!
+//! Current responsibilities:
+//! 1. Build camera rays from [`CameraConfig`].
+//! 2. Run the CPU Monte-Carlo path-tracing loop.
+//! 3. Return an RGB8 image buffer for output.
+//!
+//! TODO(renderer-abstraction): factor the rendering loop into a dedicated
+//! renderer/pipeline module so camera ray generation can be reused by GPU,
+//! raster, hybrid, and other future rendering engines.
+
 use std::sync::Arc;
 
 use rayon::prelude::*;
@@ -8,9 +19,12 @@ use crate::ray::Ray;
 use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk, unit_vector};
 
 #[derive(Default, Clone, Copy)]
+/// User-facing camera configuration.
+///
+/// This is scene/build-time data. Runtime/precomputed values live in [`Camera`].
 pub struct CameraConfig {
-    pub aspect_ratio: f64,      // Image width / height
     pub image_width: i32,       // Rendered image width in pixels
+    pub aspect_ratio: f64,      // Image width / height
     pub samples_per_pixel: i32, // Rays per pixel for anti-aliasing
     pub max_depth: i32,         // Maximum ray bounce depth
     pub vfov: f64,              // Vertical field of view (degrees)
@@ -22,6 +36,7 @@ pub struct CameraConfig {
 }
 
 impl CameraConfig {
+    /// Creates a zero-initialized config; scenes usually set all fields explicitly.
     pub fn new() -> Self {
         Default::default()
     }
@@ -77,18 +92,31 @@ impl CameraConfig {
     }
 }
 
+/// Runtime camera with precomputed sampling and viewport data.
+///
+/// Construct via [`Camera::from_config`] so derived fields are initialized.
 #[derive(Default, Clone, Copy)]
 pub struct Camera {
-    aspect_ratio: f64,
     image_width: i32,
     image_height: i32,
+
+    /// Image width / height
+    aspect_ratio: f64,
+    /// Rays per pixel for anti-aliasing
     samples_per_pixel: i32,
+    /// Maximum ray bounce depth
     max_depth: i32,
+    /// Vertical field of view (degrees)
     vfov: f64,
+    /// Camera position
     look_from: Point3,
+    /// Look target
     look_at: Point3,
+    /// Up direction Vector
     vup: Vec3,
+    /// Depth of field angle
     defocus_angle: f64,
+    /// Focal plane distance
     focus_distance: f64,
 
     defocus_disk_u: Vec3,
@@ -100,11 +128,12 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// Builds a runtime camera from scene configuration.
     pub fn from_config(config: &CameraConfig) -> Self {
         let mut camera = Self {
-            aspect_ratio: config.aspect_ratio,
             image_width: config.image_width,
             image_height: 0,
+            aspect_ratio: config.aspect_ratio,
             samples_per_pixel: config.samples_per_pixel,
             max_depth: config.max_depth,
             vfov: config.vfov,
@@ -119,10 +148,15 @@ impl Camera {
         camera
     }
 
+    /// Creates a default camera; callers must configure and initialize it before rendering.
     pub fn new() -> Self {
         Default::default()
     }
 
+    /// Computes all runtime camera data needed for ray generation.
+    ///
+    /// This derives image dimensions, viewport basis vectors, per-pixel deltas,
+    /// and depth-of-field sampling vectors from the current camera parameters.
     fn initialize(&mut self) {
         self.image_height = ((self.image_width as f64 / self.aspect_ratio) as i32).max(1);
 
@@ -178,6 +212,9 @@ impl Camera {
     ///
     /// Uses parallel iteration over pixel chunks for performance.
     /// Each chunk writes RGB triples directly into the output buffer.
+    ///
+    /// TODO(renderer-abstraction): move this method and [`Camera::ray_color`]
+    /// into a renderer/pipeline component so alternate engines can share camera setup.
     pub fn render(&mut self, world: Arc<dyn Hittable>) -> (u32, u32, Vec<u8>) {
         self.initialize();
         let camera_snapshot = *self;
@@ -223,13 +260,12 @@ impl Camera {
         (self.image_width as u32, self.image_height as u32, output)
     }
 
-    // Returns the vector to a random point in the [-.5,-.5]-[+.5,+.5] unit square.
+    /// Returns a random jitter offset inside the pixel cell.
     fn sample_square(&self) -> Vec3 {
         Vec3::from(rand::random::<f64>() - 0.5, rand::random::<f64>() - 0.5, 0.)
     }
 
-    // Construct a camera ray originating from the origin and directed at randomly sampled
-    // point around the pixel location i, j.
+    /// Constructs a time-sampled camera ray through a jittered pixel sample.
     fn get_ray(&self, u: f64, v: f64) -> Ray {
         let offset = self.sample_square();
         let pixel_sample = self.pixel00_loc
@@ -248,7 +284,13 @@ impl Camera {
         Ray::new_with_time(ray_origin, ray_direction, rand::random::<f64>())
     }
 
-    // Monte-Carlo Path Tracing implementation
+    /// Reference CPU Monte-Carlo path-tracing integrator.
+    ///
+    /// Iteratively traces/scatters up to `depth` bounces and multiplies
+    /// attenuation along the path. Returns sky gradient on miss.
+    ///
+    /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
+    /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
     pub fn ray_color(&self, initial_ray: &Ray, depth: i32, world: &dyn Hittable) -> Color3 {
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
@@ -274,6 +316,7 @@ impl Camera {
         Color3::from(0., 0., 0.)
     }
 
+    /// Samples a point on the defocus disk for depth-of-field ray origins.
     fn defocus_disk_sample(&self) -> Vec3 {
         let point = random_in_unit_disk();
         self.look_from + (point.x * self.defocus_disk_u) + (point.y * self.defocus_disk_v)
@@ -281,6 +324,7 @@ impl Camera {
 }
 
 #[inline(always)]
+/// Converts a linear color channel to gamma-corrected (gamma=2) space.
 fn linear_to_gamma(linear_component: f64) -> f64 {
     if linear_component > 0. {
         linear_component.sqrt()

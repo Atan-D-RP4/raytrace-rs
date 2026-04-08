@@ -1,3 +1,9 @@
+//! Material models and scattering behavior for path tracing.
+//!
+//! A material maps an incoming ray + surface hit into either:
+//! - a scattered ray with attenuation, or
+//! - absorption (`None`).
+
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
@@ -5,12 +11,16 @@ use crate::ray::Ray;
 use crate::texture::Texture;
 use crate::vec3::{Color3, dot, random_unit_vector, reflect, refract, unit_vector};
 
+/// Result of material sampling for a single bounce.
 pub struct Scatter {
+    /// Multiplicative color throughput for this bounce.
     pub attenuation: Color3,
+    /// Outgoing ray sampled by the material.
     pub scattered: Ray,
 }
 
 impl Scatter {
+    /// Builds a scatter result from attenuation and outgoing ray.
     pub fn new(attenuation: Color3, scattered: Ray) -> Self {
         Self {
             attenuation,
@@ -20,13 +30,21 @@ impl Scatter {
 }
 
 #[derive(Clone)]
+/// Supported material models.
 pub enum Material {
+    /// Diffuse (Lambertian) surface using a texture for albedo.
     Lambertian { tex: Arc<dyn Texture> },
+    /// Mirror-like reflection with optional roughness (`fuzz`).
     Metal { albedo: Color3, fuzz: f64 },
+    /// Dielectric transmission/reflection controlled by refractive index.
     Dielectric { refractive_idx: f64 },
 }
 
 impl Material {
+    /// Samples this material for a given incoming ray and hit record.
+    ///
+    /// Returns `Some(Scatter)` when the ray continues, or `None` when the
+    /// path is absorbed. Ray time is preserved across bounces for motion blur.
     pub fn scatter(&self, ray: &Ray, record: &HitRecord) -> Option<Scatter> {
         match self {
             Material::Lambertian { tex } => {
@@ -79,8 +97,11 @@ impl Material {
         }
     }
 
+    /// Schlick approximation for Fresnel reflectance.
+    ///
+    /// Used by dielectric materials to probabilistically choose reflection
+    /// vs refraction near grazing angles.
     fn reflectance(&self, cosine: f64, refractive_idx: f64) -> f64 {
-        // Schlick's approximation for reflectance
         let r0 = (1.0 - refractive_idx) / (1.0 + refractive_idx);
         let r0 = r0 * r0;
         r0 + (1.0 - r0) * (1.0 - cosine).powi(5)

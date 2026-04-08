@@ -2,6 +2,7 @@ use crate::interval::Interval;
 use crate::ray::Ray;
 use crate::vec3::Point3;
 
+/// Axis-aligned bounding box used for broad-phase ray culling and BVH traversal.
 #[derive(Debug, Clone, Copy)]
 pub struct Aabb {
     pub x: Interval,
@@ -10,6 +11,7 @@ pub struct Aabb {
 }
 
 impl Aabb {
+    /// Creates an empty bounding box.
     pub fn new() -> Self {
         Self {
             x: Interval::EMPTY,
@@ -18,10 +20,15 @@ impl Aabb {
         }
     }
 
+    /// Creates a bounding box directly from axis intervals.
     pub fn from_intervals(x: Interval, y: Interval, z: Interval) -> Self {
         Self { x, y, z }
     }
 
+    /// Creates a bounding box that encloses both points.
+    ///
+    /// Treat the two points a and b as extrema for the bounding box, so we don't require a
+    /// particular minimum/maximum coordinate order.
     pub fn from_points(a: &Point3, b: &Point3) -> Self {
         Self {
             x: if a[0] <= b[0] {
@@ -42,6 +49,7 @@ impl Aabb {
         }
     }
 
+    /// Returns the union of two AABBs.
     pub fn merge(a: Aabb, b: Aabb) -> Self {
         Self {
             x: Interval::from_intervals(&a.x, &b.x),
@@ -50,6 +58,7 @@ impl Aabb {
         }
     }
 
+    /// Returns the interval for the selected axis (0=x, 1=y, 2=z).
     pub fn axis_interval(&self, axis: i32) -> &Interval {
         match axis {
             0 => &self.x,
@@ -59,6 +68,7 @@ impl Aabb {
         }
     }
 
+    /// Returns the axis index with the largest extent.
     pub fn longest_axis(&self) -> i32 {
         let (x, y, z) = (self.x.size(), self.y.size(), self.z.size());
         if x > y && x > z {
@@ -70,6 +80,9 @@ impl Aabb {
         }
     }
 
+    /// Ray-box test using the slab method.
+    ///
+    /// `ray_t` is narrowed per-axis and early-outs once the interval collapses.
     pub fn hit(&self, ray: &Ray, mut ray_t: Interval) -> bool {
         // slab method - test intersection against each axis pair
         (0..3).all(|axis| {

@@ -8,6 +8,10 @@ use crate::material::Material;
 use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3, dot};
 
+/// Sphere primitive (static or linearly moving over ray time).
+///
+/// Motion is represented as a ray where `origin` is center at t=0 and
+/// `direction` is center delta to t=1.
 pub struct Sphere {
     center: Ray,
     pub radius: f64,
@@ -16,6 +20,7 @@ pub struct Sphere {
 }
 
 impl Sphere {
+    /// Creates a static sphere.
     pub fn new(center: &Point3, radius: f64, mat: Arc<Material>) -> Self {
         let rvec = Vec3::from(radius, radius, radius);
         Self {
@@ -26,6 +31,7 @@ impl Sphere {
         }
     }
 
+    /// Creates a moving sphere with linear center interpolation over time [0, 1].
     pub fn new_moving(
         center_start: &Point3,
         center_end: &Point3,
@@ -44,6 +50,10 @@ impl Sphere {
         }
     }
 
+    /// Converts a unit-sphere point into UV coordinates.
+    ///
+    /// Input `point` is expected on a unit sphere centered at origin.
+    /// UV conventions follow RTIOW spherical mapping.
     pub fn get_sphere_uv(&self, point: &Point3) -> (f64, f64) {
         let theta = (-point.y).acos();
         let phi = -point.z.atan2(point.x) + PI;
@@ -56,14 +66,18 @@ impl Sphere {
 }
 
 impl Hittable for Sphere {
+    /// Intersects a ray with the sphere and returns the nearest valid hit.
+    ///
+    /// Uses the quadratic root form optimized with `h = dot(d, oc)` and checks
+    /// near root first, then far root within the supplied `ray_t` interval.
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
         let current_center = self.center.at(ray.time);
         let origin_center = current_center - ray.origin;
-        let a = ray.direction.length_squared(); // Simplified from: `dot(&ray.direction, &ray.direction)`, which equals current `a`
-        let h = dot(&ray.direction, &origin_center); // if b = -2h
-        let c = origin_center.length_squared() - (self.radius * self.radius); // Simplified same as `a`
+        let a = ray.direction.length_squared();
+        let h = dot(&ray.direction, &origin_center);
+        let c = origin_center.length_squared() - (self.radius * self.radius);
 
-        let discriminant = (h * h) - (a * c); // Simplified form (-b ± sqrt(b*b - 4*a*c)) / 2*a
+        let discriminant = (h * h) - (a * c);
 
         if discriminant < 0.0 {
             return None;

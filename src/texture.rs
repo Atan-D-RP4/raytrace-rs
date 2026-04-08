@@ -1,3 +1,18 @@
+//! Texture system architecture.
+//!
+//! Pipeline:
+//! 1. Geometry writes hit data into [`TextureCoords`].
+//! 2. [`TextureMapping`] transforms coordinates (world/mapping/texture/uv).
+//! 3. [`Texture::value`] evaluates final color from the mapped context.
+//!
+//! The design keeps coordinate generation (geometry), coordinate transformation
+//! (mapping), and color evaluation (texture) as separate responsibilities.
+//!
+//! TODO(renderer-agnostic): replace direct path-tracer handoff with
+//! `SurfaceInteraction` so rasterizer/GPU/hybrid/SDF backends share this API.
+//! TODO(mapping-2d3d): split mapping APIs into explicit 2D/3D channels
+//! (e.g. `TextureMapping2D` for UV generation and `TextureMapping3D` for point transforms).
+
 use std::f64::consts::PI;
 use std::path::Path;
 use std::sync::Arc;
@@ -9,8 +24,7 @@ use crate::perlin::Perlin;
 
 use crate::vec3::{Color3, Point3, Vec3};
 
-/// Geometry fills this with the surface data that mappings and textures need.
-///
+/// Coordinate spaces carried through the texture pipeline.
 #[derive(Debug, Clone, Copy)]
 pub struct TexturePoints {
     /// The immutable hit position in world space
@@ -22,6 +36,9 @@ pub struct TexturePoints {
 }
 
 impl TexturePoints {
+    /// Creates a new coordinate bundle.
+    ///
+    /// `texture` starts as `world` and can be reshaped by mappings.
     pub fn new(world: Point3, mapping: Point3) -> Self {
         Self {
             world,
@@ -30,12 +47,16 @@ impl TexturePoints {
         }
     }
 
+    /// Returns a copy with an updated texture-space point.
     pub fn with_texture(mut self, texture: Point3) -> Self {
         self.texture = texture;
         self
     }
 }
 
+/// Optional derivatives for future filtering/LOD work.
+///
+/// These are currently initialized to zero until ray/pixel differentials are added.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextureDerivatives {
     pub dpdx: Vec3,
@@ -46,6 +67,11 @@ pub struct TextureDerivatives {
     pub dvdy: f64,
 }
 
+/// Full texture evaluation context passed to mappings and textures.
+///
+/// Carries UVs, coordinate spaces, geometric normal, and derivative slots.
+/// TODO(mapping-2d3d): when 2D/3D mapping channels are split, move UV-only and
+/// point-only fields into dedicated sub-contexts to prevent accidental cross-use.
 #[derive(Debug, Clone, Copy)]
 pub struct TextureCoords {
     pub u: f64,
@@ -56,6 +82,7 @@ pub struct TextureCoords {
 }
 
 impl TextureCoords {
+    /// Constructs a texture context from geometry-provided hit data.
     pub fn new(
         u: f64,
         v: f64,
@@ -72,11 +99,15 @@ impl TextureCoords {
         }
     }
 
+    /// Returns a copy with a different texture-space point.
     pub fn with_texture_point(mut self, point: Point3) -> Self {
         self.tex_points = self.tex_points.with_texture(point);
         self
     }
 
+    /// Returns a copy with remapped UV coordinates.
+    /// TODO(mapping-2d3d): move to a UV-specific mapping context once 2D and 3D
+    /// mappings are represented by separate types.
     pub fn with_uv(mut self, u: f64, v: f64) -> Self {
         self.u = u;
         self.v = v;
@@ -84,13 +115,22 @@ impl TextureCoords {
     }
 }
 
+/// Coordinate mappings applied before evaluating an underlying texture.
+/// TODO(mapping-2d3d): split this enum into `TextureMapping2D` and
+/// `TextureMapping3D` to make UV remaps vs 3D point remaps explicit.
 pub enum TextureMapping {
+    /// No coordinate change.
     Identity,
+    /// Uniform scale in 3D texture space.
     PointScale { inv_scale: Vec3 },
+    /// Converts mapping-space unit-sphere position into UVs.
     Spherical,
 }
 
 impl TextureMapping {
+    /// Builds a uniform point-scale mapping.
+    ///
+    /// `scale` is cell size; smaller values increase frequency.
     pub fn point_scale_uniform(scale: f64) -> Self {
         assert!(scale > 0.0, "texture scale must be positive");
         let inv_scale = 1.0 / scale;
@@ -100,6 +140,9 @@ impl TextureMapping {
         }
     }
 
+    /// Applies this mapping to a texture context and returns the mapped copy.
+    /// TODO(mapping-2d3d): return distinct mapped outputs for 2D and 3D paths
+    /// instead of mutating a single mixed context.
     pub fn map(&self, coords: TextureCoords) -> TextureCoords {
         match self {
             TextureMapping::Identity => coords,
@@ -107,12 +150,19 @@ impl TextureMapping {
                 coords.with_texture_point(coords.tex_points.texture * *inv_scale)
             }
             TextureMapping::Spherical => {
+                // p: point on unit sphere centered at origin (mapping space).
                 let p = coords.tex_points.mapping.unit_vector();
                 let theta = (-p.y).acos();
                 let phi = -p.z.atan2(p.x) + PI;
 
-                let u = phi / (2.0 * PI);
-                let v = theta / PI;
+                let u = phi / (2.0 * PI); // u: angle around +Y axis from X = -1.
+                let v = theta / PI; // v: angle from Y = -1 to Y = +1.
+                //
+                // Examples:
+                //  <p, u, v>
+                //  <1, 0, 0> -> (0.50, 0.50), <-1, 0, 0> -> (0.00, 0.50)
+                //  <0, 1, 0> -> (0.50, 1.00), < 0,-1, 0> -> (0.50, 0.00)
+                //  <0, 0, 1> -> (0.25, 0.50), < 0, 0,-1> -> (0.75, 0.50)
 
                 coords.with_uv(u, v)
             }
@@ -120,18 +170,19 @@ impl TextureMapping {
     }
 }
 
+/// A texture evaluates a color from a fully prepared texture context.
 pub trait Texture: Send + Sync {
     fn value(&self, coords: &TextureCoords) -> Color3;
 }
 
-/// A compositional texture wrapper that applies a mapping before delegating to
-/// another texture.
+/// Compositional wrapper for mapping coordinates first, then evaluating the wrapped texture.
 pub struct MappedTexture {
     mapping: TextureMapping,
     texture: Arc<dyn Texture>,
 }
 
 impl MappedTexture {
+    /// Creates a texture that applies `mapping` before sampling `texture`.
     pub fn new(mapping: TextureMapping, texture: Arc<dyn Texture>) -> Self {
         Self { mapping, texture }
     }
@@ -144,15 +195,18 @@ impl Texture for MappedTexture {
     }
 }
 
+/// Constant color texture
 pub struct SolidColor {
     albedo: Color3,
 }
 
 impl SolidColor {
+    /// Construct from a `Color3` value.
     pub fn new(albedo: Color3) -> Self {
         Self { albedo }
     }
 
+    /// Construct RGB components.
     pub fn from_rgb(r: f64, g: f64, b: f64) -> Self {
         Self {
             albedo: Color3::from(r, g, b),
@@ -166,6 +220,7 @@ impl Texture for SolidColor {
     }
 }
 
+/// Alternates between two child textures using integer parity in texture space.
 pub struct CheckerTexture {
     even: Arc<dyn Texture>,
     odd: Arc<dyn Texture>,
@@ -176,6 +231,7 @@ impl CheckerTexture {
         Self { even, odd }
     }
 
+    /// Convenience checker from two solid colors.
     pub fn from_color(c1: Color3, c2: Color3) -> Self {
         Self {
             even: Arc::new(SolidColor::new(c1)),
@@ -198,6 +254,7 @@ impl Texture for CheckerTexture {
     }
 }
 
+/// Loads an image texture and stores it in float RGBA format.
 pub struct ImageTexture {
     image: Rgba32FImage,
 }
@@ -226,6 +283,7 @@ impl Texture for ImageTexture {
     }
 }
 
+/// Procedural Perlin-noise texture source.
 pub struct NoiseTexture {
     noise: Perlin,
 }
@@ -244,6 +302,7 @@ impl Texture for NoiseTexture {
         // Color3::from(1., 1., 1.) * 0.5 * (1.0 + self.noise.noise(&point)) // Smooth Perlin Texture
         // Color3::from(1., 1., 1.) * self.noise.turbulence(&point, 7) // Turbulent Perlin Texture
         Color3::from(0.5, 0.5, 0.5)
-            * (1.0 + (point.z + (10.0 * self.noise.turbulence(&point, 7))).sin()) // Marbled Perlin Texture
+            * (1.0 + (point.z + (10.0 * self.noise.turbulence(&point, 7))).sin())
+        // Marbled Perlin Texture
     }
 }
