@@ -5,7 +5,7 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
 use crate::texture::TextureCoords;
-use crate::vec3::{dot, Vec3};
+use crate::vec3::{Vec3, dot};
 
 pub struct HitRecord {
     pub time: f64,

@@ -5,17 +5,19 @@ use std::sync::Arc;
 use image::Rgba32FImage;
 
 use crate::interval::Interval;
+use crate::perlin::Perlin;
+
 use crate::vec3::{Color3, Point3, Vec3};
 
 /// Geometry fills this with the surface data that mappings and textures need.
 ///
-/// `points.world` is the immutable hit position in world space, `points.mapping`
-/// is geometry-provided mapping space (for spheres, the unit-sphere point), and
-/// `points.texture` is the mutable 3D coordinate that 3D mappings shape for procedural textures.
 #[derive(Debug, Clone, Copy)]
 pub struct TexturePoints {
+    /// The immutable hit position in world space
     pub world: Point3,
+    /// The geometry-provided mapping space (for spheres, the unit-sphere point)
     pub mapping: Point3,
+    /// The mutable 3D coordinate that 3D mappings shape for procedural textures.
     pub texture: Point3,
 }
 
@@ -48,7 +50,7 @@ pub struct TextureDerivatives {
 pub struct TextureCoords {
     pub u: f64,
     pub v: f64,
-    pub points: TexturePoints,
+    pub tex_points: TexturePoints,
     pub geometry_normal: Vec3,
     pub derivatives: TextureDerivatives,
 }
@@ -64,14 +66,14 @@ impl TextureCoords {
         Self {
             u,
             v,
-            points: TexturePoints::new(world_point, mapping_point),
+            tex_points: TexturePoints::new(world_point, mapping_point),
             geometry_normal,
             derivatives: TextureDerivatives::default(),
         }
     }
 
     pub fn with_texture_point(mut self, point: Point3) -> Self {
-        self.points = self.points.with_texture(point);
+        self.tex_points = self.tex_points.with_texture(point);
         self
     }
 
@@ -102,10 +104,10 @@ impl TextureMapping {
         match self {
             TextureMapping::Identity => coords,
             TextureMapping::PointScale { inv_scale } => {
-                coords.with_texture_point(coords.points.texture * *inv_scale)
+                coords.with_texture_point(coords.tex_points.texture * *inv_scale)
             }
             TextureMapping::Spherical => {
-                let p = coords.points.mapping.unit_vector();
+                let p = coords.tex_points.mapping.unit_vector();
                 let theta = (-p.y).acos();
                 let phi = -p.z.atan2(p.x) + PI;
 
@@ -184,9 +186,9 @@ impl CheckerTexture {
 
 impl Texture for CheckerTexture {
     fn value(&self, coords: &TextureCoords) -> Color3 {
-        let x = coords.points.texture.x.floor() as i32;
-        let y = coords.points.texture.y.floor() as i32;
-        let z = coords.points.texture.z.floor() as i32;
+        let x = coords.tex_points.texture.x.floor() as i32;
+        let y = coords.tex_points.texture.y.floor() as i32;
+        let z = coords.tex_points.texture.z.floor() as i32;
 
         if (x + y + z) % 2 == 0 {
             self.even.value(coords)
@@ -221,5 +223,27 @@ impl Texture for ImageTexture {
         let pixel = self.image.get_pixel(i as u32, j as u32);
 
         Color3::from(pixel[0] as f64, pixel[1] as f64, pixel[2] as f64)
+    }
+}
+
+pub struct NoiseTexture {
+    noise: Perlin,
+}
+
+impl NoiseTexture {
+    pub fn new() -> Self {
+        Self {
+            noise: Perlin::new(),
+        }
+    }
+}
+
+impl Texture for NoiseTexture {
+    fn value(&self, coords: &TextureCoords) -> Color3 {
+        let point = coords.tex_points.texture;
+        // Color3::from(1., 1., 1.) * 0.5 * (1.0 + self.noise.noise(&point)) // Smooth Perlin Texture
+        // Color3::from(1., 1., 1.) * self.noise.turbulence(&point, 7) // Turbulent Perlin Texture
+        Color3::from(0.5, 0.5, 0.5)
+            * (1.0 + (point.z + (10.0 * self.noise.turbulence(&point, 7))).sin()) // Marbled Perlin Texture
     }
 }

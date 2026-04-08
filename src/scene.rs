@@ -7,7 +7,7 @@ use crate::hittable::Hittable;
 use crate::material::Material;
 use crate::sphere::Sphere;
 use crate::texture::{
-    CheckerTexture, ImageTexture, MappedTexture, SolidColor, Texture, TextureMapping,
+    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,
 };
 use crate::vec3::{Color3, Point3, Vec3};
 
@@ -116,6 +116,41 @@ impl Scene {
 }
 
 impl Scene {
+    pub fn noisy_spheres() -> Self {
+        let mut scene = Self::new();
+
+        let perlin_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(
+            TextureMapping::point_scale_uniform(1. / 4.),
+            Arc::new(NoiseTexture::new()),
+        ));
+
+        scene.add_sphere(
+            Point3::from(0., -1000., 0.),
+            1000.,
+            Arc::new(Material::Lambertian {
+                tex: perlin_tex.clone(),
+            }),
+        );
+        scene.add_sphere(
+            Point3::from(0., 2., 0.),
+            2.,
+            Arc::new(Material::Lambertian { tex: perlin_tex }),
+        );
+
+        scene.config.aspect_ratio = 16.0 / 9.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 50;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 20.0;
+        scene.config.look_from = Point3::from(13., 2., 3.);
+        scene.config.look_at = Point3::from(0., 0., 0.);
+        scene.config.vup = Vec3::from(0., 1., 0.);
+        scene.config.defocus_angle = 0.6;
+        scene.config.focus_distance = 10.0;
+
+        scene
+    }
+
     pub fn earth_sphere() -> Self {
         let mut scene = Self::new();
 

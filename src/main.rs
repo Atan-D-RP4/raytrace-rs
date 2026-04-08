@@ -4,12 +4,12 @@ mod camera;
 mod hittable;
 mod interval;
 mod material;
+mod perlin;
 mod ray;
 mod scene;
 mod sphere;
 mod texture;
 mod vec3;
-mod perlin;
 
 use bvh::BvhNode;
 use camera::Camera;
@@ -17,7 +17,7 @@ use image::{ImageBuffer, Rgb, RgbImage};
 use scene::Scene;
 
 fn main() {
-    let scene = Scene::earth_sphere();
+    let scene = Scene::noisy_spheres();
     let config = *scene.config();
     let mut objects = scene.into_objects();
 
@@ -38,5 +38,17 @@ fn main() {
         img.put_pixel(x, y, Rgb([pixel[0], pixel[1], pixel[2]]));
     }
 
-    img.save("earth_sphere.png").expect("Failed to save image");
+    let filename = "noisy_spheres.png";
+    img.save(filename).expect("Failed to save image");
+
+    match std::process::Command::new("satty")
+        .args(["--filename", filename])
+        .spawn()
+    {
+        Ok(mut child) => child.wait().map_or_else(
+            |e| panic!("Failed to close satty with error: {e:?}"),
+            |_| (),
+        ),
+        Err(e) => panic!("Failed to spawn `satty` with error: {e:?}"),
+    }
 }
