@@ -5,6 +5,7 @@ mod hittable;
 mod interval;
 mod material;
 mod perlin;
+mod quad;
 mod ray;
 mod scene;
 mod sphere;
@@ -17,7 +18,7 @@ use image::{ImageBuffer, Rgb, RgbImage};
 use scene::Scene;
 
 fn main() {
-    let scene = Scene::noisy_spheres();
+    let scene = Scene::quads();
     let config = *scene.config();
     let mut objects = scene.into_objects();
 
@@ -38,7 +39,7 @@ fn main() {
         img.put_pixel(x, y, Rgb([pixel[0], pixel[1], pixel[2]]));
     }
 
-    let filename = "noisy_spheres.png";
+    let filename = "quads.png";
     img.save(filename).expect("Failed to save image");
 
     match std::process::Command::new("satty")

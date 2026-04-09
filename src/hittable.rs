@@ -110,6 +110,6 @@ impl Hittable for Vec<Box<dyn Hittable>> {
 
     fn bounding_box(&self) -> Aabb {
         self.iter()
-            .fold(Aabb::new(), |acc, obj| Aabb::merge(acc, obj.bounding_box()))
+            .fold(Aabb::new(), |acc, obj| acc.merge(obj.bounding_box()))
     }
 }

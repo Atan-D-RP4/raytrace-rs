@@ -11,6 +11,7 @@ pub struct Aabb {
 }
 
 impl Aabb {
+    const DELTA: f64 = 0.0001;
     /// Creates an empty bounding box.
     pub fn new() -> Self {
         Self {
@@ -30,31 +31,33 @@ impl Aabb {
     /// Treat the two points a and b as extrema for the bounding box, so we don't require a
     /// particular minimum/maximum coordinate order.
     pub fn from_points(a: &Point3, b: &Point3) -> Self {
-        Self {
-            x: if a[0] <= b[0] {
-                Interval::from(a[0], b[0])
-            } else {
-                Interval::from(b[0], a[0])
-            },
-            y: if a[1] <= b[1] {
-                Interval::from(a[1], b[1])
-            } else {
-                Interval::from(b[1], a[1])
-            },
-            z: if a[2] <= b[2] {
-                Interval::from(a[2], b[2])
-            } else {
-                Interval::from(b[2], a[2])
-            },
+        let new = Self {
+            x: Interval::from(a[0].min(b[0]), a[0].max(b[0])),
+            y: Interval::from(a[1].min(b[1]), a[1].max(b[1])),
+            z: Interval::from(a[2].min(b[2]), a[2].max(b[2])),
+        };
+        new.pad_to_minimums()
+    }
+
+    fn pad_to_minimums(mut self) -> Self {
+        if self.x.size() < Self::DELTA {
+            self.x.expand(Self::DELTA);
         }
+        if self.y.size() < Self::DELTA {
+            self.y.expand(Self::DELTA);
+        }
+        if self.z.size() < Self::DELTA {
+            self.z.expand(Self::DELTA);
+        }
+        self
     }
 
     /// Returns the union of two AABBs.
-    pub fn merge(a: Aabb, b: Aabb) -> Self {
+    pub fn merge(&self, other: Aabb) -> Self {
         Self {
-            x: Interval::from_intervals(&a.x, &b.x),
-            y: Interval::from_intervals(&a.y, &b.y),
-            z: Interval::from_intervals(&a.z, &b.z),
+            x: Interval::from_intervals(&self.x, &other.x),
+            y: Interval::from_intervals(&self.y, &other.y),
+            z: Interval::from_intervals(&self.z, &other.z),
         }
     }
 

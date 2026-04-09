@@ -5,6 +5,7 @@ use rand::RngExt;
 use crate::camera::CameraConfig;
 use crate::hittable::Hittable;
 use crate::material::Material;
+use crate::quad::Quad;
 use crate::sphere::Sphere;
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,
@@ -93,7 +94,9 @@ impl Scene {
         self.config.focus_distance = distance;
         self
     }
+}
 
+impl Scene {
     pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Arc<Material>) {
         self.objects
             .push(Arc::new(Sphere::new(&center, radius, material)));
@@ -116,6 +119,71 @@ impl Scene {
 }
 
 impl Scene {
+    pub fn quads() -> Self {
+        let mut scene = Self::new();
+        let colors = [
+            Color3::from(1.0, 0.2, 0.2), // left_red - 1
+            Color3::from(0.2, 1.0, 0.2), // back_green - 2
+            Color3::from(0.2, 0.2, 1.0), // right_blue - 3
+            Color3::from(1.0, 0.5, 0.0), // upper_orange - 4
+            Color3::from(0.2, 0.8, 0.8), // lower_teal - 5
+        ];
+
+        let quad_vecs = [
+            (
+                Point3::from(-3., -2., 5.),
+                Vec3::from(0., 0., -4.),
+                Vec3::from(0., 4., 0.),
+            ), // - 1
+            (
+                Point3::from(-2., -2., 0.),
+                Vec3::from(4., 0., 0.),
+                Vec3::from(0., 4., 0.),
+            ), // - 2
+            (
+                Point3::from(3., -2., 1.),
+                Vec3::from(0., 0., 4.),
+                Vec3::from(0., 4., 0.),
+            ), // - 3
+            (
+                Point3::from(-2., 3., 1.),
+                Vec3::from(4., 0., 0.),
+                Vec3::from(0., 0., 4.),
+            ), // - 4
+            (
+                Point3::from(-2., -3., 5.),
+                Vec3::from(4., 0., 0.),
+                Vec3::from(0., 0., -4.),
+            ), // - 5
+        ];
+
+        quad_vecs.iter().zip(colors).for_each(|(vecs, color)| {
+            let (Q, u, v) = vecs;
+            let material = Material::Lambertian {
+                tex: Arc::new(SolidColor::new(color)),
+            };
+            scene
+                .objects
+                .push(Arc::new(Quad::new(*Q, *u, *v, material)));
+        });
+
+        scene.config.aspect_ratio = 1.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 50;
+        scene.config.max_depth = 50;
+
+        scene.config.vfov = 80.0;
+        scene.config.look_from = Point3::from(0., 0., 9.);
+        scene.config.look_at = Point3::from(0., 0., 0.);
+        scene.config.vup = Vec3::from(0., 1., 0.);
+
+        scene.config.defocus_angle = 0.0;
+
+        scene.config.focus_distance = 10.0;
+
+        scene
+    }
+
     pub fn noisy_spheres() -> Self {
         let mut scene = Self::new();
 

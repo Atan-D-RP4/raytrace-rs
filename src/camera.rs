@@ -291,7 +291,7 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
-    pub fn ray_color(&self, initial_ray: &Ray, depth: i32, world: &dyn Hittable) -> Color3 {
+    fn ray_color(&self, initial_ray: &Ray, depth: i32, world: &dyn Hittable) -> Color3 {
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
 

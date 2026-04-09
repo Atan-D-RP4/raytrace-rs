@@ -26,7 +26,7 @@ impl BvhNode {
     pub fn new(objects: &mut Vec<Arc<dyn Hittable>>, start: usize, end: usize) -> Self {
         let obj_span = end - start;
         let mut bbox = Aabb::new();
-        (start..end).for_each(|idx| bbox = Aabb::merge(bbox, objects[idx].bounding_box()));
+        (start..end).for_each(|idx| bbox = bbox.merge(objects[idx].bounding_box()));
 
         let (left, right): (Arc<dyn Hittable>, Arc<dyn Hittable>) = match obj_span {
             1 => {

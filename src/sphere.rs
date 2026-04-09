@@ -46,7 +46,7 @@ impl Sphere {
             center,
             radius: radius.max(0.0),
             material: mat,
-            bbox: Aabb::merge(box1, box2),
+            bbox: box1.merge(box2),
         }
     }
 
