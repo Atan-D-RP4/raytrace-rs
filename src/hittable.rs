@@ -113,3 +113,24 @@ impl Hittable for Vec<Box<dyn Hittable>> {
             .fold(Aabb::new(), |acc, obj| acc.merge(obj.bounding_box()))
     }
 }
+
+impl Hittable for Vec<Arc<dyn Hittable>> {
+    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+        let mut closest = ray_t.max;
+        let mut result = None;
+
+        self.iter().for_each(|object| {
+            if let Some(record) = object.hit(ray, Interval::from(ray_t.min, closest)) {
+                closest = record.time;
+                result = Some(record);
+            }
+        });
+
+        result
+    }
+
+    fn bounding_box(&self) -> Aabb {
+        self.iter()
+            .fold(Aabb::new(), |acc, obj| acc.merge(obj.bounding_box()))
+    }
+}

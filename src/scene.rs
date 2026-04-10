@@ -123,6 +123,76 @@ impl Scene {
 }
 
 impl Scene {
+    pub fn cornell_box() -> Self {
+        let mut scene = Scene::empty_cornell_box();
+
+        let white = Material::Lambertian {
+            tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
+        };
+        let box_params = [
+            (
+                Point3::from(130., 0., 65.),
+                Point3::from(295., 165., 230.),
+                white.clone(),
+            ),
+            (
+                Point3::from(265., 0., 295.),
+                Point3::from(430., 330., 460.),
+                white,
+            ),
+        ];
+
+        box_params.iter().for_each(|params| {
+            let (a, b, mat) = params;
+
+            let min = Point3::from(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
+            let max = Point3::from(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));
+
+            let dx = Vec3::from(max.x - min.x, 0., 0.);
+            let dy = Vec3::from(0., max.y - min.y, 0.);
+            let dz = Vec3::from(0., 0., max.z - min.z);
+
+            scene.objects.push(Arc::new(Quad::new(
+                Point3::from(min.x, min.y, max.z),
+                dx,
+                dy,
+                mat.clone(),
+            ))); // front
+            scene.objects.push(Arc::new(Quad::new(
+                Point3::from(max.x, min.y, max.z),
+                -dz,
+                dy,
+                mat.clone(),
+            ))); // right
+            scene.objects.push(Arc::new(Quad::new(
+                Point3::from(max.x, min.y, min.z),
+                -dx,
+                dy,
+                mat.clone(),
+            ))); // back
+            scene.objects.push(Arc::new(Quad::new(
+                Point3::from(min.x, min.y, min.z),
+                dz,
+                dy,
+                mat.clone(),
+            ))); // left
+            scene.objects.push(Arc::new(Quad::new(
+                Point3::from(min.x, max.y, max.z),
+                dx,
+                -dz,
+                mat.clone(),
+            ))); // top
+            scene.objects.push(Arc::new(Quad::new(
+                Point3::from(min.x, min.y, min.z),
+                dx,
+                dz,
+                mat.clone(),
+            ))); // bottom
+        });
+
+        scene
+    }
+
     pub fn empty_cornell_box() -> Self {
         let mut scene = Self::new();
         let red = Material::Lambertian {
