@@ -33,62 +33,13 @@ pub struct CameraConfig {
     pub vup: Vec3,              // Up direction
     pub defocus_angle: f64,     // Depth of field angle
     pub focus_distance: f64,    // Focal plane distance
+    pub background: Color3,     // Background color
 }
 
 impl CameraConfig {
     /// Creates a zero-initialized config; scenes usually set all fields explicitly.
     pub fn new() -> Self {
         Default::default()
-    }
-
-    pub fn aspect_ratio(mut self, ratio: f64) -> Self {
-        self.aspect_ratio = ratio;
-        self
-    }
-
-    pub fn image_width(mut self, width: i32) -> Self {
-        self.image_width = width;
-        self
-    }
-
-    pub fn samples_per_pixel(mut self, samples: i32) -> Self {
-        self.samples_per_pixel = samples;
-        self
-    }
-
-    pub fn max_depth(mut self, depth: i32) -> Self {
-        self.max_depth = depth;
-        self
-    }
-
-    pub fn vfov(mut self, vfov: f64) -> Self {
-        self.vfov = vfov;
-        self
-    }
-
-    pub fn look_from(mut self, point: Point3) -> Self {
-        self.look_from = point;
-        self
-    }
-
-    pub fn look_at(mut self, point: Point3) -> Self {
-        self.look_at = point;
-        self
-    }
-
-    pub fn vup(mut self, vup: Vec3) -> Self {
-        self.vup = vup;
-        self
-    }
-
-    pub fn defocus_angle(mut self, angle: f64) -> Self {
-        self.defocus_angle = angle;
-        self
-    }
-
-    pub fn focus_distance(mut self, distance: f64) -> Self {
-        self.focus_distance = distance;
-        self
     }
 }
 
@@ -97,7 +48,9 @@ impl CameraConfig {
 /// Construct via [`Camera::from_config`] so derived fields are initialized.
 #[derive(Default, Clone, Copy)]
 pub struct Camera {
+    /// Rendered image width in pixels
     image_width: i32,
+    /// Computed image height in pixels (derived from width/aspect_ratio)
     image_height: i32,
 
     /// Image width / height
@@ -118,12 +71,20 @@ pub struct Camera {
     defocus_angle: f64,
     /// Focal plane distance
     focus_distance: f64,
+    /// Background color
+    background: Color3,
 
+    /// Defocus disk vector for u-axis (depth of field sampling)
     defocus_disk_u: Vec3,
+    /// Defocus disk vector for v-axis (depth of field sampling)
     defocus_disk_v: Vec3,
+    /// Location of upper-left pixel in world space
     pixel00_loc: Point3,
+    /// Vector from one pixel to the next in horizontal direction
     pixel_delta_u: Point3,
+    /// Vector from one pixel to the next in vertical direction
     pixel_delta_v: Point3,
+    /// Scale factor for averaging samples (1/samples_per_pixel)
     pixel_samples_scale: f64,
 }
 
@@ -142,6 +103,7 @@ impl Camera {
             vup: config.vup,
             defocus_angle: config.defocus_angle,
             focus_distance: config.focus_distance,
+            background: config.background,
             ..Default::default()
         };
         camera.initialize();
@@ -287,33 +249,38 @@ impl Camera {
     /// Reference CPU Monte-Carlo path-tracing integrator.
     ///
     /// Iteratively traces/scatters up to `depth` bounces and multiplies
-    /// attenuation along the path. Returns sky gradient on miss.
+    /// attenuation along the path. Returns sky/background gradient on miss.
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
     fn ray_color(&self, initial_ray: &Ray, depth: i32, world: &dyn Hittable) -> Color3 {
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
+        let mut accumulated_color = Color3::from(0., 0., 0.);
 
         for _ in 0..depth {
             if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
+                let emission = record.material.emitted(&record);
+                accumulated_color += accumulated_attenuation * emission;
+
                 if let Some(scatter) = record.material.scatter(&ray, &record) {
                     accumulated_attenuation = accumulated_attenuation * scatter.attenuation;
                     ray = scatter.scattered;
                 } else {
-                    return Color3::from(0., 0., 0.);
+                    return accumulated_color;
                 }
             } else {
-                // Background gradient
-                let unit_direction = unit_vector(ray.direction);
-                let t = 0.5 * (unit_direction.y + 1.0);
-                let background =
-                    ((1.0 - t) * Vec3::from(1.0, 1.0, 1.0)) + (t * Vec3::from(0.5, 0.7, 1.0));
-                return accumulated_attenuation * background;
+                // // If the ray hits nothing, return the background color
+                // let unit_direction = unit_vector(ray.direction);
+                // let t = 0.5 * (unit_direction.y + 1.0);
+                // // The background gradient
+                // let background =
+                //     ((1.0 - t) * Vec3::from(1.0, 1.0, 1.0)) + (t * Vec3::from(0.5, 0.7, 1.0));
+                return accumulated_color + accumulated_attenuation * self.background;
             }
         }
 
-        Color3::from(0., 0., 0.)
+        accumulated_color
     }
 
     /// Samples a point on the defocus disk for depth-of-field ray origins.

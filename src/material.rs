@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::hittable::HitRecord;
 use crate::ray::Ray;
-use crate::texture::Texture;
+use crate::texture::{Texture, TextureCoords};
 use crate::vec3::{Color3, dot, random_unit_vector, reflect, refract, unit_vector};
 
 /// Result of material sampling for a single bounce.
@@ -38,6 +38,8 @@ pub enum Material {
     Metal { albedo: Color3, fuzz: f64 },
     /// Dielectric transmission/reflection controlled by refractive index.
     Dielectric { refractive_idx: f64 },
+    /// Light emitting surface
+    DiffuseLight { tex: Arc<dyn Texture> },
 }
 
 impl Material {
@@ -94,6 +96,20 @@ impl Material {
 
                 Some(Scatter::new(attenuation, scattered))
             }
+            Material::DiffuseLight { tex: _ } => None,
+        }
+    }
+
+    pub fn emitted(&self, hit_rec: &HitRecord) -> Color3 {
+        match self {
+            Material::DiffuseLight { tex } => tex.value(&TextureCoords::new(
+                hit_rec.u,
+                hit_rec.v,
+                hit_rec.point,
+                hit_rec.mapping_point,
+                hit_rec.geometry_normal,
+            )),
+            _ => Color3::from(0., 0., 0.),
         }
     }
 

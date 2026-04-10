@@ -21,12 +21,12 @@ pub struct Sphere {
 
 impl Sphere {
     /// Creates a static sphere.
-    pub fn new(center: &Point3, radius: f64, mat: Arc<Material>) -> Self {
+    pub fn new(center: &Point3, radius: f64, mat: Material) -> Self {
         let rvec = Vec3::from(radius, radius, radius);
         Self {
             center: Ray::new(*center, Vec3::from(0., 0., 0.)),
             radius: radius.max(0.0),
-            material: mat.clone(),
+            material: Arc::new(mat),
             bbox: Aabb::from_points(&(*center - rvec), &(*center + rvec)),
         }
     }
@@ -36,7 +36,7 @@ impl Sphere {
         center_start: &Point3,
         center_end: &Point3,
         radius: f64,
-        mat: Arc<Material>,
+        mat: Material,
     ) -> Self {
         let rvec = Vec3::from(radius, radius, radius);
         let center = Ray::new(*center_start, *center_end - *center_start);
@@ -45,7 +45,7 @@ impl Sphere {
         Self {
             center,
             radius: radius.max(0.0),
-            material: mat,
+            material: Arc::new(mat),
             bbox: box1.merge(box2),
         }
     }

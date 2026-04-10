@@ -97,9 +97,13 @@ impl Scene {
 }
 
 impl Scene {
-    pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Arc<Material>) {
+    pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
         self.objects
             .push(Arc::new(Sphere::new(&center, radius, material)));
+    }
+
+    pub fn add_quad(&mut self, Q: Point3, u: Vec3, v: Vec3, material: Material) {
+        self.objects.push(Arc::new(Quad::new(Q, u, v, material)));
     }
 
     pub fn add_sphere_moving(
@@ -107,7 +111,7 @@ impl Scene {
         center_start: Point3,
         center_end: Point3,
         radius: f64,
-        material: Arc<Material>,
+        material: Material,
     ) {
         self.objects.push(Arc::new(Sphere::new_moving(
             &center_start,
@@ -119,6 +123,42 @@ impl Scene {
 }
 
 impl Scene {
+    pub fn simple_light() -> Self {
+        let mut scene = Self::noisy_spheres();
+        //
+        // scene.add_quad(
+        //     Point3::from(3., 1., -2.),
+        //     Vec3::from(2., 0., 0.),
+        //     Vec3::from(0., 2., 0.),
+        //     Material::DiffuseLight {
+        //         tex: Arc::new(SolidColor::new(Color3::from(4.0, 0.4, 0.4))),
+        //     },
+        // );
+
+        scene.add_sphere(
+            Point3::from(0., 7., 0.),
+            2.,
+            Material::DiffuseLight {
+                tex: Arc::new(SolidColor::new(Color3::from(4.0, 4.0, 4.0))),
+            },
+        );
+
+        scene.config.aspect_ratio = 16. / 9.;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 100;
+        scene.config.max_depth = 50;
+        scene.config.background = Color3::from(0., 0., 0.);
+
+        scene.config.vfov = 20.;
+        scene.config.look_from = Point3::from(26., 3., 6.);
+        scene.config.look_at = Point3::from(0., 2., 0.);
+        scene.config.vup = Vec3::from(0., 1., 0.);
+
+        scene.config.defocus_angle = 0.;
+
+        scene
+    }
+
     pub fn quads() -> Self {
         let mut scene = Self::new();
         let colors = [
@@ -162,9 +202,7 @@ impl Scene {
             let material = Material::Lambertian {
                 tex: Arc::new(SolidColor::new(color)),
             };
-            scene
-                .objects
-                .push(Arc::new(Quad::new(*Q, *u, *v, material)));
+            scene.add_quad(*Q, *u, *v, material);
         });
 
         scene.config.aspect_ratio = 1.0;
@@ -181,6 +219,8 @@ impl Scene {
 
         scene.config.focus_distance = 10.0;
 
+        scene.config.background = Color3::from(0.5, 0.7, 1.0);
+
         scene
     }
 
@@ -195,14 +235,14 @@ impl Scene {
         scene.add_sphere(
             Point3::from(0., -1000., 0.),
             1000.,
-            Arc::new(Material::Lambertian {
+            Material::Lambertian {
                 tex: perlin_tex.clone(),
-            }),
+            },
         );
         scene.add_sphere(
             Point3::from(0., 2., 0.),
             2.,
-            Arc::new(Material::Lambertian { tex: perlin_tex }),
+            Material::Lambertian { tex: perlin_tex },
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
@@ -215,6 +255,7 @@ impl Scene {
         scene.config.vup = Vec3::from(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
+        scene.config.background = Color3::from(0.5, 0.7, 1.0);
 
         scene
     }
@@ -227,10 +268,10 @@ impl Scene {
             Err(e) => panic!("Failed to load to image as Texture: {:?}", e),
         };
         let image_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(
-            TextureMapping::Spherical,
+            TextureMapping::Identity,
             Arc::new(image_tex),
         ));
-        let checker = Arc::new(Material::Lambertian { tex: image_tex });
+        let checker = Material::Lambertian { tex: image_tex };
 
         scene.add_sphere(Point3::from(0., 0., 0.), 2., checker);
 
@@ -244,6 +285,7 @@ impl Scene {
         scene.config.vup = Vec3::from(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
+        scene.config.background = Color3::from(0.5, 0.7, 1.0);
 
         scene
     }
@@ -251,13 +293,13 @@ impl Scene {
     pub fn checkered_spheres() -> Self {
         let mut scene = Self::new();
 
-        let checker = Arc::new(Material::Lambertian {
+        let checker = Material::Lambertian {
             tex: checker_texture(
                 0.32,
                 Color3::from(0.2, 0.4, 0.1),
                 Color3::from(0.9, 0.9, 0.9),
             ),
-        });
+        };
         scene.add_sphere(Point3::from(0., -10., 0.), 10., checker.clone());
         scene.add_sphere(Point3::from(0., 10., 0.), 10., checker);
 
@@ -271,6 +313,7 @@ impl Scene {
         scene.config.vup = Vec3::from(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
+        scene.config.background = Color3::from(0.5, 0.7, 1.0);
 
         scene
     }
@@ -278,13 +321,13 @@ impl Scene {
     pub fn random_world() -> Self {
         let mut scene = Self::new();
 
-        let ground_material = Arc::new(Material::Lambertian {
+        let ground_material = Material::Lambertian {
             tex: checker_texture(
                 0.32,
                 Color3::from(0.2, 0.4, 0.1),
                 Color3::from(0.9, 0.9, 0.9),
             ),
-        });
+        };
         scene.add_sphere(Point3::from(0., -1000., 0.), 1000., ground_material);
 
         for a in -11..11 {
@@ -297,7 +340,7 @@ impl Scene {
                 );
 
                 if (center - Point3::from(4., 0.2, 0.)).length() > 0.9 {
-                    let material = Arc::new(if world_seed.is_multiple_of(3) {
+                    let material = if world_seed.is_multiple_of(3) {
                         Material::Lambertian {
                             tex: Arc::new(SolidColor::new(Color3::random() * Color3::random())),
                         }
@@ -310,7 +353,7 @@ impl Scene {
                         Material::Dielectric {
                             refractive_idx: 1.5,
                         }
-                    });
+                    };
 
                     if world_seed.is_multiple_of(2) {
                         let target_center =
@@ -326,24 +369,24 @@ impl Scene {
         scene.add_sphere(
             Point3::from(0., 1., 0.),
             1.,
-            Arc::new(Material::Dielectric {
+            Material::Dielectric {
                 refractive_idx: 1.5,
-            }),
+            },
         );
         scene.add_sphere(
             Point3::from(-4., 1., 0.),
             1.,
-            Arc::new(Material::Lambertian {
+            Material::Lambertian {
                 tex: Arc::new(SolidColor::new(Color3::from(0.4, 0.2, 0.1))),
-            }),
+            },
         );
         scene.add_sphere(
             Point3::from(4., 1., 0.),
             1.,
-            Arc::new(Material::Metal {
+            Material::Metal {
                 albedo: Color3::from(0.7, 0.6, 0.5),
                 fuzz: 0.0,
-            }),
+            },
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
@@ -356,6 +399,7 @@ impl Scene {
         scene.config.vup = Vec3::from(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
+        scene.config.background = Color3::from(0.5, 0.7, 1.0);
 
         scene
     }
@@ -363,22 +407,22 @@ impl Scene {
     pub fn simple_world() -> Self {
         let mut scene = Self::new();
 
-        let material_ground = Arc::new(Material::Lambertian {
+        let material_ground = Material::Lambertian {
             tex: Arc::new(SolidColor::new(Color3::from(0.8, 0.8, 0.0))),
-        });
-        let material_center = Arc::new(Material::Lambertian {
+        };
+        let material_center = Material::Lambertian {
             tex: Arc::new(SolidColor::new(Color3::from(0.1, 0.2, 0.5))),
-        });
-        let material_left = Arc::new(Material::Dielectric {
+        };
+        let material_left = Material::Dielectric {
             refractive_idx: 1.50,
-        });
-        let material_bubble = Arc::new(Material::Dielectric {
+        };
+        let material_bubble = Material::Dielectric {
             refractive_idx: 1.0 / 1.50,
-        });
-        let material_right = Arc::new(Material::Metal {
+        };
+        let material_right = Material::Metal {
             albedo: Color3::from(0.8, 0.6, 0.2),
             fuzz: 1.0,
-        });
+        };
 
         scene.add_sphere(Point3::from(0., -100.5, -1.), 100., material_ground);
         scene.add_sphere(Point3::from(0., 0., -1.2), 0.5, material_center);
@@ -396,6 +440,7 @@ impl Scene {
         scene.config.vup = Vec3::from(0., 1., 0.);
         scene.config.defocus_angle = 10.0;
         scene.config.focus_distance = 3.4;
+        scene.config.background = Color3::from(0.5, 0.7, 1.0);
 
         scene
     }

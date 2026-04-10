@@ -18,7 +18,8 @@ use image::{ImageBuffer, Rgb, RgbImage};
 use scene::Scene;
 
 fn main() {
-    let scene = Scene::quads();
+    let scene = Scene::simple_light();
+    let filename = "simple_light.png";
     let config = *scene.config();
     let mut objects = scene.into_objects();
 
@@ -39,7 +40,6 @@ fn main() {
         img.put_pixel(x, y, Rgb([pixel[0], pixel[1], pixel[2]]));
     }
 
-    let filename = "quads.png";
     img.save(filename).expect("Failed to save image");
 
     match std::process::Command::new("satty")
