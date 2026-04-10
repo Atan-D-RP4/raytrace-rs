@@ -18,8 +18,9 @@ use image::{ImageBuffer, Rgb, RgbImage};
 use scene::Scene;
 
 fn main() {
-    let scene = Scene::simple_light();
-    let filename = "simple_light.png";
+    let scene = Scene::empty_cornell_box();
+    let filename = "empty_cornell_box.png";
+
     let config = *scene.config();
     let mut objects = scene.into_objects();
 

@@ -178,7 +178,8 @@ impl Camera {
     /// TODO(renderer-abstraction): move this method and [`Camera::ray_color`]
     /// into a renderer/pipeline component so alternate engines can share camera setup.
     pub fn render(&mut self, world: Arc<dyn Hittable>) -> (u32, u32, Vec<u8>) {
-        self.initialize();
+        // No need to initialize it here, `from_config` does it, or caller should do it manually
+        // self.initialize();
         let camera_snapshot = *self;
         let total_pixels = self.image_height * self.image_width;
 

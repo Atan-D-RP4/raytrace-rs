@@ -123,6 +123,76 @@ impl Scene {
 }
 
 impl Scene {
+    pub fn empty_cornell_box() -> Self {
+        let mut scene = Self::new();
+        let red = Material::Lambertian {
+            tex: Arc::new(SolidColor::new(Color3::from(0.65, 0.05, 0.05))),
+        };
+        let white = Material::Lambertian {
+            tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
+        };
+        let green = Material::Lambertian {
+            tex: Arc::new(SolidColor::new(Color3::from(0.12, 0.45, 0.15))),
+        };
+        let light = Material::DiffuseLight {
+            tex: Arc::new(SolidColor::new(Color3::from(15.0, 15.0, 15.0))),
+        };
+
+        scene.add_quad(
+            Point3::from(555., 0., 0.),
+            Vec3::from(0., 555., 0.),
+            Vec3::from(0., 0., 555.),
+            green,
+        );
+        scene.add_quad(
+            Point3::from(0., 0., 0.),
+            Vec3::from(0., 555., 0.),
+            Vec3::from(0., 0., 555.),
+            red,
+        );
+        scene.add_quad(
+            Point3::from(343., 554., 332.),
+            Vec3::from(-130.0, 0., 0.),
+            Vec3::from(0., 0., -105.0),
+            light,
+        );
+        scene.add_quad(
+            Point3::from(0., 0., 0.),
+            Vec3::from(555., 0., 0.),
+            Vec3::from(0., 0., 555.),
+            white.clone(),
+        );
+        scene.add_quad(
+            Point3::from(555., 555., 555.),
+            Vec3::from(-555., 0., 0.),
+            Vec3::from(0., 0., -555.),
+            white.clone(),
+        );
+        scene.add_quad(
+            Point3::from(0., 0., 555.),
+            Vec3::from(555., 0., 0.),
+            Vec3::from(0., 555., 0.),
+            white,
+        );
+
+        scene.config.aspect_ratio = 1.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 50;
+        scene.config.max_depth = 50;
+
+        scene.config.vfov = 40.0;
+        scene.config.look_from = Point3::from(278., 278., -800.);
+        scene.config.look_at = Point3::from(278., 278., 0.);
+        scene.config.vup = Vec3::from(0., 1., 0.);
+
+        scene.config.defocus_angle = 0.0;
+        scene.config.focus_distance = 800.0;
+
+        scene.config.background = Color3::from(0.0, 0.0, 0.0);
+
+        scene
+    }
+
     pub fn simple_light() -> Self {
         let mut scene = Self::noisy_spheres();
         //
