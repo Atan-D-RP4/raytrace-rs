@@ -1,6 +1,6 @@
 use rand::RngExt;
 
-use crate::vec3::{dot, random_unit_vector, Point3, Vec3};
+use crate::vec3::{Point3, Vec3, dot, random_unit_vector};
 
 #[allow(dead_code)]
 fn trilinear_interp(c: [[[f64; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
@@ -35,6 +35,12 @@ pub struct Perlin {
     perm_x: [usize; Self::POINT_COUNT],
     perm_y: [usize; Self::POINT_COUNT],
     perm_z: [usize; Self::POINT_COUNT],
+}
+
+impl Default for Perlin {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Perlin {

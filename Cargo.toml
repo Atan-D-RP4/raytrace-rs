@@ -5,5 +5,15 @@ edition = "2024"
 
 [dependencies]
 image = "0.25.10"
+profiling = "1.0"
 rand = "0.10.0"
 rayon = "1.11.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[features]
+default = ["profile-with-tracing"]
+profile-with-tracing = ["profiling/profile-with-tracing"]
+profile-with-puffin = ["profiling/profile-with-puffin"]
+profile-with-tracy = ["profiling/profile-with-tracy"]
+profile-with-optick = ["profiling/profile-with-optick"]

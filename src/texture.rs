@@ -288,6 +288,12 @@ pub struct NoiseTexture {
     noise: Perlin,
 }
 
+impl Default for NoiseTexture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NoiseTexture {
     pub fn new() -> Self {
         Self {

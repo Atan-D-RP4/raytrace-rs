@@ -14,6 +14,7 @@ use crate::texture::{
 };
 use crate::transform::{RotateY, TransformObject, Translate};
 use crate::vec3::{Color3, Point3, Vec3};
+use tracing::trace;
 
 fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
     Arc::new(MappedTexture::new(
@@ -101,12 +102,14 @@ impl Scene {
 
 impl Scene {
     pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
+        trace!(?center, radius, "add sphere");
         self.objects
             .push(Arc::new(Sphere::new(&center, radius, material)));
     }
 
     #[allow(non_snake_case)]
     pub fn add_quad(&mut self, Q: Point3, u: Vec3, v: Vec3, material: Material) {
+        trace!(?Q, ?u, ?v, "add quad");
         self.objects.push(Arc::new(Quad::new(Q, u, v, material)));
     }
 
@@ -117,6 +120,7 @@ impl Scene {
         radius: f64,
         material: Material,
     ) {
+        trace!(?center_start, ?center_end, radius, "add moving sphere");
         self.objects.push(Arc::new(Sphere::new_moving(
             &center_start,
             &center_end,
@@ -128,6 +132,8 @@ impl Scene {
 
 impl Scene {
     pub fn complex_scene() -> Self {
+        // TODO(gpu): split into scene graph build + accel flatten + resource staging phases.
+        profiling::scope!("complex_scene_build");
         let mut scene = Self::new();
 
         let ground = Material::Lambertian {
@@ -135,6 +141,7 @@ impl Scene {
         };
 
         let boxes_per_side = 20;
+        // TODO(gpu): this dense grid is a prime candidate for GPU instance buffers.
         let mut boxes1: Vec<Arc<dyn Hittable>> =
             Vec::with_capacity(boxes_per_side * boxes_per_side);
         for i in 0..boxes_per_side {
@@ -190,8 +197,12 @@ impl Scene {
             }
         }
 
-        let boxes1_len = boxes1.len();
-        let boxes1_bvh = Arc::new(BvhNode::new(&mut boxes1, 0, boxes1_len));
+        let boxes1_bvh = {
+            // TODO(gpu): keep a reusable coarse-BVH boundary here; GPU can mirror it with its own build path.
+            let mut boxes = boxes1;
+            let boxes_len = boxes.len();
+            Arc::new(BvhNode::new(&mut boxes, 0, boxes_len))
+        };
         scene.objects.push(boxes1_bvh);
 
         scene.add_quad(
@@ -289,11 +300,14 @@ impl Scene {
             )));
         }
 
-        let boxes2_len = boxes2.len();
-        let cluster = TransformObject::new(
-            Translate::new(Vec3::from(-100., 270., 395.)),
-            TransformObject::new(RotateY::new(15.), BvhNode::new(&mut boxes2, 0, boxes2_len)),
-        );
+        let cluster = {
+            let mut boxes = boxes2;
+            let boxes_len = boxes.len();
+            TransformObject::new(
+                Translate::new(Vec3::from(-100., 270., 395.)),
+                TransformObject::new(RotateY::new(15.), BvhNode::new(&mut boxes, 0, boxes_len)),
+            )
+        };
         scene.objects.push(Arc::new(cluster));
 
         scene.config.aspect_ratio = 1.0;

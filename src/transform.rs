@@ -82,7 +82,7 @@ impl Transform for Translate {
         hit.mapping_point += self.offset;
     }
 
-    fn bbox(&self, mut bbox: Aabb) -> Aabb {
+    fn bbox(&self, bbox: Aabb) -> Aabb {
         bbox.translate(self.offset)
     }
 }

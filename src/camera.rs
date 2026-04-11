@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use rayon::prelude::*;
+use tracing::info;
 
 use crate::hittable::Hittable;
 use crate::interval::Interval;
@@ -177,9 +178,24 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): move this method and [`Camera::ray_color`]
     /// into a renderer/pipeline component so alternate engines can share camera setup.
+    #[profiling::function]
     pub fn render(&mut self, world: Arc<dyn Hittable>) -> (u32, u32, Vec<u8>) {
         // No need to initialize it here, `from_config` does it, or caller should do it manually
         // self.initialize();
+        let _span = tracing::info_span!(
+            "render",
+            width = self.image_width,
+            height = self.image_height,
+            spp = self.samples_per_pixel,
+            max_depth = self.max_depth,
+            background_r = self.background.x,
+            background_g = self.background.y,
+            background_b = self.background.z,
+        )
+        .entered();
+
+        info!("camera render started");
+        profiling::scope!("camera_render_loop");
         let camera_snapshot = *self;
         let total_pixels = self.image_height * self.image_width;
 
@@ -220,6 +236,8 @@ impl Camera {
                 chunk[2] = (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8;
             });
 
+        info!("camera render finished");
+
         (self.image_width as u32, self.image_height as u32, output)
     }
 
@@ -254,7 +272,9 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
+    #[profiling::function]
     fn ray_color(&self, initial_ray: &Ray, depth: i32, world: &dyn Hittable) -> Color3 {
+        // TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
         let mut accumulated_color = Color3::from(0., 0., 0.);
