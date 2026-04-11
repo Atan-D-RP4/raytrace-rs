@@ -93,17 +93,62 @@ pub trait Hittable: Send + Sync {
     fn bounding_box(&self) -> Aabb;
 }
 
-impl Hittable for Vec<Box<dyn Hittable>> {
+// /// Blanket impl: any slice of Hittable objects is itself Hittable.
+// impl<T: Hittable> Hittable for &[T] {
+//     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+//         let mut closest = ray_t.max;
+//         let mut result = None;
+//
+//         for object in *self {
+//             if let Some(record) = object.hit(ray, Interval::from(ray_t.min, closest)) {
+//                 closest = record.time;
+//                 result = Some(record);
+//             }
+//         }
+//
+//         result
+//     }
+//
+//     fn bounding_box(&self) -> Aabb {
+//         self.iter()
+//             .fold(Aabb::new(), |acc, obj| acc.merge(obj.bounding_box()))
+//     }
+// }
+//
+// /// Blanket impl: any mutable slice of Hittable objects is itself Hittable.
+// impl<T: Hittable> Hittable for &mut [T] {
+//     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+//         let mut closest = ray_t.max;
+//         let mut result = None;
+//
+//         for object in self.iter() {
+//             if let Some(record) = object.hit(ray, Interval::from(ray_t.min, closest)) {
+//                 closest = record.time;
+//                 result = Some(record);
+//             }
+//         }
+//
+//         result
+//     }
+//
+//     fn bounding_box(&self) -> Aabb {
+//         self.iter()
+//             .fold(Aabb::new(), |acc, obj| acc.merge(obj.bounding_box()))
+//     }
+// }
+
+/// Blanket impl: Vec of Hittable objects is itself Hittable.
+impl<T: Hittable> Hittable for Vec<T> {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
         let mut closest = ray_t.max;
         let mut result = None;
 
-        self.iter().for_each(|object| {
+        for object in self {
             if let Some(record) = object.hit(ray, Interval::from(ray_t.min, closest)) {
                 closest = record.time;
                 result = Some(record);
             }
-        });
+        }
 
         result
     }
@@ -114,23 +159,14 @@ impl Hittable for Vec<Box<dyn Hittable>> {
     }
 }
 
-impl Hittable for Vec<Arc<dyn Hittable>> {
+/// Blanket impl: Arc<T> is Hittable if T is Hittable.
+/// Covers Arc<dyn Hittable>, Arc<Quad>, etc.
+impl<T: Hittable + ?Sized> Hittable for Arc<T> {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
-        let mut closest = ray_t.max;
-        let mut result = None;
-
-        self.iter().for_each(|object| {
-            if let Some(record) = object.hit(ray, Interval::from(ray_t.min, closest)) {
-                closest = record.time;
-                result = Some(record);
-            }
-        });
-
-        result
+        (**self).hit(ray, ray_t)
     }
 
     fn bounding_box(&self) -> Aabb {
-        self.iter()
-            .fold(Aabb::new(), |acc, obj| acc.merge(obj.bounding_box()))
+        (**self).bounding_box()
     }
 }

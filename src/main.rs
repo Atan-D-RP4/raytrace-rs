@@ -10,6 +10,7 @@ mod ray;
 mod scene;
 mod sphere;
 mod texture;
+mod transform;
 mod vec3;
 
 use bvh::BvhNode;
@@ -28,6 +29,11 @@ fn main() {
     let world = std::sync::Arc::new(BvhNode::new(&mut objects, 0, world_len));
 
     let mut camera = Camera::from_config(&config);
+
+    // let max_threads = rayon::max_num_threads();
+    // let _ = rayon::ThreadPoolBuilder::new()
+    //     .num_threads(max_threads.checked_sub(0).unwrap_or(max_threads))
+    //     .build_global();
 
     let start = std::time::Instant::now();
     let (width, height, rgb_data) = camera.render(world);

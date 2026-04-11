@@ -1,6 +1,6 @@
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::Point3;
+use crate::vec3::{Point3, Vec3};
 
 /// Axis-aligned bounding box used for broad-phase ray culling and BVH traversal.
 #[derive(Debug, Clone, Copy)]
@@ -81,6 +81,17 @@ impl Aabb {
         } else {
             2
         }
+    }
+
+    pub fn translate(&mut self, offset: Vec3) -> Self {
+        self.x.min += offset.x;
+        self.x.max += offset.x;
+        self.y.min += offset.y;
+        self.y.max += offset.y;
+        self.z.min += offset.z;
+        self.z.max += offset.z;
+
+        *self
     }
 
     /// Ray-box test using the slab method.

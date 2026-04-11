@@ -5,11 +5,12 @@ use rand::RngExt;
 use crate::camera::CameraConfig;
 use crate::hittable::Hittable;
 use crate::material::Material;
-use crate::quad::Quad;
+use crate::quad::{self, Quad};
 use crate::sphere::Sphere;
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,
 };
+use crate::transform::{RotateY, TransformObject, Translate};
 use crate::vec3::{Color3, Point3, Vec3};
 
 fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
@@ -131,65 +132,62 @@ impl Scene {
         };
         let box_params = [
             (
-                Point3::from(130., 0., 65.),
-                Point3::from(295., 165., 230.),
+                Vec3::from(165., 330., 165.),
+                Vec3::from(265., 0., 295.),
+                15.,
                 white.clone(),
             ),
             (
-                Point3::from(265., 0., 295.),
-                Point3::from(430., 330., 460.),
+                Vec3::from(165., 165., 165.),
+                Vec3::from(130., 0., 65.),
+                -18.,
                 white,
             ),
         ];
 
-        box_params.iter().for_each(|params| {
-            let (a, b, mat) = params;
+        let boxes = box_params
+            .iter()
+            .map(|(size, translate_vec, rotate_angle, mat)| {
+                let dx = Vec3::from(size.x, 0., 0.);
+                let dy = Vec3::from(0., size.y, 0.);
+                let dz = Vec3::from(0., 0., size.z);
 
-            let min = Point3::from(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
-            let max = Point3::from(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));
+                let quad_box: Vec<Arc<dyn Hittable>> = vec![
+                    Arc::new(Quad::new(Point3::from(0., 0., size.z), dx, dy, mat.clone())),
+                    Arc::new(Quad::new(
+                        Point3::from(size.x, 0., size.z),
+                        -dz,
+                        dy,
+                        mat.clone(),
+                    )),
+                    Arc::new(Quad::new(
+                        Point3::from(size.x, 0., 0.),
+                        -dx,
+                        dy,
+                        mat.clone(),
+                    )),
+                    Arc::new(Quad::new(Point3::from(0., 0., 0.), dz, dy, mat.clone())),
+                    Arc::new(Quad::new(
+                        Point3::from(0., size.y, size.z),
+                        dx,
+                        -dz,
+                        mat.clone(),
+                    )),
+                    Arc::new(Quad::new(Point3::from(0., 0., 0.), dx, dz, mat.clone())),
+                ];
 
-            let dx = Vec3::from(max.x - min.x, 0., 0.);
-            let dy = Vec3::from(0., max.y - min.y, 0.);
-            let dz = Vec3::from(0., 0., max.z - min.z);
+                let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
+                let wrapped: TransformObject<
+                    Translate,
+                    TransformObject<RotateY, Vec<Arc<dyn Hittable>>>,
+                > = TransformObject::new(Translate::new(*translate_vec), rotated);
 
-            scene.objects.push(Arc::new(Quad::new(
-                Point3::from(min.x, min.y, max.z),
-                dx,
-                dy,
-                mat.clone(),
-            ))); // front
-            scene.objects.push(Arc::new(Quad::new(
-                Point3::from(max.x, min.y, max.z),
-                -dz,
-                dy,
-                mat.clone(),
-            ))); // right
-            scene.objects.push(Arc::new(Quad::new(
-                Point3::from(max.x, min.y, min.z),
-                -dx,
-                dy,
-                mat.clone(),
-            ))); // back
-            scene.objects.push(Arc::new(Quad::new(
-                Point3::from(min.x, min.y, min.z),
-                dz,
-                dy,
-                mat.clone(),
-            ))); // left
-            scene.objects.push(Arc::new(Quad::new(
-                Point3::from(min.x, max.y, max.z),
-                dx,
-                -dz,
-                mat.clone(),
-            ))); // top
-            scene.objects.push(Arc::new(Quad::new(
-                Point3::from(min.x, min.y, min.z),
-                dx,
-                dz,
-                mat.clone(),
-            ))); // bottom
-        });
+                Arc::new(wrapped) as Arc<dyn Hittable>
+            });
 
+        scene.objects.extend(boxes);
+
+        scene.config.samples_per_pixel = 200;
         scene
     }
 
