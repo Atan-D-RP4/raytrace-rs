@@ -5,8 +5,8 @@ use raytrace_rs::camera::Camera;
 use raytrace_rs::scene::Scene;
 
 fn main() {
-    let scene = Scene::cornell_box_const_meds();
-    let filename = "cornell_box_const_meds.png";
+    let scene = Scene::complex_scene();
+    let filename = "complex_scene.png";
 
     let config = *scene.config();
     let mut objects = scene.into_objects();
