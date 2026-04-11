@@ -6,6 +6,7 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::vec3::{Point3, Vec3, cross, dot};
 
+#[derive(Clone)]
 pub struct Quad {
     Q: Point3,
     u: Vec3,

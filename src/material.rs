@@ -40,6 +40,8 @@ pub enum Material {
     Dielectric { refractive_idx: f64 },
     /// Light emitting surface
     DiffuseLight { tex: Arc<dyn Texture> },
+    ///
+    Isotropic { tex: Arc<dyn Texture> },
 }
 
 impl Material {
@@ -92,9 +94,21 @@ impl Material {
                     refract(&unit_dir, &record.normal, ri)
                 };
 
-                let scattered = Ray::new_with_time(record.point, direction, ray.time);
+                let scattered_ray = Ray::new_with_time(record.point, direction, ray.time);
 
-                Some(Scatter::new(attenuation, scattered))
+                Some(Scatter::new(attenuation, scattered_ray))
+            }
+            Material::Isotropic { tex } => {
+                let scattered_ray =
+                    Ray::new_with_time(record.point, random_unit_vector(), ray.time);
+                let attenuation = tex.value(&TextureCoords::new(
+                    record.u,
+                    record.v,
+                    record.point,
+                    record.mapping_point,
+                    record.geometry_normal,
+                ));
+                Some(Scatter::new(attenuation, scattered_ray))
             }
             Material::DiffuseLight { tex: _ } => None,
         }

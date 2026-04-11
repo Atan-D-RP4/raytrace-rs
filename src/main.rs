@@ -1,26 +1,12 @@
-mod aabb;
-mod bvh;
-mod camera;
-mod hittable;
-mod interval;
-mod material;
-mod perlin;
-mod quad;
-mod ray;
-mod scene;
-mod sphere;
-mod texture;
-mod transform;
-mod vec3;
-
-use bvh::BvhNode;
-use camera::Camera;
 use image::{ImageBuffer, Rgb, RgbImage};
-use scene::Scene;
+
+use raytrace_rs::bvh::BvhNode;
+use raytrace_rs::camera::Camera;
+use raytrace_rs::scene::Scene;
 
 fn main() {
-    let scene = Scene::cornell_box();
-    let filename = "cornell_box.png";
+    let scene = Scene::cornell_box_const_meds();
+    let filename = "cornell_box_const_meds.png";
 
     let config = *scene.config();
     let mut objects = scene.into_objects();
@@ -34,6 +20,8 @@ fn main() {
     // let _ = rayon::ThreadPoolBuilder::new()
     //     .num_threads(max_threads.checked_sub(0).unwrap_or(max_threads))
     //     .build_global();
+
+    println!("Rayon Threads in use: {}", rayon::current_num_threads());
 
     let start = std::time::Instant::now();
     let (width, height, rgb_data) = camera.render(world);

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rand::RngExt;
 
 use crate::camera::CameraConfig;
+use crate::const_medium::ConstantMedium;
 use crate::hittable::Hittable;
 use crate::material::Material;
 use crate::quad::{self, Quad};
@@ -124,6 +125,84 @@ impl Scene {
 }
 
 impl Scene {
+    pub fn cornell_box_const_meds() -> Self {
+        let mut scene = Scene::empty_cornell_box();
+
+        let white = Material::Lambertian {
+            tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
+        };
+
+        let box_params = [
+            (
+                Vec3::from(165., 330., 165.),
+                Vec3::from(265., 0., 295.),
+                15.,
+                white.clone(),
+                Material::Isotropic {
+                    tex: Arc::new(SolidColor::new(Color3::from(0.00, 0.00, 0.00))),
+                },
+            ),
+            (
+                Vec3::from(165., 165., 165.),
+                Vec3::from(130., 0., 65.),
+                -18.,
+                white,
+                Material::Isotropic {
+                    tex: Arc::new(SolidColor::new(Color3::from(1., 1., 1.))),
+                },
+            ),
+        ];
+
+        let boxes = box_params
+            .iter()
+            .map(|(size, translate_vec, rotate_angle, mat, phase_fn)| {
+                let dx = Vec3::from(size.x, 0., 0.);
+                let dy = Vec3::from(0., size.y, 0.);
+                let dz = Vec3::from(0., 0., size.z);
+
+                let quad_box: Vec<Arc<dyn Hittable>> = vec![
+                    Arc::new(Quad::new(Point3::from(0., 0., size.z), dx, dy, mat.clone())),
+                    Arc::new(Quad::new(
+                        Point3::from(size.x, 0., size.z),
+                        -dz,
+                        dy,
+                        mat.clone(),
+                    )),
+                    Arc::new(Quad::new(
+                        Point3::from(size.x, 0., 0.),
+                        -dx,
+                        dy,
+                        mat.clone(),
+                    )),
+                    Arc::new(Quad::new(Point3::from(0., 0., 0.), dz, dy, mat.clone())),
+                    Arc::new(Quad::new(
+                        Point3::from(0., size.y, size.z),
+                        dx,
+                        -dz,
+                        mat.clone(),
+                    )),
+                    Arc::new(Quad::new(Point3::from(0., 0., 0.), dx, dz, mat.clone())),
+                ];
+
+                let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
+                let wrapped: TransformObject<
+                    Translate,
+                    TransformObject<RotateY, Vec<Arc<dyn Hittable>>>,
+                > = TransformObject::new(Translate::new(*translate_vec), rotated);
+                let const_medium =
+                    ConstantMedium::new(Arc::new(wrapped), 0.01, Arc::new(phase_fn.clone()));
+
+                Arc::new(const_medium) as Arc<dyn Hittable>
+            });
+
+        scene.objects.extend(boxes);
+
+        scene.config.samples_per_pixel = 200;
+        scene.config.max_depth = 50;
+
+        scene
+    }
+
     pub fn cornell_box() -> Self {
         let mut scene = Scene::empty_cornell_box();
 
@@ -188,6 +267,7 @@ impl Scene {
         scene.objects.extend(boxes);
 
         scene.config.samples_per_pixel = 200;
+
         scene
     }
 
