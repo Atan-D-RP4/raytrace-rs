@@ -1,7 +1,8 @@
 use rand::RngExt;
 
-use crate::vec3::{Point3, Vec3, dot};
+use crate::vec3::{dot, random_unit_vector, Point3, Vec3};
 
+#[allow(dead_code)]
 fn trilinear_interp(c: [[[f64; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
     (0..2)
         .flat_map(|i| (0..2).flat_map(move |j| (0..2).map(move |k| (i, j, k))))
@@ -41,7 +42,7 @@ impl Perlin {
 
     pub fn new() -> Self {
         Self {
-            randvec: std::array::from_fn(|_| Vec3::random()),
+            randvec: std::array::from_fn(|_| random_unit_vector()),
             perm_x: Self::generate_perm(),
             perm_y: Self::generate_perm(),
             perm_z: Self::generate_perm(),

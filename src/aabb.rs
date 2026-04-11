@@ -83,7 +83,7 @@ impl Aabb {
         }
     }
 
-    pub fn translate(&mut self, offset: Vec3) -> Self {
+    pub fn translate(mut self, offset: Vec3) -> Self {
         self.x.min += offset.x;
         self.x.max += offset.x;
         self.y.min += offset.y;
@@ -91,7 +91,7 @@ impl Aabb {
         self.z.min += offset.z;
         self.z.max += offset.z;
 
-        *self
+        self
     }
 
     /// Ray-box test using the slab method.

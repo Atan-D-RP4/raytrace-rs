@@ -1,5 +1,6 @@
-use std::f64::consts::E;
 use std::sync::Arc;
+
+use rand::RngExt;
 
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
@@ -60,7 +61,7 @@ impl Hittable for ConstantMedium {
 
         let ray_length = ray.direction.length();
         let dist_inside_boundary = (rec2.time - rec1.time) * ray_length;
-        let hit_dist = self.neg_inv_density * rand::random::<f64>().max(1e-12).ln();
+        let hit_dist = self.neg_inv_density * rand::rng().random::<f64>().max(1e-12).ln();
 
         if hit_dist > dist_inside_boundary {
             return None;
@@ -68,10 +69,13 @@ impl Hittable for ConstantMedium {
 
         let new_time = rec1.time + hit_dist / ray_length;
         let point = ray.at(new_time);
+        // mapping_point = world position is correct for 3D procedural textures (Perlin, marble).
+        // For image textures on volumes, this would be wrong - but that's unusual.
         let mut new_rec = HitRecord::new(
             new_time,
             point,
             point,
+            // Volume has no real surface - normal is arbitrary, geometry_normal intentionally zero.
             Vec3::from(0., 0., 0.),
             self.phase_fn.clone(),
         );

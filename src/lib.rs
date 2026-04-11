@@ -1,6 +1,7 @@
 pub mod aabb;
 pub mod bvh;
 pub mod camera;
+pub mod const_medium;
 pub mod hittable;
 pub mod interval;
 pub mod material;
@@ -12,4 +13,3 @@ pub mod sphere;
 pub mod texture;
 pub mod transform;
 pub mod vec3;
-pub mod const_medium;
