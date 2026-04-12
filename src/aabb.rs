@@ -83,6 +83,14 @@ impl Aabb {
         }
     }
 
+    pub fn centroid(&self) -> Point3 {
+        Point3::from(
+            0.5 * (self.x.min + self.x.max),
+            0.5 * (self.y.min + self.y.max),
+            0.5 * (self.z.min + self.z.max),
+        )
+    }
+
     pub fn translate(mut self, offset: Vec3) -> Self {
         self.x.min += offset.x;
         self.x.max += offset.x;
@@ -99,29 +107,24 @@ impl Aabb {
     /// `ray_t` is narrowed per-axis and early-outs once the interval collapses.
     pub fn hit(&self, ray: &Ray, mut ray_t: Interval) -> bool {
         // slab method - test intersection against each axis pair
-        (0..3).all(|axis| {
+        for axis in 0..3 {
             let ax = self.axis_interval(axis);
-            let adinv = 1.0 / ray.direction[axis as usize];
-            let t0 = (ax.min - ray.origin[axis as usize]) * adinv;
-            let t1 = (ax.max - ray.origin[axis as usize]) * adinv;
+            let inv_d = 1.0 / ray.direction[axis as usize];
+            let mut t0 = (ax.min - ray.origin[axis as usize]) * inv_d;
+            let mut t1 = (ax.max - ray.origin[axis as usize]) * inv_d;
 
-            if t0 < t1 {
-                if t0 > ray_t.min {
-                    ray_t.min = t0
-                }
-                if t1 < ray_t.max {
-                    ray_t.max = t1
-                }
-            } else {
-                if t1 > ray_t.min {
-                    ray_t.min = t1
-                }
-                if t0 < ray_t.max {
-                    ray_t.max = t0
-                }
+            if inv_d < 0.0 {
+                std::mem::swap(&mut t0, &mut t1);
             }
 
-            ray_t.max > ray_t.min
-        })
+            ray_t.min = ray_t.min.max(t0);
+            ray_t.max = ray_t.max.min(t1);
+
+            if ray_t.max <= ray_t.min {
+                return false;
+            }
+        }
+
+        true
     }
 }

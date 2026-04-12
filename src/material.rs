@@ -6,10 +6,12 @@
 
 use std::sync::Arc;
 
+use rand::RngExt;
+
 use crate::hittable::HitRecord;
 use crate::ray::Ray;
 use crate::texture::{Texture, TextureCoords};
-use crate::vec3::{Color3, dot, random_unit_vector, reflect, refract, unit_vector};
+use crate::vec3::{Color3, dot, random_unit_vector_with_rng, reflect, refract, unit_vector};
 
 /// Result of material sampling for a single bounce.
 pub struct Scatter {
@@ -49,10 +51,15 @@ impl Material {
     ///
     /// Returns `Some(Scatter)` when the ray continues, or `None` when the
     /// path is absorbed. Ray time is preserved across bounces for motion blur.
-    pub fn scatter(&self, ray: &Ray, record: &HitRecord) -> Option<Scatter> {
+    pub fn scatter<R: rand::Rng + ?Sized>(
+        &self,
+        ray: &Ray,
+        record: &HitRecord,
+        rng: &mut R,
+    ) -> Option<Scatter> {
         match self {
             Material::Lambertian { tex } => {
-                let mut scatter_direction = record.normal + random_unit_vector();
+                let mut scatter_direction = record.normal + random_unit_vector_with_rng(rng);
                 if scatter_direction.near_zero() {
                     scatter_direction = record.normal;
                 }
@@ -65,7 +72,7 @@ impl Material {
                 let reflected = reflect(&ray.direction.unit_vector(), &record.normal);
                 let scattered_ray = Ray::new_with_time(
                     record.point,
-                    reflected + (*fuzz * random_unit_vector()),
+                    reflected + (*fuzz * random_unit_vector_with_rng(rng)),
                     ray.time,
                 );
                 if dot(&scattered_ray.direction, &record.normal) > 0.0 {
@@ -87,7 +94,7 @@ impl Material {
                 let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
 
                 let direction = if ri * sin_theta > 1.0
-                    || self.reflectance(cos_theta, ri) > rand::random::<f64>()
+                    || self.reflectance(cos_theta, ri) > rng.random::<f64>()
                 {
                     reflect(&unit_dir, &record.normal)
                 } else {
@@ -100,7 +107,7 @@ impl Material {
             }
             Material::Isotropic { tex } => {
                 let scattered_ray =
-                    Ray::new_with_time(record.point, random_unit_vector(), ray.time);
+                    Ray::new_with_time(record.point, random_unit_vector_with_rng(rng), ray.time);
                 let attenuation = tex.value(&TextureCoords::new(
                     record.u,
                     record.v,

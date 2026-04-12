@@ -11,13 +11,14 @@
 
 use std::sync::Arc;
 
+use rand::RngExt;
 use rayon::prelude::*;
 use tracing::info;
 
 use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk, unit_vector};
+use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk_with_rng, unit_vector};
 
 #[derive(Default, Clone, Copy)]
 /// User-facing camera configuration.
@@ -209,6 +210,7 @@ impl Camera {
             .par_chunks_mut(3)
             .enumerate()
             .for_each(|(idx, chunk)| {
+                let mut rng = rand::rng();
                 // Convert flat index to 2D pixel coordinates.
                 // Image coordinate origin: top-left (i increases right, j increases down).
                 let i = idx as i32 % camera_snapshot.image_width;
@@ -220,11 +222,16 @@ impl Camera {
                     Color3::from(0., 0., 0.),
                     |acc, _| {
                         // Random offset in [0,1) places sample anywhere in pixel cell.
-                        let u = i as f64 + rand::random::<f64>();
-                        let v = j as f64 + rand::random::<f64>();
+                        let u = i as f64 + rng.random::<f64>();
+                        let v = j as f64 + rng.random::<f64>();
 
-                        let ray = camera_snapshot.get_ray(u, v);
-                        acc + camera_snapshot.ray_color(&ray, camera_snapshot.max_depth, &*world)
+                        let ray = camera_snapshot.get_ray(u, v, &mut rng);
+                        acc + camera_snapshot.ray_color(
+                            &ray,
+                            camera_snapshot.max_depth,
+                            &*world,
+                            &mut rng,
+                        )
                     },
                 );
 
@@ -242,13 +249,13 @@ impl Camera {
     }
 
     /// Returns a random jitter offset inside the pixel cell.
-    fn sample_square(&self) -> Vec3 {
-        Vec3::from(rand::random::<f64>() - 0.5, rand::random::<f64>() - 0.5, 0.)
+    fn sample_square<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
+        Vec3::from(rng.random::<f64>() - 0.5, rng.random::<f64>() - 0.5, 0.)
     }
 
     /// Constructs a time-sampled camera ray through a jittered pixel sample.
-    fn get_ray(&self, u: f64, v: f64) -> Ray {
-        let offset = self.sample_square();
+    fn get_ray<R: rand::Rng + ?Sized>(&self, u: f64, v: f64, rng: &mut R) -> Ray {
+        let offset = self.sample_square(rng);
         let pixel_sample = self.pixel00_loc
             + ((u + offset.x) * self.pixel_delta_u)
             + ((v + offset.y) * self.pixel_delta_v);
@@ -256,13 +263,13 @@ impl Camera {
         let ray_origin = if self.defocus_angle <= 0. {
             self.look_from
         } else {
-            self.defocus_disk_sample()
+            self.defocus_disk_sample(rng)
         };
         let ray_direction = pixel_sample - ray_origin;
 
         // The center of the camera is the ray origin, and the ray direction is the vector from the
         // camera center to the pixel sample location.
-        Ray::new_with_time(ray_origin, ray_direction, rand::random::<f64>())
+        Ray::new_with_time(ray_origin, ray_direction, rng.random::<f64>())
     }
 
     /// Reference CPU Monte-Carlo path-tracing integrator.
@@ -273,18 +280,36 @@ impl Camera {
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
     #[profiling::function]
-    fn ray_color(&self, initial_ray: &Ray, depth: i32, world: &dyn Hittable) -> Color3 {
+    fn ray_color<R: rand::Rng + ?Sized>(
+        &self,
+        initial_ray: &Ray,
+        depth: i32,
+        world: &dyn Hittable,
+        rng: &mut R,
+    ) -> Color3 {
         // TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
         let mut accumulated_color = Color3::from(0., 0., 0.);
 
-        for _ in 0..depth {
+        for bounce in 0..depth {
             if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
                 let emission = record.material.emitted(&record);
                 accumulated_color += accumulated_attenuation * emission;
 
-                if let Some(scatter) = record.material.scatter(&ray, &record) {
+                if bounce >= 4 {
+                    let survival = accumulated_attenuation
+                        .x
+                        .max(accumulated_attenuation.y)
+                        .max(accumulated_attenuation.z)
+                        .clamp(0.05, 0.95);
+                    if rng.random::<f64>() > survival {
+                        return accumulated_color;
+                    }
+                    accumulated_attenuation /= survival;
+                }
+
+                if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
                     accumulated_attenuation = accumulated_attenuation * scatter.attenuation;
                     ray = scatter.scattered;
                 } else {
@@ -305,8 +330,8 @@ impl Camera {
     }
 
     /// Samples a point on the defocus disk for depth-of-field ray origins.
-    fn defocus_disk_sample(&self) -> Vec3 {
-        let point = random_in_unit_disk();
+    fn defocus_disk_sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
+        let point = random_in_unit_disk_with_rng(rng);
         self.look_from + (point.x * self.defocus_disk_u) + (point.y * self.defocus_disk_v)
     }
 }

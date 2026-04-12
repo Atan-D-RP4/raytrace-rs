@@ -19,15 +19,19 @@ pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
     let v = v * v * (3.0 - 2.0 * v);
     let w = w * w * (3.0 - 2.0 * w);
 
-    (0..2)
-        .flat_map(|i| (0..2).flat_map(move |j| (0..2).map(move |k| (i, j, k))))
-        .fold(0.0, |acc, (i, j, k)| {
-            let weight = Vec3::from(u - i as f64, v - j as f64, w - k as f64);
-            acc + (i as f64 * u + (1 - i) as f64 * (1.0 - u))
-                * (j as f64 * v + (1 - j) as f64 * (1.0 - v))
-                * (k as f64 * w + (1 - k) as f64 * (1.0 - w))
-                * dot(&c[i][j][k], &weight)
-        })
+    let mut accum = 0.0;
+    for i in 0..2 {
+        let fu = if i == 1 { u } else { 1.0 - u };
+        for j in 0..2 {
+            let fv = if j == 1 { v } else { 1.0 - v };
+            for k in 0..2 {
+                let fw = if k == 1 { w } else { 1.0 - w };
+                let weight = Vec3::from(u - i as f64, v - j as f64, w - k as f64);
+                accum += fu * fv * fw * dot(&c[i][j][k], &weight);
+            }
+        }
+    }
+    accum
 }
 
 pub struct Perlin {
@@ -88,13 +92,15 @@ impl Perlin {
     pub fn turbulence(&self, point: &Vec3, depth: i32) -> f64 {
         let mut tmp_point = *point;
         let mut weight = 1.;
+        let mut accum = 0.0;
 
-        (0..depth).fold(0., |mut acc, _| {
-            acc += weight * self.noise(&tmp_point);
+        for _ in 0..depth {
+            accum += weight * self.noise(&tmp_point);
             weight *= 0.5;
             tmp_point *= 2.;
-            acc
-        })
+        }
+
+        accum
     }
 
     fn generate_perm() -> [usize; Self::POINT_COUNT] {

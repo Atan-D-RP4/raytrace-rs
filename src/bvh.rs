@@ -26,7 +26,13 @@ impl BvhNode {
     pub fn new(objects: &mut Vec<Arc<dyn Hittable>>, start: usize, end: usize) -> Self {
         let obj_span = end - start;
         let mut bbox = Aabb::new();
-        (start..end).for_each(|idx| bbox = bbox.merge(objects[idx].bounding_box()));
+        let mut object_bounds = Vec::with_capacity(obj_span);
+
+        for idx in start..end {
+            let object_bbox = objects[idx].bounding_box();
+            bbox = bbox.merge(object_bbox);
+            object_bounds.push((objects[idx].clone(), object_bbox));
+        }
 
         let (left, right): (Arc<dyn Hittable>, Arc<dyn Hittable>) = match obj_span {
             1 => {
@@ -35,12 +41,15 @@ impl BvhNode {
             }
             2 => (objects[start].clone(), objects[start + 1].clone()),
             _ => {
-                let axis = bbox.longest_axis();
-                objects[start..end].sort_by(|a, b| {
-                    let a_min = a.bounding_box().axis_interval(axis).min;
-                    let b_min = b.bounding_box().axis_interval(axis).min;
+                let axis = bbox.longest_axis() as usize;
+                object_bounds.sort_by(|(_, a), (_, b)| {
+                    let a_min = a.centroid()[axis];
+                    let b_min = b.centroid()[axis];
                     a_min.partial_cmp(&b_min).unwrap()
                 });
+                for (slot, (object, _)) in object_bounds.iter().enumerate() {
+                    objects[start + slot] = object.clone();
+                }
                 let mid = start + obj_span / 2;
                 let left: Arc<dyn Hittable> = Arc::new(BvhNode::new(objects, start, mid));
                 let right: Arc<dyn Hittable> = Arc::new(BvhNode::new(objects, mid, end));
