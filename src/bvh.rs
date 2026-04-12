@@ -62,7 +62,7 @@ impl BvhNode {
 }
 
 impl Hittable for BvhNode {
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
         // Prune entire subtree if node bounds are missed.
         if !self.bbox.hit(ray, ray_t) {
             return None;

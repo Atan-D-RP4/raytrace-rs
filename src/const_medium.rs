@@ -44,7 +44,7 @@ impl ConstantMedium {
 }
 
 impl Hittable for ConstantMedium {
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
         let mut rec1 = self.boundary.hit(ray, Interval::UNIVERSE)?;
         let mut rec2 = self
             .boundary
@@ -77,7 +77,7 @@ impl Hittable for ConstantMedium {
             point,
             // Volume has no real surface - normal is arbitrary, geometry_normal intentionally zero.
             Vec3::from(0., 0., 0.),
-            self.phase_fn.clone(),
+            self.phase_fn.as_ref(),
         );
         new_rec.front_face = true;
 

@@ -51,7 +51,7 @@ impl Hittable for Quad {
         &self,
         ray: &crate::ray::Ray,
         ray_t: crate::interval::Interval,
-    ) -> Option<crate::hittable::HitRecord> {
+    ) -> Option<crate::hittable::HitRecord<'_>> {
         let denom = dot(&self.normal, &ray.direction);
 
         if denom.abs() < 1e-8 {
@@ -73,7 +73,7 @@ impl Hittable for Quad {
             intersection,
             Vec3::new(),
             Vec3::new(),
-            self.material.clone(),
+            self.material.as_ref(),
         );
         hit_rec.set_face_normal(ray, &self.normal);
 

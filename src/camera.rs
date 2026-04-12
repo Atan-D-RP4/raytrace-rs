@@ -292,12 +292,13 @@ impl Camera {
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
         let mut accumulated_color = Color3::from(0., 0., 0.);
 
+        // Russian Roulette
         for bounce in 0..depth {
             if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
                 let emission = record.material.emitted(&record);
                 accumulated_color += accumulated_attenuation * emission;
 
-                if bounce >= 4 {
+                if bounce >= 2 {
                     let survival = accumulated_attenuation
                         .x
                         .max(accumulated_attenuation.y)
@@ -307,6 +308,9 @@ impl Camera {
                         return accumulated_color;
                     }
                     accumulated_attenuation /= survival;
+                    if accumulated_attenuation < Vec3::from(1e-6, 1e-6, 1e-6) {
+                        return accumulated_color;
+                    }
                 }
 
                 if let Some(scatter) = record.material.scatter(&ray, &record, rng) {

@@ -70,7 +70,7 @@ impl Hittable for Sphere {
     ///
     /// Uses the quadratic root form optimized with `h = dot(d, oc)` and checks
     /// near root first, then far root within the supplied `ray_t` interval.
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
         let current_center = self.center.at(ray.time);
         let origin_center = current_center - ray.origin;
         let a = ray.direction.length_squared();
@@ -96,13 +96,8 @@ impl Hittable for Sphere {
         let point = ray.at(root);
         let outward_normal = (point - current_center) / self.radius;
 
-        let mut hit_rec = HitRecord::new(
-            root,
-            point,
-            outward_normal,
-            outward_normal,
-            self.material.clone(),
-        );
+        let mut hit_rec =
+            HitRecord::new(root, point, outward_normal, outward_normal, &self.material);
         hit_rec.set_face_normal(ray, &outward_normal);
 
         (hit_rec.u, hit_rec.v) = self.get_sphere_uv(&outward_normal);

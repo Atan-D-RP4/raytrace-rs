@@ -14,7 +14,7 @@ use crate::vec3::{Vec3, dot};
 ///
 /// TODO(renderer-agnostic): introduce a `SurfaceInteraction` type and convert
 /// from `HitRecord` so rasterizer/GPU/hybrid/SDF backends can share mapping code.
-pub struct HitRecord {
+pub struct HitRecord<'rec> {
     /// Ray parameter `t` at the intersection point.
     pub time: f64,
 
@@ -38,12 +38,18 @@ pub struct HitRecord {
     /// Whether the ray hit the outward-facing side of the surface.
     pub front_face: bool,
     /// Material attached to the intersected primitive.
-    pub material: Arc<Material>,
+    pub material: &'rec Material,
 }
 
-impl HitRecord {
+impl<'rec> HitRecord<'rec> {
     /// Creates a hit record with default UVs and unresolved face orientation.
-    pub fn new(t: f64, point: Vec3, mapping_point: Vec3, normal: Vec3, mat: Arc<Material>) -> Self {
+    pub fn new(
+        t: f64,
+        point: Vec3,
+        mapping_point: Vec3,
+        normal: Vec3,
+        mat: &'rec Material,
+    ) -> Self {
         Self {
             time: t,
             u: 0.0,
@@ -87,7 +93,7 @@ impl HitRecord {
 /// Trait for ray-testable scene primitives with BVH-compatible bounds.
 pub trait Hittable: Send + Sync {
     /// Returns the closest hit inside `[ray_t.min, ray_t.max]`, if any.
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord>;
+    fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>>;
 
     /// Returns a conservative world-space AABB for acceleration structures.
     fn bounding_box(&self) -> Aabb;
@@ -139,7 +145,7 @@ pub trait Hittable: Send + Sync {
 
 /// Blanket impl: Vec of Hittable objects is itself Hittable.
 impl<T: Hittable> Hittable for Vec<T> {
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+    fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
         let mut closest = ray_t.max;
         let mut result = None;
 
@@ -162,7 +168,7 @@ impl<T: Hittable> Hittable for Vec<T> {
 /// Blanket impl: Arc<T> is Hittable if T is Hittable.
 /// Covers Arc<dyn Hittable>, Arc<Quad>, etc.
 impl<T: Hittable + ?Sized> Hittable for Arc<T> {
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+    fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
         (**self).hit(ray, ray_t)
     }
 

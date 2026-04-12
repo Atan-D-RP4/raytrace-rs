@@ -11,7 +11,7 @@ use crate::vec3::{Point3, Vec3};
 pub trait Transform: Send + Sync {
     fn ray(&self, ray: &Ray) -> Ray;
 
-    fn hit(&self, hit: &mut HitRecord);
+    fn hit(&self, hit: &mut HitRecord<'_>);
 
     fn bbox(&self, bbox: Aabb) -> Aabb;
 }
@@ -47,7 +47,7 @@ where
     T: Transform,
     O: Hittable,
 {
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord> {
+    fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
         let transformed_ray = self.transform.ray(ray);
         let mut hit = self.object.hit(&transformed_ray, ray_t)?;
 
@@ -77,7 +77,7 @@ impl Transform for Translate {
         Ray::new_with_time(ray.origin - self.offset, ray.direction, ray.time)
     }
 
-    fn hit(&self, hit: &mut HitRecord) {
+    fn hit(&self, hit: &mut HitRecord<'_>) {
         hit.point += self.offset;
         hit.mapping_point += self.offset;
     }
@@ -117,7 +117,7 @@ impl Transform for RotateY {
         Ray::new_with_time(origin, direction, ray.time)
     }
 
-    fn hit(&self, hit: &mut HitRecord) {
+    fn hit(&self, hit: &mut HitRecord<'_>) {
         hit.point = Point3::from(
             (self.cos_theta * hit.point.x) - (self.sin_theta * hit.point.z),
             hit.point.y,
