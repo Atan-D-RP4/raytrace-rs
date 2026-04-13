@@ -196,8 +196,12 @@ impl Camera {
 
         info!("camera render started");
         profiling::scope!("camera_render_loop");
+
         let camera_snapshot = *self;
         let total_pixels = self.image_height * self.image_width;
+
+        let sqrt_spp = self.samples_per_pixel.isqrt();
+        let recip_sqrt_spp = 1.0 / sqrt_spp as f64;
 
         // Single flat buffer: avoids millions of small Vec allocations.
         // Format: [R, G, B, R, G, B, ...] for each pixel.
@@ -224,23 +228,28 @@ impl Camera {
                 let _guard = _span.as_ref().map(|s| s.enter());
 
                 // Accumulate samples for anti-aliasing.
-                // Each sample uses a randomly offset ray within the pixel area.
-                let pixel_color = (0..camera_snapshot.samples_per_pixel).fold(
-                    Color3::from(0., 0., 0.),
-                    |acc, _| {
-                        // Random offset in [0,1) places sample anywhere in pixel cell.
-                        let u = i as f64 + rng.random::<f64>();
-                        let v = j as f64 + rng.random::<f64>();
-
-                        let ray = camera_snapshot.get_ray(u, v, &mut rng);
-                        acc + camera_snapshot.ray_color(
+                // Stratified sampling: divide pixel into sqrt(spp) × sqrt(spp) grid,
+                // then jitter within each cell. Total samples = spp.
+                let mut pixel_color = Color3::from(0., 0., 0.);
+                // Using for-loops instead of iterators for better optimization
+                for si in 0..sqrt_spp {
+                    for sj in 0..sqrt_spp {
+                        let ray = camera_snapshot.get_ray(
+                            i as f64,
+                            j as f64,
+                            si,
+                            sj,
+                            &mut rng,
+                            recip_sqrt_spp,
+                        );
+                        pixel_color += camera_snapshot.ray_color(
                             &ray,
                             camera_snapshot.max_depth,
                             &*world,
                             &mut rng,
-                        )
-                    },
-                );
+                        );
+                    }
+                }
 
                 // Scale by sample count and apply gamma correction.
                 // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
@@ -260,9 +269,32 @@ impl Camera {
         Vec3::from(rng.random::<f64>() - 0.5, rng.random::<f64>() - 0.5, 0.)
     }
 
+    fn sample_square_stratified<R: rand::Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        si: i32,
+        sj: i32,
+        recip_sqrt_spp: f64,
+    ) -> Vec3 {
+        // Jitter within [0, 1) cell, then scale to cell size
+        let px = (si as f64 + rng.random::<f64>()) * recip_sqrt_spp;
+        let py = (sj as f64 + rng.random::<f64>()) * recip_sqrt_spp;
+
+        Vec3::from(px, py, 0.)
+    }
+
     /// Constructs a time-sampled camera ray through a jittered pixel sample.
-    fn get_ray<R: rand::Rng + ?Sized>(&self, u: f64, v: f64, rng: &mut R) -> Ray {
-        let offset = self.sample_square(rng);
+    fn get_ray<R: rand::Rng + ?Sized>(
+        &self,
+        u: f64,
+        v: f64,
+        si: i32,
+        sj: i32,
+        rng: &mut R,
+        recip_sqrt_spp: f64,
+    ) -> Ray {
+        // let offset = self.sample_square(rng);
+        let offset = self.sample_square_stratified(rng, si, sj, recip_sqrt_spp);
         let pixel_sample = self.pixel00_loc
             + ((u + offset.x) * self.pixel_delta_u)
             + ((v + offset.y) * self.pixel_delta_v);
