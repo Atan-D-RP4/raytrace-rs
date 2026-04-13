@@ -4,6 +4,7 @@ use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::ray::Ray;
+use crate::vec3::Point3;
 
 /// A binary BVH node for accelerating ray-scene intersection queries.
 pub struct BvhNode {
@@ -26,28 +27,21 @@ impl BvhNode {
     pub fn new(objects: &mut Vec<Arc<dyn Hittable>>, start: usize, end: usize) -> Self {
         let obj_span = end - start;
         let mut bbox = Aabb::new();
-        let mut object_bounds = Vec::with_capacity(obj_span);
+        let mut centroids: Vec<(Arc<dyn Hittable>, Point3)> = Vec::with_capacity(obj_span);
 
         for idx in start..end {
             let object_bbox = objects[idx].bounding_box();
             bbox = bbox.merge(object_bbox);
-            object_bounds.push((objects[idx].clone(), object_bbox));
+            centroids.push((objects[idx].clone(), object_bbox.centroid()));
         }
 
         let (left, right): (Arc<dyn Hittable>, Arc<dyn Hittable>) = match obj_span {
-            1 => {
-                // Clone the Arc, no removal needed
-                (objects[start].clone(), objects[start].clone())
-            }
-            2 => (objects[start].clone(), objects[start + 1].clone()),
+            1 => (centroids[0].0.clone(), centroids[0].0.clone()),
+            2 => (centroids[0].0.clone(), centroids[1].0.clone()),
             _ => {
                 let axis = bbox.longest_axis() as usize;
-                object_bounds.sort_by(|(_, a), (_, b)| {
-                    let a_min = a.centroid()[axis];
-                    let b_min = b.centroid()[axis];
-                    a_min.partial_cmp(&b_min).unwrap()
-                });
-                for (slot, (object, _)) in object_bounds.iter().enumerate() {
+                centroids.sort_by(|(_, a), (_, b)| a[axis].partial_cmp(&b[axis]).unwrap());
+                for (slot, (object, _)) in centroids.iter().enumerate() {
                     objects[start + slot] = object.clone();
                 }
                 let mid = start + obj_span / 2;

@@ -61,7 +61,8 @@ impl Hittable for ConstantMedium {
 
         let ray_length = ray.direction.length();
         let dist_inside_boundary = (rec2.time - rec1.time) * ray_length;
-        let hit_dist = self.neg_inv_density * rand::rng().random::<f64>().max(1e-12).ln();
+        let mut rng = rand::rng();
+        let hit_dist = self.neg_inv_density * rng.random::<f64>().max(1e-12).ln();
 
         if hit_dist > dist_inside_boundary {
             return None;

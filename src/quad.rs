@@ -7,6 +7,7 @@ use crate::material::Material;
 use crate::vec3::{Point3, Vec3, cross, dot};
 
 #[derive(Clone)]
+#[allow(non_snake_case)]
 pub struct Quad {
     Q: Point3,
     u: Vec3,
@@ -19,6 +20,7 @@ pub struct Quad {
 }
 
 impl Quad {
+    #[allow(non_snake_case)]
     pub fn new(Q: Point3, u: Vec3, v: Vec3, material: Material) -> Self {
         let bbox_diagonal1 = Aabb::from_points(&Q, &(Q + u + v));
         let bbox_diagonal2 = Aabb::from_points(&(Q + u), &(Q + v));
@@ -68,23 +70,25 @@ impl Hittable for Quad {
         let alpha = dot(&self.w, &cross(&planar_hit_point_vector, &self.v));
         let beta = dot(&self.w, &cross(&self.u, &planar_hit_point_vector));
 
-        let mut hit_rec = HitRecord::new(
-            t,
-            intersection,
-            Vec3::new(),
-            Vec3::new(),
-            self.material.as_ref(),
-        );
-        hit_rec.set_face_normal(ray, &self.normal);
-
         if !Self::is_interior(alpha, beta) {
-            return None;
+            None
         } else {
+            // Invariant: quad UVs live in (alpha, beta), while mapping_point stays a 3D
+            // position in world space so 3D procedural textures still work on quads.
+            let mut hit_rec = HitRecord::new(
+                t,
+                intersection,
+                intersection,
+                Vec3::new(),
+                self.material.as_ref(),
+            );
+
+            hit_rec.set_face_normal(ray, &self.normal);
             hit_rec.u = alpha;
             hit_rec.v = beta;
-        }
 
-        Some(hit_rec)
+            Some(hit_rec)
+        }
     }
 
     fn bounding_box(&self) -> Aabb {

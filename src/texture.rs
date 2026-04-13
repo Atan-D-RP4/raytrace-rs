@@ -122,6 +122,10 @@ pub enum TextureMapping {
     /// No coordinate change.
     Identity,
     /// Uniform scale in 3D texture space.
+    ///
+    /// TODO(mapping-2d3d): this currently has only a uniform constructor.
+    /// Either add `point_scale_nonuniform(x, y, z)` or simplify `inv_scale`
+    /// to `f64` if non-uniform scale stays unused.
     PointScale { inv_scale: Vec3 },
     /// Converts mapping-space unit-sphere position into UVs.
     Spherical,
@@ -131,6 +135,8 @@ impl TextureMapping {
     /// Builds a uniform point-scale mapping.
     ///
     /// `scale` is cell size; smaller values increase frequency.
+    /// TODO(mapping-2d3d): if non-uniform point scale is ever needed, add a
+    /// separate constructor instead of widening this uniform-only API.
     pub fn point_scale_uniform(scale: f64) -> Self {
         assert!(scale > 0.0, "texture scale must be positive");
         let inv_scale = 1.0 / scale;
@@ -308,7 +314,7 @@ impl Texture for NoiseTexture {
         // Color3::from(1., 1., 1.) * 0.5 * (1.0 + self.noise.noise(&point)) // Smooth Perlin Texture
         // Color3::from(1., 1., 1.) * self.noise.turbulence(&point, 7) // Turbulent Perlin Texture
         Color3::from(0.5, 0.5, 0.5)
-            * (1.0 + (point.z + (10.0 * self.noise.turbulence(&point, 7))).sin())
+            * (1.0 + (point.z + (10.0 * self.noise.turbulence(point, 7))).sin())
         // Marbled Perlin Texture
     }
 }

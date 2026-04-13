@@ -7,7 +7,18 @@ pub struct Vec3 {
     pub z: f64,
 }
 
+/// Position in 3D space.
+///
+/// TODO(type-safety): convert to `newtype Point3(Vec3)` to prevent accidental
+/// swaps with Vec3/Color3. Add `From`, `Into`, and explicit constructor like
+/// `Point3::new(x, y, z)` to preserve ergonomics.
 pub type Point3 = Vec3;
+
+/// RGB color value.
+///
+/// TODO(type-safety): convert to `newtype Color3(Vec3)` to prevent accidental
+/// swaps with Vec3/Point3. Add `From`, `Into`, and explicit constructor like
+/// `Color3::new(r, g, b)` to preserve ergonomics.
 pub type Color3 = Vec3;
 
 impl Vec3 {

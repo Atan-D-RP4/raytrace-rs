@@ -14,6 +14,9 @@ use crate::vec3::{Vec3, dot};
 ///
 /// TODO(renderer-agnostic): introduce a `SurfaceInteraction` type and convert
 /// from `HitRecord` so rasterizer/GPU/hybrid/SDF backends can share mapping code.
+/// TODO(type-safety): Point3/Vec3/Color3 are aliases today, so these fields can
+/// still be mixed up accidentally. Typed newtypes would catch that at compile
+/// time, but that belongs with the future `SurfaceInteraction` refactor.
 pub struct HitRecord<'rec> {
     /// Ray parameter `t` at the intersection point.
     pub time: f64,

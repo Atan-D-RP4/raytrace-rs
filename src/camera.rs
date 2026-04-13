@@ -179,7 +179,6 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): move this method and [`Camera::ray_color`]
     /// into a renderer/pipeline component so alternate engines can share camera setup.
-    #[profiling::function]
     pub fn render(&mut self, world: Arc<dyn Hittable>) -> (u32, u32, Vec<u8>) {
         // No need to initialize it here, `from_config` does it, or caller should do it manually
         // self.initialize();
@@ -215,6 +214,14 @@ impl Camera {
                 // Image coordinate origin: top-left (i increases right, j increases down).
                 let i = idx as i32 % camera_snapshot.image_width;
                 let j = idx as i32 / camera_snapshot.image_width;
+
+                // Sample every 1000th pixel for profiling without overhead.
+                let _span = if idx % 1000 == 0 {
+                    Some(tracing::info_span!("pixel", i, j))
+                } else {
+                    None
+                };
+                let _guard = _span.as_ref().map(|s| s.enter());
 
                 // Accumulate samples for anti-aliasing.
                 // Each sample uses a randomly offset ray within the pixel area.
@@ -279,7 +286,6 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
-    #[profiling::function]
     fn ray_color<R: rand::Rng + ?Sized>(
         &self,
         initial_ray: &Ray,

@@ -15,11 +15,13 @@ fn trilinear_interp(c: [[[f64; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
 }
 
 pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
+    // Hermite smoothing
     let u = u * u * (3.0 - 2.0 * u);
     let v = v * v * (3.0 - 2.0 * v);
     let w = w * w * (3.0 - 2.0 * w);
 
     let mut accum = 0.0;
+    // Using for-loop instead of iterators for better optimization
     for i in 0..2 {
         let fu = if i == 1 { u } else { 1.0 - u };
         for j in 0..2 {
@@ -68,10 +70,6 @@ impl Perlin {
         let v = p.y - j as f64;
         let w = p.z - k as f64;
 
-        let u = u * u * (3.0 - 2.0 * u);
-        let v = v * v * (3.0 - 2.0 * v);
-        let w = w * w * (3.0 - 2.0 * w);
-
         let mut c = [[[Vec3::new(); 2]; 2]; 2];
 
         c.iter_mut().enumerate().for_each(|(di, x)| {
@@ -89,8 +87,8 @@ impl Perlin {
         perlin_interp(c, u, v, w)
     }
 
-    pub fn turbulence(&self, point: &Vec3, depth: i32) -> f64 {
-        let mut tmp_point = *point;
+    pub fn turbulence(&self, point: Point3, depth: i32) -> f64 {
+        let mut tmp_point = point;
         let mut weight = 1.;
         let mut accum = 0.0;
 
