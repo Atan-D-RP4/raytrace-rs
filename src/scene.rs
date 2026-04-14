@@ -7,7 +7,7 @@ use crate::camera::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::hittable::Hittable;
 use crate::material::Material;
-use crate::quad::Quad;
+use crate::quad::{Quad, box3d};
 use crate::sphere::Sphere;
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,
@@ -364,33 +364,7 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat, phase_fn)| {
-                let dx = Vec3::from(size.x, 0., 0.);
-                let dy = Vec3::from(0., size.y, 0.);
-                let dz = Vec3::from(0., 0., size.z);
-
-                let quad_box: Vec<Arc<dyn Hittable>> = vec![
-                    Arc::new(Quad::new(Point3::from(0., 0., size.z), dx, dy, mat.clone())),
-                    Arc::new(Quad::new(
-                        Point3::from(size.x, 0., size.z),
-                        -dz,
-                        dy,
-                        mat.clone(),
-                    )),
-                    Arc::new(Quad::new(
-                        Point3::from(size.x, 0., 0.),
-                        -dx,
-                        dy,
-                        mat.clone(),
-                    )),
-                    Arc::new(Quad::new(Point3::from(0., 0., 0.), dz, dy, mat.clone())),
-                    Arc::new(Quad::new(
-                        Point3::from(0., size.y, size.z),
-                        dx,
-                        -dz,
-                        mat.clone(),
-                    )),
-                    Arc::new(Quad::new(Point3::from(0., 0., 0.), dx, dz, mat.clone())),
-                ];
+                let quad_box = box3d(Point3::from(0., 0., 0.), *size, mat.clone());
 
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
@@ -435,33 +409,7 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat)| {
-                let dx = Vec3::from(size.x, 0., 0.);
-                let dy = Vec3::from(0., size.y, 0.);
-                let dz = Vec3::from(0., 0., size.z);
-
-                let quad_box: Vec<Arc<dyn Hittable>> = vec![
-                    Arc::new(Quad::new(Point3::from(0., 0., size.z), dx, dy, mat.clone())),
-                    Arc::new(Quad::new(
-                        Point3::from(size.x, 0., size.z),
-                        -dz,
-                        dy,
-                        mat.clone(),
-                    )),
-                    Arc::new(Quad::new(
-                        Point3::from(size.x, 0., 0.),
-                        -dx,
-                        dy,
-                        mat.clone(),
-                    )),
-                    Arc::new(Quad::new(Point3::from(0., 0., 0.), dz, dy, mat.clone())),
-                    Arc::new(Quad::new(
-                        Point3::from(0., size.y, size.z),
-                        dx,
-                        -dz,
-                        mat.clone(),
-                    )),
-                    Arc::new(Quad::new(Point3::from(0., 0., 0.), dx, dz, mat.clone())),
-                ];
+                let quad_box = box3d(Point3::from(0., 0., 0.), *size, mat.clone());
 
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
