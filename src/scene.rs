@@ -14,7 +14,7 @@ use crate::texture::{
 };
 use crate::transform::{RotateY, TransformObject, Translate};
 use crate::vec3::{Color3, Point3, Vec3};
-use tracing::trace;
+use tracing::{info, trace};
 
 fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
     Arc::new(MappedTexture::new(
@@ -201,6 +201,10 @@ impl Scene {
             // TODO(gpu): keep a reusable coarse-BVH boundary here; GPU can mirror it with its own build path.
             let mut boxes = boxes1;
             let boxes_len = boxes.len();
+            info!(
+                box_count = boxes_len,
+                "assembled complex_scene ground boxes"
+            );
             Arc::new(BvhNode::new(&mut boxes, 0, boxes_len))
         };
         scene.objects.push(boxes1_bvh);
@@ -303,6 +307,10 @@ impl Scene {
         let cluster = {
             let mut boxes = boxes2;
             let boxes_len = boxes.len();
+            info!(
+                sphere_count = boxes_len,
+                "assembled complex_scene sphere cluster"
+            );
             TransformObject::new(
                 Translate::new(Vec3::from(-100., 270., 395.)),
                 TransformObject::new(RotateY::new(15.), BvhNode::new(&mut boxes, 0, boxes_len)),

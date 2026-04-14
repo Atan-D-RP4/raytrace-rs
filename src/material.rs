@@ -93,13 +93,12 @@ impl Material {
                 let cos_theta = dot(&(-unit_dir), &record.normal).min(1.0);
                 let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
 
-                let direction = if ri * sin_theta > 1.0
-                    || self.reflectance(cos_theta, ri) > rng.random::<f64>()
-                {
-                    reflect(&unit_dir, &record.normal)
-                } else {
-                    refract(&unit_dir, &record.normal, ri)
-                };
+                let direction =
+                    if ri * sin_theta > 1.0 || self.reflectance(cos_theta) > rng.random::<f64>() {
+                        reflect(&unit_dir, &record.normal)
+                    } else {
+                        refract(&unit_dir, &record.normal, ri)
+                    };
 
                 let scattered_ray = Ray::new_with_time(record.point, direction, ray.time);
 
@@ -121,9 +120,13 @@ impl Material {
         }
     }
 
+    /// Returns the emitted light color at the hit point.
+    ///
+    /// Only `DiffuseLight` materials emit; all others return black.
+    /// Emission is evaluated from the material's texture using hit record coordinates.
     pub fn emitted(&self, hit_rec: &HitRecord) -> Color3 {
         match self {
-            Material::DiffuseLight { tex } => tex.value(&TextureCoords::new(
+            Material::DiffuseLight { tex } if hit_rec.front_face => tex.value(&TextureCoords::new(
                 hit_rec.u,
                 hit_rec.v,
                 hit_rec.point,
@@ -138,9 +141,14 @@ impl Material {
     ///
     /// Used by dielectric materials to probabilistically choose reflection
     /// vs refraction near grazing angles.
-    fn reflectance(&self, cosine: f64, refractive_idx: f64) -> f64 {
-        let r0 = (1.0 - refractive_idx) / (1.0 + refractive_idx);
-        let r0 = r0 * r0;
-        r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
+    fn reflectance(&self, cosine: f64) -> f64 {
+        match self {
+            Material::Dielectric { refractive_idx } => {
+                let r0 = (1.0 - refractive_idx) / (1.0 + refractive_idx);
+                let r0 = r0 * r0;
+                r0 + (1.0 - r0) * (1.0 - cosine).powi(5)
+            }
+            _ => 0.0,
+        }
     }
 }
