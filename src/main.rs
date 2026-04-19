@@ -21,10 +21,11 @@ fn main() {
 
     // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
     profiling::scope!("scene_build");
-    let scene = Scene::complex_scene();
-    let filename = "complex_scene.png";
 
-    let config = *scene.config();
+    let scene = Scene::cornell_box();
+    let filename = "cornell_box.png";
+
+    let mut config = *scene.config();
     let mut objects = scene.into_objects();
 
     let world_len = objects.len();

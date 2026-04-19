@@ -297,6 +297,15 @@ pub fn random_unit_vector_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     }
 }
 
+pub fn random_on_hemisphere<R: rand::Rng + ?Sized>(rng: &mut R, normal: Vec3) -> Vec3 {
+    let on_unit_sphere = random_unit_vector_with_rng(rng);
+    if dot(&on_unit_sphere, &normal) > 0. {
+        on_unit_sphere
+    } else {
+        -on_unit_sphere
+    }
+}
+
 #[inline(always)]
 pub fn reflect(v: &Vec3, n: &Vec3) -> Vec3 {
     *v - 2.0 * dot(v, n) * *n

@@ -20,10 +20,10 @@ use crate::interval::Interval;
 use crate::ray::Ray;
 use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk_with_rng, unit_vector};
 
-#[derive(Default, Clone, Copy)]
 /// User-facing camera configuration.
 ///
 /// This is scene/build-time data. Runtime/precomputed values live in [`Camera`].
+#[derive(Default, Clone, Copy)]
 pub struct CameraConfig {
     pub image_width: i32,       // Rendered image width in pixels
     pub aspect_ratio: f64,      // Image width / height
@@ -251,6 +251,16 @@ impl Camera {
                     }
                 }
 
+                if !pixel_color.x.is_finite() {
+                    pixel_color.x = 0.0;
+                }
+                if !pixel_color.y.is_finite() {
+                    pixel_color.y = 0.0;
+                }
+                if !pixel_color.z.is_finite() {
+                    pixel_color.z = 0.0;
+                }
+
                 // Scale by sample count and apply gamma correction.
                 // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
                 let scaled = pixel_color * camera_snapshot.pixel_samples_scale;
@@ -265,6 +275,7 @@ impl Camera {
     }
 
     /// Returns a random jitter offset inside the pixel cell.
+    /// TODO(cleanup): remove if stratified-only sampling remains default path.
     fn sample_square<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
         Vec3::from(rng.random::<f64>() - 0.5, rng.random::<f64>() - 0.5, 0.)
     }
@@ -294,7 +305,11 @@ impl Camera {
         recip_sqrt_spp: f64,
     ) -> Ray {
         // let offset = self.sample_square(rng);
+
+        // Construct a camera ray originating from the defocus disk and directed at a randomly
+        // sampled point around the pixel location i, j for stratified sample square s_i, s_j.
         let offset = self.sample_square_stratified(rng, si, sj, recip_sqrt_spp);
+
         let pixel_sample = self.pixel00_loc
             + ((u + offset.x) * self.pixel_delta_u)
             + ((v + offset.y) * self.pixel_delta_v);
@@ -330,12 +345,13 @@ impl Camera {
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
         let mut accumulated_color = Color3::from(0., 0., 0.);
 
-        // Russian Roulette
         for bounce in 0..depth {
             if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
                 let emission = record.material.emitted(&record);
                 accumulated_color += accumulated_attenuation * emission;
 
+                // Russian Roulette
+                // If we've exceeded the ray bounce limit, no more light is gathered.
                 if bounce >= 2 {
                     let survival = accumulated_attenuation
                         .x
@@ -352,7 +368,15 @@ impl Camera {
                 }
 
                 if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
-                    accumulated_attenuation = accumulated_attenuation * scatter.attenuation;
+                    let scattering_pdf =
+                        record
+                            .material
+                            .scattering_pdf(&ray, &record, &scatter.scattered);
+                    let pdf_val = scattering_pdf;
+                    // let pdf_val = 1. / (2. * PI);
+
+                    accumulated_attenuation =
+                        (accumulated_attenuation * scatter.attenuation * scattering_pdf) / pdf_val;
                     ray = scatter.scattered;
                 } else {
                     return accumulated_color;

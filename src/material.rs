@@ -11,7 +11,9 @@ use rand::RngExt;
 use crate::hittable::HitRecord;
 use crate::ray::Ray;
 use crate::texture::{Texture, TextureCoords};
-use crate::vec3::{Color3, dot, random_unit_vector_with_rng, reflect, refract, unit_vector};
+use crate::vec3::{
+    Color3, dot, random_on_hemisphere, random_unit_vector_with_rng, reflect, refract, unit_vector,
+};
 
 /// Result of material sampling for a single bounce.
 pub struct Scatter {
@@ -42,7 +44,7 @@ pub enum Material {
     Dielectric { refractive_idx: f64 },
     /// Light emitting surface
     DiffuseLight { tex: Arc<dyn Texture> },
-    ///
+    /// Isotropic scattering medium for fog, mist, and homogeneous volumes.
     Isotropic { tex: Arc<dyn Texture> },
 }
 
@@ -60,6 +62,8 @@ impl Material {
         match self {
             Material::Lambertian { tex } => {
                 let mut scatter_direction = record.normal + random_unit_vector_with_rng(rng);
+                // let mut scatter_direction = random_on_hemisphere(rng, record.normal);
+
                 if scatter_direction.near_zero() {
                     scatter_direction = record.normal;
                 }
@@ -105,6 +109,10 @@ impl Material {
                 Some(Scatter::new(attenuation, scattered_ray))
             }
             Material::Isotropic { tex } => {
+                // Scatters incoming rays uniformly in all directions (unit-sphere directions).
+                // Used to model translucent fog volumes and atmospheric effects
+                // where no preferential scattering direction exists. The albedo is
+                // given by the attached texture evaluated at hit coordinates.
                 let scattered_ray =
                     Ray::new_with_time(record.point, random_unit_vector_with_rng(rng), ray.time);
                 let attenuation = tex.value(&TextureCoords::new(
@@ -134,6 +142,20 @@ impl Material {
                 hit_rec.geometry_normal,
             )),
             _ => Color3::from(0., 0., 0.),
+        }
+    }
+
+    pub fn scattering_pdf(&self, _ray_in: &Ray, record: &HitRecord, scattered: &Ray) -> f64 {
+        match self {
+            Material::Lambertian { tex: _ } => {
+                let cos_theta = dot(&record.normal, &unit_vector(scattered.direction));
+                if cos_theta < 0. {
+                    0.0
+                } else {
+                    cos_theta / std::f64::consts::PI
+                }
+            }
+            _ => 0.,
         }
     }
 
