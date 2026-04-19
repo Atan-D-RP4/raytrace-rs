@@ -7,7 +7,7 @@ use crate::camera::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::hittable::Hittable;
 use crate::material::Material;
-use crate::quad::{box3d, Quad};
+use crate::quad::{Quad, box3d};
 use crate::sphere::Sphere;
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,
@@ -388,8 +388,12 @@ impl Scene {
     pub fn cornell_box() -> Self {
         let mut scene = Scene::empty_cornell_box();
 
-        let white = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
+        // let white = Material::Lambertian {
+        // tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
+        // };
+        let white = Material::Metal {
+            albedo: Color3::from(0.73, 0.73, 0.73),
+            fuzz: 1.0,
         };
         let box_params = [
             (

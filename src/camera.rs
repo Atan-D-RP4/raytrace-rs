@@ -9,8 +9,8 @@
 //! renderer/pipeline module so camera ray generation can be reused by GPU,
 //! raster, hybrid, and other future rendering engines.
 
-use core::f64;
-use std::sync::Arc;
+use std::f64::consts::PI;
+use std::sync::{Arc, RwLock};
 
 use rand::RngExt;
 use rayon::prelude::*;
@@ -21,6 +21,39 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
 use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk_with_rng, unit_vector};
+
+/// Thread-safe framebuffer shared between UI thread and render thread.
+///
+/// - Render thread takes write lock, publishes progressive updates.
+/// - UI thread takes read lock, blits current snapshot to window surface.
+pub type SharedFramebuffer = Arc<RwLock<Framebuffer>>;
+
+/// Shared RGB framebuffer used by live preview path.
+///
+/// `rgb` layout is tightly packed RGB8 triples:
+/// `[R, G, B, R, G, B, ...]`, row-major, top-left origin.
+pub struct Framebuffer {
+    /// Pixel width of framebuffer.
+    pub width: u32,
+    /// Pixel height of framebuffer.
+    pub height: u32,
+    /// Packed RGB8 data, `width * height * 3` bytes.
+    pub rgb: Vec<u8>,
+    /// Signals render completion to UI redraw loop.
+    pub finished: bool,
+}
+
+impl Framebuffer {
+    /// Creates zero-initialized framebuffer for given dimensions.
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            rgb: vec![0; (width * height * 3) as usize],
+            finished: false,
+        }
+    }
+}
 
 /// User-facing camera configuration.
 ///
@@ -117,6 +150,13 @@ impl Camera {
     /// Creates a default camera; callers must configure and initialize it before rendering.
     pub fn new() -> Self {
         Default::default()
+    }
+
+    /// Returns configured render output dimensions in pixels.
+    ///
+    /// Useful for pre-sizing shared framebuffer and initial window size.
+    pub fn image_dimensions(&self) -> (u32, u32) {
+        (self.image_width as u32, self.image_height as u32)
     }
 
     /// Computes all runtime camera data needed for ray generation.
@@ -276,6 +316,105 @@ impl Camera {
         (self.image_width as u32, self.image_height as u32, output)
     }
 
+    /// Progressive CPU renderer for live preview pipeline.
+    ///
+    /// Behavior:
+    /// - Computes one additional sample per pixel each outer iteration.
+    /// - Accumulates linear radiance in `accum`.
+    /// - Converts running average to RGB8.
+    /// - Publishes full-frame snapshot into `framebuffer` every pass.
+    /// - Sets `framebuffer.finished = true` on final pass.
+    ///
+    /// Threading model:
+    /// - Pixel shading inside each pass runs in rayon parallel iterator.
+    /// - Publication step takes short write lock only during buffer swap.
+    ///
+    /// Note: current implementation is full-frame progressive.
+    /// Tile-based publication can reduce copy cost and lock contention.
+    pub fn render_progressive(&mut self, world: Arc<dyn Hittable>, framebuffer: SharedFramebuffer) {
+        let _span = tracing::info_span!(
+            "render_progressive",
+            width = self.image_width,
+            height = self.image_height,
+            spp = self.samples_per_pixel,
+            max_depth = self.max_depth,
+        )
+        .entered();
+
+        info!("camera progressive render started");
+
+        let width = self.image_width as usize;
+        let height = self.image_height as usize;
+        let total_pixels = width * height;
+        info!(
+            width,
+            height,
+            spp = self.samples_per_pixel,
+            "progressive render dimensions"
+        );
+        // TODO(opt-preview): reuse scratch buffers (`sample_colors`, `rgb`) across passes.
+        // Current implementation reallocates each pass and increases allocator pressure.
+        let mut accum = vec![Color3::from(0.0, 0.0, 0.0); total_pixels];
+
+        for sample_idx in 0..self.samples_per_pixel {
+            let _sample_span =
+                tracing::info_span!("progressive_pass", sample = sample_idx + 1).entered();
+            profiling::scope!("progressive_pass");
+
+            let sample_colors = (0..total_pixels)
+                .into_par_iter()
+                .map(|idx| {
+                    let mut rng = rand::rng();
+                    let i = (idx % width) as f64;
+                    let j = (idx / width) as f64;
+                    let ray = self.get_ray(i, j, 0, 0, &mut rng, 1.0);
+                    self.ray_color(&ray, self.max_depth, &*world, &mut rng)
+                })
+                .collect::<Vec<_>>();
+            // TODO(opt-preview): avoid full `collect` by parallel writing directly into
+            // preallocated linear sample buffer indexed by pixel.
+
+            for (dst, sample) in accum.iter_mut().zip(sample_colors) {
+                *dst += sample;
+            }
+
+            let scale = 1.0 / (sample_idx + 1) as f64;
+            profiling::scope!("progressive_tonemap");
+            let mut rgb = vec![0u8; total_pixels * 3];
+            for (idx, color) in accum.iter().enumerate() {
+                let avg = *color * scale;
+                rgb[idx * 3] = (256.0 * linear_to_gamma(avg.x).clamp(0.0, 0.999)) as u8;
+                rgb[idx * 3 + 1] = (256.0 * linear_to_gamma(avg.y).clamp(0.0, 0.999)) as u8;
+                rgb[idx * 3 + 2] = (256.0 * linear_to_gamma(avg.z).clamp(0.0, 0.999)) as u8;
+            }
+
+            profiling::scope!("progressive_publish");
+            if let Ok(mut fb) = framebuffer.write() {
+                fb.width = self.image_width as u32;
+                fb.height = self.image_height as u32;
+                fb.rgb = rgb;
+                fb.finished = sample_idx + 1 == self.samples_per_pixel;
+            }
+            // TODO(opt-preview): publish every N passes (adaptive cadence) to reduce lock contention.
+            // Keep frequent updates early, slower cadence late for better throughput.
+
+            if (sample_idx + 1) % 8 == 0 || sample_idx + 1 == self.samples_per_pixel {
+                info!(
+                    sample = sample_idx + 1,
+                    total = self.samples_per_pixel,
+                    "progressive pass complete"
+                );
+            }
+            info!(
+                sample_idx,
+                total = self.samples_per_pixel,
+                "single render pass complete",
+            );
+        }
+
+        info!("camera progressive render finished");
+    }
+
     /// Returns a random jitter offset inside the pixel cell.
     /// TODO(cleanup): remove if stratified-only sampling remains default path.
     fn sample_square<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
@@ -384,7 +523,7 @@ impl Camera {
                         Material::Lambertian { tex: _ } => {
                             // RT:ROYL sec 6.2 "uniform PDF instead of perfect match":
                             // sample uniformly over hemisphere => p(omega) = 1 / (2pi).
-                            let pdf_val = 1. / (2. * f64::consts::PI);
+                            let pdf_val = 1. / (2. * PI);
                             accumulated_attenuation =
                                 (accumulated_attenuation * scatter.attenuation * scattering_pdf)
                                     / pdf_val;
