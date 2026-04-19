@@ -7,7 +7,7 @@ use crate::camera::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::hittable::Hittable;
 use crate::material::Material;
-use crate::quad::{Quad, box3d};
+use crate::quad::{box3d, Quad};
 use crate::sphere::Sphere;
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,
@@ -444,37 +444,37 @@ impl Scene {
 
         scene.add_quad(
             Point3::from(555., 0., 0.),
-            Vec3::from(0., 555., 0.),
             Vec3::from(0., 0., 555.),
+            Vec3::from(0., 555., 0.),
             green,
         );
         scene.add_quad(
-            Point3::from(0., 0., 0.),
+            Point3::from(0., 0., 555.),
+            Vec3::from(0., 0., -555.),
             Vec3::from(0., 555., 0.),
-            Vec3::from(0., 0., 555.),
             red,
         );
         scene.add_quad(
-            Point3::from(343., 554., 332.),
-            Vec3::from(-130.0, 0., 0.),
-            Vec3::from(0., 0., -105.0),
+            Point3::from(213., 554., 227.),
+            Vec3::from(130.0, 0., 0.),
+            Vec3::from(0., 0., 105.0),
             light,
         );
         scene.add_quad(
-            Point3::from(0., 0., 0.),
+            Point3::from(0., 555., 0.),
             Vec3::from(555., 0., 0.),
             Vec3::from(0., 0., 555.),
-            white.clone(),
-        );
-        scene.add_quad(
-            Point3::from(555., 555., 555.),
-            Vec3::from(-555., 0., 0.),
-            Vec3::from(0., 0., -555.),
             white.clone(),
         );
         scene.add_quad(
             Point3::from(0., 0., 555.),
             Vec3::from(555., 0., 0.),
+            Vec3::from(0., 0., -555.),
+            white.clone(),
+        );
+        scene.add_quad(
+            Point3::from(555., 0., 555.),
+            Vec3::from(-555., 0., 0.),
             Vec3::from(0., 555., 0.),
             white,
         );

@@ -61,8 +61,8 @@ impl Material {
     ) -> Option<Scatter> {
         match self {
             Material::Lambertian { tex } => {
-                let mut scatter_direction = record.normal + random_unit_vector_with_rng(rng);
-                // let mut scatter_direction = random_on_hemisphere(rng, record.normal);
+                // let mut scatter_direction = record.normal + random_unit_vector_with_rng(rng);
+                let mut scatter_direction = random_on_hemisphere(rng, record.normal);
 
                 if scatter_direction.near_zero() {
                     scatter_direction = record.normal;

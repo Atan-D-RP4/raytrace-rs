@@ -119,19 +119,19 @@ impl Transform for RotateY {
 
     fn hit(&self, hit: &mut HitRecord<'_>) {
         hit.point = Point3::from(
-            (self.cos_theta * hit.point.x) - (self.sin_theta * hit.point.z),
+            (self.cos_theta * hit.point.x) + (self.sin_theta * hit.point.z),
             hit.point.y,
-            (self.sin_theta * hit.point.x) + (self.cos_theta * hit.point.z),
+            (-self.sin_theta * hit.point.x) + (self.cos_theta * hit.point.z),
         );
         hit.normal = Vec3::from(
-            (self.cos_theta * hit.normal.x) - (self.sin_theta * hit.normal.z),
+            (self.cos_theta * hit.normal.x) + (self.sin_theta * hit.normal.z),
             hit.normal.y,
-            (self.sin_theta * hit.normal.x) + (self.cos_theta * hit.normal.z),
+            (-self.sin_theta * hit.normal.x) + (self.cos_theta * hit.normal.z),
         );
         hit.mapping_point = Vec3::from(
-            (self.cos_theta * hit.mapping_point.x) - (self.sin_theta * hit.mapping_point.z),
+            (self.cos_theta * hit.mapping_point.x) + (self.sin_theta * hit.mapping_point.z),
             hit.mapping_point.y,
-            (self.sin_theta * hit.mapping_point.x) + (self.cos_theta * hit.mapping_point.z),
+            (-self.sin_theta * hit.mapping_point.x) + (self.cos_theta * hit.mapping_point.z),
         );
     }
 

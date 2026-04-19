@@ -9,6 +9,7 @@
 //! renderer/pipeline module so camera ray generation can be reused by GPU,
 //! raster, hybrid, and other future rendering engines.
 
+use core::f64;
 use std::sync::Arc;
 
 use rand::RngExt;
@@ -17,6 +18,7 @@ use tracing::info;
 
 use crate::hittable::Hittable;
 use crate::interval::Interval;
+use crate::material::Material;
 use crate::ray::Ray;
 use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk_with_rng, unit_vector};
 
@@ -350,9 +352,17 @@ impl Camera {
                 let emission = record.material.emitted(&record);
                 accumulated_color += accumulated_attenuation * emission;
 
-                // Russian Roulette
+                if accumulated_attenuation
+                    .x
+                    .max(accumulated_attenuation.y)
+                    .max(accumulated_attenuation.z)
+                    < 1e-6
+                {
+                    return accumulated_color;
+                }
                 // If we've exceeded the ray bounce limit, no more light is gathered.
-                if bounce >= 2 {
+                if bounce >= 4 {
+                    // Russian Roulette
                     let survival = accumulated_attenuation
                         .x
                         .max(accumulated_attenuation.y)
@@ -362,9 +372,6 @@ impl Camera {
                         return accumulated_color;
                     }
                     accumulated_attenuation /= survival;
-                    if accumulated_attenuation < Vec3::from(1e-6, 1e-6, 1e-6) {
-                        return accumulated_color;
-                    }
                 }
 
                 if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
@@ -372,11 +379,22 @@ impl Camera {
                         record
                             .material
                             .scattering_pdf(&ray, &record, &scatter.scattered);
-                    let pdf_val = scattering_pdf;
-                    // let pdf_val = 1. / (2. * PI);
 
-                    accumulated_attenuation =
-                        (accumulated_attenuation * scatter.attenuation * scattering_pdf) / pdf_val;
+                    match record.material {
+                        Material::Lambertian { tex: _ } => {
+                            // RT:ROYL sec 6.2 "uniform PDF instead of perfect match":
+                            // sample uniformly over hemisphere => p(omega) = 1 / (2pi).
+                            let pdf_val = 1. / (2. * f64::consts::PI);
+                            accumulated_attenuation =
+                                (accumulated_attenuation * scatter.attenuation * scattering_pdf)
+                                    / pdf_val;
+                        }
+                        _ => {
+                            // Non-Lambertian materials in this integrator path are treated as
+                            // non-PDF-tracked events (e.g., specular-like scattering).
+                            accumulated_attenuation = accumulated_attenuation * scatter.attenuation;
+                        }
+                    }
                     ray = scatter.scattered;
                 } else {
                     return accumulated_color;

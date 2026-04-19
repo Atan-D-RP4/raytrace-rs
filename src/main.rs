@@ -26,6 +26,8 @@ fn main() {
     let filename = "cornell_box.png";
 
     let mut config = *scene.config();
+    config.samples_per_pixel = 200;
+
     let mut objects = scene.into_objects();
 
     let world_len = objects.len();
