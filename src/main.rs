@@ -408,7 +408,7 @@ fn headless_render() {
 
     let start = std::time::Instant::now();
     profiling::scope!("render_cpu");
-    let (width, height, rgb_data) = camera.render(world);
+    let (width, height, rgb_data) = camera.render(&world);
     let end = std::time::Instant::now();
     info!(elapsed = ?(end - start), width, height, "render complete");
 

@@ -12,6 +12,7 @@ use crate::vec3::{Point3, Vec3, dot};
 ///
 /// Motion is represented as a ray where `origin` is center at t=0 and
 /// `direction` is center delta to t=1.
+#[derive(Clone)]
 pub struct Sphere {
     center: Ray,
     pub radius: f64,

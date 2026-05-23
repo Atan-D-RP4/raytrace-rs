@@ -22,8 +22,8 @@ pub struct HitRecord<'rec> {
     pub time: f64,
 
     // surface co-ords
-    /// Surface U coordinate from primitive UV parameterization.
     // TODO(mapping-2d3d): move UVs into a dedicated 2D mapping payload.
+    /// Surface U coordinate from primitive UV parameterization.
     pub u: f64,
     /// Surface V coordinate from primitive UV parameterization.
     pub v: f64,

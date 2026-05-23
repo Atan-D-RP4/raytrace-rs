@@ -221,7 +221,7 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): move this method and [`Camera::ray_color`]
     /// into a renderer/pipeline component so alternate engines can share camera setup.
-    pub fn render(&mut self, world: Arc<dyn Hittable>) -> (u32, u32, Vec<u8>) {
+    pub fn render(&mut self, world: &impl Hittable) -> (u32, u32, Vec<u8>) {
         // No need to initialize it here, `from_config` does it, or caller should do it manually
         // self.initialize();
         let _span = tracing::info_span!(
@@ -239,8 +239,9 @@ impl Camera {
         info!("camera render started");
         profiling::scope!("camera_render_loop");
 
-        let camera_snapshot = *self;
+        let image_width = self.image_width;
         let total_pixels = self.image_height * self.image_width;
+        let max_depth = self.max_depth;
 
         let sqrt_spp = self.samples_per_pixel.isqrt();
         let recip_sqrt_spp = 1.0 / sqrt_spp as f64;
@@ -258,8 +259,8 @@ impl Camera {
                 let mut rng = rand::rng();
                 // Convert flat index to 2D pixel coordinates.
                 // Image coordinate origin: top-left (i increases right, j increases down).
-                let i = idx as i32 % camera_snapshot.image_width;
-                let j = idx as i32 / camera_snapshot.image_width;
+                let i = idx as i32 % image_width;
+                let j = idx as i32 / image_width;
 
                 // Sample every 1000th pixel for profiling without overhead.
                 let _span = if idx % 1000 == 0 {
@@ -276,20 +277,9 @@ impl Camera {
                 // Using for-loops instead of iterators for better optimization
                 for si in 0..sqrt_spp {
                     for sj in 0..sqrt_spp {
-                        let ray = camera_snapshot.get_ray(
-                            i as f64,
-                            j as f64,
-                            si,
-                            sj,
-                            &mut rng,
-                            recip_sqrt_spp,
-                        );
-                        pixel_color += camera_snapshot.ray_color(
-                            &ray,
-                            camera_snapshot.max_depth,
-                            &*world,
-                            &mut rng,
-                        );
+                        let ray =
+                            self.get_ray(i as f64, j as f64, si, sj, &mut rng, recip_sqrt_spp);
+                        pixel_color += self.ray_color(&ray, max_depth, &*world, &mut rng);
                     }
                 }
 
@@ -305,7 +295,7 @@ impl Camera {
 
                 // Scale by sample count and apply gamma correction.
                 // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
-                let scaled = pixel_color * camera_snapshot.pixel_samples_scale;
+                let scaled = pixel_color * self.pixel_samples_scale;
                 chunk[0] = (256.0 * linear_to_gamma(scaled.x).clamp(0.0, 0.999)) as u8;
                 chunk[1] = (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8;
                 chunk[2] = (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8;
