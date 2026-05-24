@@ -385,6 +385,7 @@ fn headless_render() {
     let mut config = *scene.config();
     config.image_width = WIDTH as i32;
     config.samples_per_pixel = 200;
+    config.max_depth = 20;
 
     let mut objects = scene.into_objects();
 

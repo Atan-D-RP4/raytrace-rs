@@ -498,7 +498,7 @@ impl Camera {
                     return accumulated_color;
                 }
                 // If we've exceeded the ray bounce limit, no more light is gathered.
-                if bounce >= 4 {
+                if bounce >= 5 {
                     // Russian Roulette
                     let survival = accumulated_attenuation
                         .x
@@ -512,6 +512,7 @@ impl Camera {
                 }
 
                 if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
+                    let pdf_val = scatter.pdf;
                     let scattering_pdf =
                         record
                             .material
@@ -519,7 +520,6 @@ impl Camera {
 
                     match record.material {
                         Material::Lambertian { tex: _ } | Material::Isotropic { tex: _ } => {
-                            let pdf_val = scattering_pdf;
                             accumulated_attenuation =
                                 (accumulated_attenuation * scatter.attenuation * scattering_pdf)
                                     / pdf_val;

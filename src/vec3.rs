@@ -277,6 +277,8 @@ pub fn random_in_unit_disk_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 
 }
 
 #[inline(always)]
+/// Rejection sampling to generate a random unit vector uniformly distributed on the surface of the
+/// unit sphere.
 pub fn random_unit_vector_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     loop {
         let point = Vec3::from(
@@ -289,6 +291,27 @@ pub fn random_unit_vector_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
             return point / len_squared.sqrt();
         }
     }
+}
+
+pub fn random_cosine_direction<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
+    let r1: f64 = rng.random();
+    let r2: f64 = rng.random();
+
+    let phi = 2.0 * std::f64::consts::PI * r1;
+    let x = phi.cos() * r2.sqrt();
+    let y = phi.sin() * r2.sqrt();
+    let z = (1.0 - r2).sqrt();
+
+    Vec3::from(x, y, z)
+}
+
+pub fn random_cosine_direction2<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
+    let (mut u, mut v) = (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0));
+    while u * u + v * v >= 1.0 {
+        (u, v) = (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0));
+    }
+
+    Vec3::from(u, v, (1.0 - u.powi(2) - v.powi(2)).sqrt())
 }
 
 pub fn random_on_hemisphere<R: rand::Rng + ?Sized>(rng: &mut R, normal: Vec3) -> Vec3 {

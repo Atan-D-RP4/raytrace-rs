@@ -133,6 +133,11 @@ impl Transform for RotateY {
             hit.mapping_point.y,
             (-self.sin_theta * hit.mapping_point.x) + (self.cos_theta * hit.mapping_point.z),
         );
+        hit.geometry_normal = Vec3::from(
+            (self.cos_theta * hit.geometry_normal.x) + (self.sin_theta * hit.geometry_normal.z),
+            hit.geometry_normal.y,
+            (-self.sin_theta * hit.geometry_normal.x) + (self.cos_theta * hit.geometry_normal.z),
+        );
     }
 
     fn bbox(&self, bbox: Aabb) -> Aabb {

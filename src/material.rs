@@ -4,15 +4,18 @@
 //! - a scattered ray with attenuation, or
 //! - absorption (`None`).
 
+use std::f64::consts::PI;
 use std::sync::Arc;
 
 use rand::RngExt;
 
 use crate::hittable::HitRecord;
+use crate::onb::Onb;
 use crate::ray::Ray;
 use crate::texture::{Texture, TextureCoords};
 use crate::vec3::{
-    Color3, dot, random_on_hemisphere, random_unit_vector_with_rng, reflect, refract, unit_vector,
+    Color3, dot, random_cosine_direction, random_unit_vector_with_rng, reflect, refract,
+    unit_vector,
 };
 
 /// Result of material sampling for a single bounce.
@@ -21,20 +24,24 @@ pub struct Scatter {
     pub attenuation: Color3,
     /// Outgoing ray sampled by the material.
     pub scattered: Ray,
+    /// PDF value for the sampled ray direction, used by materials with non-uniform scattering (e.g.
+    /// Lambertian cosine-weighted hemisphere sampling).
+    pub pdf: f64,
 }
 
 impl Scatter {
     /// Builds a scatter result from attenuation and outgoing ray.
-    pub fn new(attenuation: Color3, scattered: Ray) -> Self {
+    pub fn new(attenuation: Color3, scattered: Ray, pdf: f64) -> Self {
         Self {
             attenuation,
             scattered,
+            pdf,
         }
     }
 }
 
-#[derive(Clone)]
 /// Supported material models.
+#[derive(Clone)]
 pub enum Material {
     /// Diffuse (Lambertian) surface using a texture for albedo.
     Lambertian { tex: Arc<dyn Texture> },
@@ -62,15 +69,19 @@ impl Material {
         match self {
             Material::Lambertian { tex } => {
                 // let mut scatter_direction = record.normal + random_unit_vector_with_rng(rng);
-                let mut scatter_direction = random_on_hemisphere(rng, record.normal);
+                // let mut scatter_direction = random_on_hemisphere(rng, record.normal);
 
-                if scatter_direction.near_zero() {
-                    scatter_direction = record.normal;
-                }
+                let onb = Onb::build_from_normal(record.normal);
+                let scatter_direction = onb.local_to_world(random_cosine_direction(rng));
+
+                // if scatter_direction.near_zero() {
+                //     scatter_direction = record.normal;
+                // }
 
                 let scattered_ray = Ray::new_with_time(record.point, scatter_direction, ray.time);
                 let attenuation = tex.value(&record.texture_coords());
-                Some(Scatter::new(attenuation, scattered_ray))
+                let pdf = dot(&onb.w, &scatter_direction) / PI;
+                Some(Scatter::new(attenuation, scattered_ray, pdf))
             }
             Material::Metal { albedo, fuzz } => {
                 let reflected = reflect(&ray.direction.unit_vector(), &record.normal);
@@ -79,8 +90,12 @@ impl Material {
                     reflected + (*fuzz * random_unit_vector_with_rng(rng)),
                     ray.time,
                 );
+                // Perfectly specular reflection has a delta distribution, so PDF is
+                // 1 for the reflected direction and 0 elsewhere.
+                let pdf = 1.0;
+
                 if dot(&scattered_ray.direction, &record.normal) > 0.0 {
-                    Some(Scatter::new(*albedo, scattered_ray))
+                    Some(Scatter::new(*albedo, scattered_ray, pdf))
                 } else {
                     None
                 }
@@ -105,8 +120,9 @@ impl Material {
                     };
 
                 let scattered_ray = Ray::new_with_time(record.point, direction, ray.time);
+                let pdf = 1.0;
 
-                Some(Scatter::new(attenuation, scattered_ray))
+                Some(Scatter::new(attenuation, scattered_ray, pdf))
             }
             Material::Isotropic { tex } => {
                 // Scatters incoming rays uniformly in all directions (unit-sphere directions).
@@ -122,7 +138,8 @@ impl Material {
                     record.mapping_point,
                     record.geometry_normal,
                 ));
-                Some(Scatter::new(attenuation, scattered_ray))
+                let pdf = 1.0 / (4.0 * PI);
+                Some(Scatter::new(attenuation, scattered_ray, pdf))
             }
             Material::DiffuseLight { tex: _ } => None,
         }
@@ -155,6 +172,8 @@ impl Material {
                     cos_theta / std::f64::consts::PI
                 }
             }
+
+            Material::Isotropic { tex: _ } => 1.0 / (4.0 * PI),
             _ => 0.,
         }
     }
