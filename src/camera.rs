@@ -9,7 +9,6 @@
 //! renderer/pipeline module so camera ray generation can be reused by GPU,
 //! raster, hybrid, and other future rendering engines.
 
-use std::f64::consts::PI;
 use std::sync::{Arc, RwLock};
 
 use rand::RngExt;
@@ -336,17 +335,26 @@ impl Camera {
         let width = self.image_width as usize;
         let height = self.image_height as usize;
         let total_pixels = width * height;
+
+        let sqrt_spp = self.samples_per_pixel.isqrt().max(1);
+        let recip_sqrt_spp = 1.0 / sqrt_spp as f64;
+        let total_samples = sqrt_spp * sqrt_spp;
+
         info!(
             width,
             height,
             spp = self.samples_per_pixel,
+            stratified_spp = total_samples,
             "progressive render dimensions"
         );
         // TODO(opt-preview): reuse scratch buffers (`sample_colors`, `rgb`) across passes.
         // Current implementation reallocates each pass and increases allocator pressure.
         let mut accum = vec![Color3::from(0.0, 0.0, 0.0); total_pixels];
 
-        for sample_idx in 0..self.samples_per_pixel {
+        for sample_idx in 0..total_samples {
+            let si = sample_idx / sqrt_spp;
+            let sj = sample_idx % sqrt_spp;
+
             let _sample_span =
                 tracing::info_span!("progressive_pass", sample = sample_idx + 1).entered();
             profiling::scope!("progressive_pass");
@@ -357,7 +365,7 @@ impl Camera {
                     let mut rng = rand::rng();
                     let i = (idx % width) as f64;
                     let j = (idx / width) as f64;
-                    let ray = self.get_ray(i, j, 0, 0, &mut rng, 1.0);
+                    let ray = self.get_ray(i, j, si, sj, &mut rng, recip_sqrt_spp);
                     self.ray_color(&ray, self.max_depth, &*world, &mut rng)
                 })
                 .collect::<Vec<_>>();
@@ -383,21 +391,21 @@ impl Camera {
                 fb.width = self.image_width as u32;
                 fb.height = self.image_height as u32;
                 fb.rgb = rgb;
-                fb.finished = sample_idx + 1 == self.samples_per_pixel;
+                fb.finished = sample_idx + 1 == total_samples;
             }
             // TODO(opt-preview): publish every N passes (adaptive cadence) to reduce lock contention.
             // Keep frequent updates early, slower cadence late for better throughput.
 
-            if (sample_idx + 1) % 8 == 0 || sample_idx + 1 == self.samples_per_pixel {
+            if (sample_idx + 1) % 8 == 0 || sample_idx + 1 == total_samples {
                 info!(
                     sample = sample_idx + 1,
-                    total = self.samples_per_pixel,
+                    total = total_samples,
                     "progressive pass complete"
                 );
             }
             info!(
                 sample_idx,
-                total = self.samples_per_pixel,
+                total = total_samples,
                 "single render pass complete",
             );
         }
@@ -510,10 +518,8 @@ impl Camera {
                             .scattering_pdf(&ray, &record, &scatter.scattered);
 
                     match record.material {
-                        Material::Lambertian { tex: _ } => {
-                            // RT:ROYL sec 6.2 "uniform PDF instead of perfect match":
-                            // sample uniformly over hemisphere => p(omega) = 1 / (2pi).
-                            let pdf_val = 1. / (2. * PI);
+                        Material::Lambertian { tex: _ } | Material::Isotropic { tex: _ } => {
+                            let pdf_val = scattering_pdf;
                             accumulated_attenuation =
                                 (accumulated_attenuation * scatter.attenuation * scattering_pdf)
                                     / pdf_val;

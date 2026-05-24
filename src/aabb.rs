@@ -3,7 +3,7 @@ use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
 
 /// Axis-aligned bounding box used for broad-phase ray culling and BVH traversal.
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Aabb {
     pub x: Interval,
     pub y: Interval,

@@ -66,7 +66,7 @@ impl Vec3 {
     }
 }
 
-// --- Operator impls you already had ---
+// --- Operator Overrides ---
 
 impl std::ops::Add for Vec3 {
     type Output = Self;
@@ -157,8 +157,6 @@ impl std::ops::Div<f64> for Vec3 {
     }
 }
 
-// --- Assign variants (+=, *=, /=) ---
-
 impl std::ops::AddAssign for Vec3 {
     fn add_assign(&mut self, rhs: Self) {
         self.x += rhs.x;
@@ -180,8 +178,6 @@ impl std::ops::DivAssign<f64> for Vec3 {
         *self *= 1.0 / t;
     }
 }
-
-// --- Indexing ---
 
 impl std::ops::Index<usize> for Vec3 {
     type Output = f64;
@@ -206,8 +202,6 @@ impl std::ops::IndexMut<usize> for Vec3 {
         }
     }
 }
-
-// --- Display ---
 
 impl std::fmt::Display for Vec3 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

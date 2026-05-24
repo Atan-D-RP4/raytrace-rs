@@ -35,11 +35,11 @@ impl BvhNode {
         let mut bbox = Aabb::new();
         let mut centroids: Vec<(Arc<dyn Hittable>, Point3)> = Vec::with_capacity(obj_span);
 
-        for idx in start..end {
+        (start..end).for_each(|idx| {
             let object_bbox = objects[idx].bounding_box();
             bbox = bbox.merge(object_bbox);
             centroids.push((objects[idx].clone(), object_bbox.centroid()));
-        }
+        });
 
         let (left, right): (Arc<dyn Hittable>, Arc<dyn Hittable>) = match obj_span {
             1 => {
