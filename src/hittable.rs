@@ -5,7 +5,7 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
 use crate::texture::TextureCoords;
-use crate::vec3::{Vec3, dot};
+use crate::vec3::Vec3;
 
 /// A path-tracer hit payload used to build texture/material evaluation inputs.
 ///
@@ -71,7 +71,7 @@ impl<'rec> HitRecord<'rec> {
     /// `geometry_normal` preserves the outward normal from geometry.
     pub fn set_face_normal(&mut self, ray: &Ray, outward_normal: &Vec3) {
         self.geometry_normal = *outward_normal;
-        self.front_face = dot(&ray.direction, outward_normal) < 0.;
+        self.front_face = ray.direction.dot(outward_normal) < 0.;
         self.normal = if self.front_face {
             *outward_normal
         } else {

@@ -1,4 +1,4 @@
-use crate::vec3::{Vec3, cross, dot, unit_vector};
+use crate::vec3::Vec3;
 
 pub struct Onb {
     /// u is bitangent
@@ -11,15 +11,15 @@ pub struct Onb {
 
 impl Onb {
     pub fn build_from_normal(normal: Vec3) -> Self {
-        let normal = unit_vector(normal);
+        let normal = normal.unit_vector();
         let a = if normal.x.abs() < 0.9 {
             Vec3::from(1.0, 0.0, 0.0)
         } else {
             Vec3::from(0.0, 1.0, 0.0)
         };
 
-        let v = cross(&normal, &a).unit_vector();
-        let u = cross(&v, &normal);
+        let v = normal.cross(&a).unit_vector();
+        let u = v.cross(&normal);
         let w = normal;
 
         Onb { u, v, w }
@@ -31,10 +31,6 @@ impl Onb {
     }
 
     pub fn world_to_local(&self, world: Vec3) -> Vec3 {
-        Vec3::from(
-            dot(&world, &self.u),
-            dot(&world, &self.v),
-            dot(&world, &self.w),
-        )
+        Vec3::from(world.dot(&self.u), world.dot(&self.v), world.dot(&self.w))
     }
 }

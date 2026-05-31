@@ -6,7 +6,7 @@ use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::vec3::{Point3, Vec3, dot};
+use crate::vec3::{Point3, Vec3};
 
 /// Sphere primitive (static or linearly moving over ray time).
 ///
@@ -75,7 +75,7 @@ impl Hittable for Sphere {
         let current_center = self.center.at(ray.time);
         let origin_center = current_center - ray.origin;
         let a = ray.direction.length_squared();
-        let h = dot(&ray.direction, &origin_center);
+        let h = ray.direction.dot(&origin_center);
         let c = origin_center.length_squared() - (self.radius * self.radius);
 
         let discriminant = (h * h) - (a * c);

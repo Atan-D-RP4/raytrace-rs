@@ -7,7 +7,7 @@ use crate::camera::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::hittable::Hittable;
 use crate::material::Material;
-use crate::quad::{box3d, Quad};
+use crate::quad::{Quad, box3d};
 use crate::sphere::Sphere;
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,

@@ -1,6 +1,6 @@
 use rand::RngExt;
 
-use crate::vec3::{Point3, Vec3, dot, random_unit_vector};
+use crate::vec3::{Point3, Vec3, random_unit_vector};
 
 #[allow(dead_code)]
 fn trilinear_interp(c: [[[f64; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
@@ -29,7 +29,7 @@ pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
             for k in 0..2 {
                 let fw = if k == 1 { w } else { 1.0 - w };
                 let weight = Vec3::from(u - i as f64, v - j as f64, w - k as f64);
-                accum += fu * fv * fw * dot(&c[i][j][k], &weight);
+                accum += fu * fv * fw * c[i][j][k].dot(&weight);
             }
         }
     }

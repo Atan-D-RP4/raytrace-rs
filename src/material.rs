@@ -13,10 +13,7 @@ use crate::hittable::HitRecord;
 use crate::onb::Onb;
 use crate::ray::Ray;
 use crate::texture::{Texture, TextureCoords};
-use crate::vec3::{
-    Color3, dot, random_cosine_direction, random_unit_vector_with_rng, reflect, refract,
-    unit_vector,
-};
+use crate::vec3::{Color3, random_cosine_direction, random_unit_vector_with_rng, reflect, refract};
 
 /// Result of material sampling for a single bounce.
 pub struct Scatter {
@@ -80,7 +77,7 @@ impl Material {
 
                 let scattered_ray = Ray::new_with_time(record.point, scatter_direction, ray.time);
                 let attenuation = tex.value(&record.texture_coords());
-                let pdf = dot(&onb.w, &scatter_direction) / PI;
+                let pdf = onb.w.dot(&scatter_direction) / PI;
                 Some(Scatter::new(attenuation, scattered_ray, pdf))
             }
             Material::Metal { albedo, fuzz } => {
@@ -94,7 +91,7 @@ impl Material {
                 // 1 for the reflected direction and 0 elsewhere.
                 let pdf = 1.0;
 
-                if dot(&scattered_ray.direction, &record.normal) > 0.0 {
+                if scattered_ray.direction.dot(&record.normal) > 0.0 {
                     Some(Scatter::new(*albedo, scattered_ray, pdf))
                 } else {
                     None
@@ -107,9 +104,9 @@ impl Material {
                 } else {
                     *refractive_idx
                 };
-                let unit_dir = unit_vector(ray.direction);
+                let unit_dir = ray.direction.unit_vector();
 
-                let cos_theta = dot(&(-unit_dir), &record.normal).min(1.0);
+                let cos_theta = (-unit_dir).dot(&record.normal).min(1.0);
                 let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
 
                 let direction =
@@ -165,7 +162,7 @@ impl Material {
     pub fn scattering_pdf(&self, _ray_in: &Ray, record: &HitRecord, scattered: &Ray) -> f64 {
         match self {
             Material::Lambertian { tex: _ } => {
-                let cos_theta = dot(&record.normal, &unit_vector(scattered.direction));
+                let cos_theta = record.normal.dot(&scattered.direction.unit_vector());
                 if cos_theta < 0. {
                     0.0
                 } else {

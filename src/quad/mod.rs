@@ -5,7 +5,7 @@ use crate::hittable::HitRecord;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::vec3::{Point3, Vec3, cross, dot};
+use crate::vec3::{Point3, Vec3};
 
 mod annulus;
 mod r#box;
@@ -44,37 +44,37 @@ impl PlanarPatch {
         let bbox_diagonal1 = Aabb::from_points(&corner, &(corner + side_a + side_b));
         let bbox_diagonal2 = Aabb::from_points(&(corner + side_a), &(corner + side_b));
 
-        let n = cross(&side_a, &side_b);
-        let normal = Vec3::unit_vector(&n);
+        let n = side_a.cross(&side_b);
+        let normal = n.unit_vector();
 
         Self {
             corner,
             side_a,
             side_b,
-            w: n / dot(&n, &n),
+            w: n / n.dot(&n),
             material: Arc::new(material),
             bbox: bbox_diagonal1.merge(bbox_diagonal2),
             normal,
-            d: dot(&normal, &corner),
+            d: normal.dot(&corner),
         }
     }
 
     pub(crate) fn hit_plane(&self, ray: &Ray, ray_t: Interval) -> Option<PlanarHit> {
-        let denom = dot(&self.normal, &ray.direction);
+        let denom = self.normal.dot(&ray.direction);
 
         if denom.abs() < 1e-8 {
             return None;
         }
 
-        let t = (self.d - dot(&self.normal, &ray.origin)) / denom;
+        let t = (self.d - self.normal.dot(&ray.origin)) / denom;
         if !ray_t.contains(t) {
             return None;
         }
 
         let point = ray.at(t);
         let planar_hit_point_vector = point - self.corner;
-        let a = dot(&self.w, &cross(&planar_hit_point_vector, &self.side_b));
-        let b = dot(&self.w, &cross(&self.side_a, &planar_hit_point_vector));
+        let a = self.w.dot(&planar_hit_point_vector.cross(&self.side_b));
+        let b = self.w.dot(&self.side_a.cross(&planar_hit_point_vector));
 
         Some(PlanarHit { t, point, a, b })
     }

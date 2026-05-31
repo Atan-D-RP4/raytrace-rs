@@ -19,7 +19,7 @@ use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::vec3::{Color3, Point3, Vec3, cross, random_in_unit_disk_with_rng, unit_vector};
+use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
 ///
@@ -179,9 +179,9 @@ impl Camera {
         let viewport_height = 2.0 * h * self.focus_distance;
         let viewport_width = viewport_height * (self.image_width as f64 / self.image_height as f64);
 
-        let w = unit_vector(self.look_from - self.look_at);
-        let u = unit_vector(cross(&self.vup, &w));
-        let v = cross(&w, &u);
+        let w = (self.look_from - self.look_at).unit_vector();
+        let u = self.vup.cross(&w).unit_vector();
+        let v = w.cross(&u);
 
         // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
         // the u and v directions. These are used to calculate the ray direction for each pixel.
@@ -536,7 +536,7 @@ impl Camera {
                 }
             } else {
                 // // If the ray hits nothing, return the background color
-                // let unit_direction = unit_vector(ray.direction);
+                // let unit_direction = ray.direction.unit_vector();
                 // let t = 0.5 * (unit_direction.y + 1.0);
                 // // The background gradient
                 // let background =
