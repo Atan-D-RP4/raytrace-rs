@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc, thread};
 
 use image::{ImageBuffer, Rgb, RgbImage};
@@ -384,7 +385,7 @@ fn headless_render() {
 
     let mut config = *scene.config();
     config.image_width = WIDTH as i32;
-    config.samples_per_pixel = 200;
+    config.samples_per_pixel = 20;
     config.max_depth = 20;
 
     let mut objects = scene.into_objects();
@@ -428,6 +429,10 @@ fn headless_render() {
     }
     info!(%filename, "image saved");
 
+    display_image(filename);
+}
+
+fn display_image(filename: &str) {
     match std::process::Command::new("satty")
         .args(["--filename", filename])
         .spawn()

@@ -19,7 +19,7 @@ use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
+use crate::vec3::{random_in_unit_disk_with_rng, Color3, Point3, Vec3};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
 ///
@@ -489,48 +489,65 @@ impl Camera {
                 let emission = record.material.emitted(&record);
                 accumulated_color += accumulated_attenuation * emission;
 
-                if accumulated_attenuation
+                let max_attenuation = accumulated_attenuation
                     .x
                     .max(accumulated_attenuation.y)
-                    .max(accumulated_attenuation.z)
-                    < 1e-6
-                {
+                    .max(accumulated_attenuation.z);
+
+                if max_attenuation < 1e-6 {
                     return accumulated_color;
                 }
+
                 // If we've exceeded the ray bounce limit, no more light is gathered.
                 if bounce >= 5 {
                     // Russian Roulette
-                    let survival = accumulated_attenuation
-                        .x
-                        .max(accumulated_attenuation.y)
-                        .max(accumulated_attenuation.z)
-                        .clamp(0.05, 0.95);
+                    let survival = max_attenuation.clamp(0.05, 0.95);
                     if rng.random::<f64>() > survival {
                         return accumulated_color;
                     }
                     accumulated_attenuation /= survival;
                 }
 
-                if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
-                    let pdf_val = scatter.pdf;
-                    let scattering_pdf =
-                        record
-                            .material
-                            .scattering_pdf(&ray, &record, &scatter.scattered);
+                let on_light = Point3::from(
+                    rng.random_range(213.0..343.0),
+                    554.0,
+                    rng.random_range(227.0..332.0),
+                );
+                let mut to_light = on_light - record.point;
 
+                let distance_squared = to_light.length_squared();
+                to_light = to_light.unit_vector();
+
+                let light_area = (343.0 - 213.0) * (332.0 - 227.0);
+                let light_cosine = to_light.y.abs();
+
+                if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
                     match record.material {
                         Material::Lambertian { tex: _ } | Material::Isotropic { tex: _ } => {
+                            if to_light.dot(&record.normal) < 0. || light_cosine < 1e-6 {
+                                return accumulated_color;
+                            }
+
+                            let pdf_val = distance_squared / (light_cosine * light_area);
+                            let scattered = Ray::new_with_time(record.point, to_light, ray.time);
+
+                            let scattering_pdf =
+                                record.material.scattering_pdf(&ray, &record, &scattered);
+
                             accumulated_attenuation =
                                 (accumulated_attenuation * scatter.attenuation * scattering_pdf)
                                     / pdf_val;
+                            // Replace the ray with one pointing directly at the light,
+                            // matching the book's light-directed path tracing approach.
+                            ray = scattered;
                         }
                         _ => {
-                            // Non-Lambertian materials in this integrator path are treated as
-                            // non-PDF-tracked events (e.g., specular-like scattering).
+                            // Non-Lambertian materials keep their original scatter
+                            // (specular reflection/transmission).
                             accumulated_attenuation = accumulated_attenuation * scatter.attenuation;
+                            ray = scatter.scattered;
                         }
                     }
-                    ray = scatter.scattered;
                 } else {
                     return accumulated_color;
                 }
