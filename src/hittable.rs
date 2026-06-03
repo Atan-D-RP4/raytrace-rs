@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rand::RngExt;
+
 use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
@@ -100,6 +102,20 @@ pub trait Hittable: Send + Sync {
 
     /// Returns a conservative world-space AABB for acceleration structures.
     fn bounding_box(&self) -> Aabb;
+
+    /// Returns the PDF value for sampling this hittable from a given origin and direction.
+    /// Default returns 0.0 (no contribution to the PDF).
+    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+        let _ = (origin, direction);
+        0.0
+    }
+
+    /// Samples a random direction toward this hittable from a given origin.
+    /// Default returns (1, 0, 0) as a placeholder.
+    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+        let _ = (origin, rng);
+        Vec3::from(1., 0., 0.)
+    }
 }
 
 // /// Blanket impl: any slice of Hittable objects is itself Hittable.
@@ -166,6 +182,18 @@ impl<T: Hittable> Hittable for Vec<T> {
         self.iter()
             .fold(Aabb::new(), |acc, obj| acc.merge(obj.bounding_box()))
     }
+
+    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+        self.iter()
+            .map(|obj| obj.pdf_value(origin, direction))
+            .sum::<f64>()
+            / (self.len() as f64)
+    }
+
+    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+        let index = rng.random_range(0..self.len());
+        self[index].random(origin, rng)
+    }
 }
 
 /// Blanket impl: Arc<T> is Hittable if T is Hittable.
@@ -177,5 +205,13 @@ impl<T: Hittable + ?Sized> Hittable for Arc<T> {
 
     fn bounding_box(&self) -> Aabb {
         (**self).bounding_box()
+    }
+
+    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+        (**self).pdf_value(origin, direction)
+    }
+
+    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+        (**self).random(origin, rng)
     }
 }

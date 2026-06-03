@@ -26,6 +26,9 @@ fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
 pub struct Scene {
     config: CameraConfig,
     objects: Vec<Arc<dyn Hittable>>,
+    /// Geometry-only copies of emitting objects, used by the integrator
+    /// for light importance sampling (HittablePDF).
+    light_objects: Vec<Arc<dyn Hittable>>,
 }
 
 impl Scene {
@@ -33,6 +36,7 @@ impl Scene {
         Self {
             config: CameraConfig::new(),
             objects: Vec::new(),
+            light_objects: Vec::new(),
         }
     }
 
@@ -45,8 +49,12 @@ impl Scene {
         &self.config
     }
 
-    pub fn into_objects(self) -> Vec<Arc<dyn Hittable>> {
-        self.objects
+    /// Returns (world_objects, light_objects).
+    ///
+    /// `light_objects` are geometry-only copies of emitting primitives,
+    /// used by the integrator for importance sampling (HittablePDF).
+    pub fn into_objects(self) -> (Vec<Arc<dyn Hittable>>, Vec<Arc<dyn Hittable>>) {
+        (self.objects, self.light_objects)
     }
 
     pub fn aspect_ratio(mut self, ratio: f64) -> Self {
@@ -103,6 +111,10 @@ impl Scene {
 impl Scene {
     pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
         trace!(?center, radius, "add sphere");
+        if matches!(material, Material::DiffuseLight { .. }) {
+            self.light_objects
+                .push(Arc::new(Sphere::new(&center, radius, material.clone())));
+        }
         self.objects
             .push(Arc::new(Sphere::new(&center, radius, material)));
     }
@@ -110,6 +122,11 @@ impl Scene {
     #[allow(non_snake_case)]
     pub fn add_quad(&mut self, Q: Point3, u: Vec3, v: Vec3, material: Material) {
         trace!(?Q, ?u, ?v, "add quad");
+        // Auto-detect emitters: add geometry-only copy for light importance sampling.
+        if matches!(material, Material::DiffuseLight { .. }) {
+            self.light_objects
+                .push(Arc::new(Quad::new(Q, u, v, material.clone())));
+        }
         self.objects.push(Arc::new(Quad::new(Q, u, v, material)));
     }
 
@@ -121,12 +138,29 @@ impl Scene {
         material: Material,
     ) {
         trace!(?center_start, ?center_end, radius, "add moving sphere");
+        if matches!(material, Material::DiffuseLight { .. }) {
+            self.light_objects.push(Arc::new(Sphere::new_moving(
+                &center_start,
+                &center_end,
+                radius,
+                material.clone(),
+            )));
+        }
         self.objects.push(Arc::new(Sphere::new_moving(
             &center_start,
             &center_end,
             radius,
             material,
         )));
+    }
+
+    pub fn add_object(&mut self, object: Arc<dyn Hittable>) {
+        self.objects.push(object);
+    }
+
+    pub fn add_light(&mut self, light: Arc<dyn Hittable>) {
+        self.objects.push(light.clone());
+        self.light_objects.push(light);
     }
 }
 

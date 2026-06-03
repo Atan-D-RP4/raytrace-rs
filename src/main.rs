@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc, thread};
 
 use image::{ImageBuffer, Rgb, RgbImage};
@@ -17,6 +16,7 @@ use winit::{
 
 use raytrace_rs::bvh::BvhNode;
 use raytrace_rs::camera::{Camera, Framebuffer, SharedFramebuffer};
+use raytrace_rs::hittable::Hittable;
 use raytrace_rs::scene::Scene;
 
 const WIDTH: u32 = 800;
@@ -308,17 +308,27 @@ fn spawn_render_thread(framebuffer: SharedFramebuffer) {
         config.image_width = WIDTH as i32;
         config.samples_per_pixel = 1000;
 
-        let mut objects = scene.into_objects();
+        let (mut objects, mut light_objects) = scene.into_objects();
         let world_len = objects.len();
-        info!(object_count = world_len, "building root bvh");
+        let light_len = light_objects.len();
+        info!(
+            object_count = world_len,
+            light_count = light_len,
+            "building BVHs"
+        );
         profiling::scope!("root_bvh_build");
         let world = Arc::new(BvhNode::new(&mut objects, 0, world_len));
+        let lights: Arc<dyn Hittable> = if light_len > 0 {
+            Arc::new(BvhNode::new(&mut light_objects, 0, light_len))
+        } else {
+            Arc::new(BvhNode::new(&mut vec![], 0, 0))
+        };
 
         let mut camera = Camera::from_config(&config);
         // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
         // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
         profiling::scope!("render_progressive");
-        camera.render_progressive(world, Arc::clone(&framebuffer));
+        camera.render_progressive(&world, &*lights, Arc::clone(&framebuffer));
 
         save_framebuffer_png(&framebuffer, "cornell_box.png");
         info!("render thread complete");
@@ -385,16 +395,26 @@ fn headless_render() {
 
     let mut config = *scene.config();
     config.image_width = WIDTH as i32;
-    config.samples_per_pixel = 20;
-    config.max_depth = 20;
+    config.samples_per_pixel = 100;
+    config.max_depth = 50;
 
-    let mut objects = scene.into_objects();
+    let (mut objects, mut light_objects) = scene.into_objects();
 
     let world_len = objects.len();
-    info!(object_count = world_len, "building root bvh");
+    let light_len = light_objects.len();
+    info!(
+        object_count = world_len,
+        light_count = light_len,
+        "building BVHs"
+    );
     // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
     profiling::scope!("root_bvh_build");
-    let world = std::sync::Arc::new(BvhNode::new(&mut objects, 0, world_len));
+    let world = Arc::new(BvhNode::new(&mut objects, 0, world_len));
+    let lights: Arc<dyn Hittable> = if light_len > 0 {
+        Arc::new(BvhNode::new(&mut light_objects, 0, light_len))
+    } else {
+        Arc::new(BvhNode::new(&mut vec![], 0, 0))
+    };
 
     let mut camera = Camera::from_config(&config);
 
@@ -410,7 +430,7 @@ fn headless_render() {
 
     let start = std::time::Instant::now();
     profiling::scope!("render_cpu");
-    let (width, height, rgb_data) = camera.render(&world);
+    let (width, height, rgb_data) = camera.render(&world, &lights);
     let end = std::time::Instant::now();
     info!(elapsed = ?(end - start), width, height, "render complete");
 

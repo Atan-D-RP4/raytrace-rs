@@ -18,8 +18,9 @@ use tracing::info;
 use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::material::Material;
+use crate::pdf::{CosinePDF, PDF};
 use crate::ray::Ray;
-use crate::vec3::{random_in_unit_disk_with_rng, Color3, Point3, Vec3};
+use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
 ///
@@ -82,7 +83,7 @@ impl CameraConfig {
 /// Runtime camera with precomputed sampling and viewport data.
 ///
 /// Construct via [`Camera::from_config`] so derived fields are initialized.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub struct Camera {
     /// Rendered image width in pixels
     image_width: i32,
@@ -165,7 +166,11 @@ impl Camera {
     fn initialize(&mut self) {
         self.image_height = ((self.image_width as f64 / self.aspect_ratio) as i32).max(1);
 
-        self.pixel_samples_scale = 1.0 / self.samples_per_pixel as f64;
+        // Normalise by the actual number of samples rendered (sqrt_spp²),
+        // not the requested samples_per_pixel, which may not be a perfect square.
+        let sqrt_spp = self.samples_per_pixel.isqrt().max(1);
+        let actual_spp = sqrt_spp * sqrt_spp;
+        self.pixel_samples_scale = 1.0 / actual_spp as f64;
 
         let center = self.look_from;
 
@@ -220,7 +225,7 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): move this method and [`Camera::ray_color`]
     /// into a renderer/pipeline component so alternate engines can share camera setup.
-    pub fn render(&mut self, world: &impl Hittable) -> (u32, u32, Vec<u8>) {
+    pub fn render(&mut self, world: &impl Hittable, lights: &impl Hittable) -> (u32, u32, Vec<u8>) {
         // No need to initialize it here, `from_config` does it, or caller should do it manually
         // self.initialize();
         let _span = tracing::info_span!(
@@ -262,12 +267,12 @@ impl Camera {
                 let j = idx as i32 / image_width;
 
                 // Sample every 1000th pixel for profiling without overhead.
-                let _span = if idx % 1000 == 0 {
+                let span = if idx % 1000 == 0 {
                     Some(tracing::info_span!("pixel", i, j))
                 } else {
                     None
                 };
-                let _guard = _span.as_ref().map(|s| s.enter());
+                let _guard = span.as_ref().map(|s| s.enter());
 
                 // Accumulate samples for anti-aliasing.
                 // Stratified sampling: divide pixel into sqrt(spp) × sqrt(spp) grid,
@@ -278,7 +283,7 @@ impl Camera {
                     for sj in 0..sqrt_spp {
                         let ray =
                             self.get_ray(i as f64, j as f64, si, sj, &mut rng, recip_sqrt_spp);
-                        pixel_color += self.ray_color(&ray, max_depth, &*world, &mut rng);
+                        pixel_color += self.ray_color(&ray, max_depth, &*world, &*lights, &mut rng);
                     }
                 }
 
@@ -320,7 +325,12 @@ impl Camera {
     ///
     /// Note: current implementation is full-frame progressive.
     /// Tile-based publication can reduce copy cost and lock contention.
-    pub fn render_progressive(&mut self, world: Arc<dyn Hittable>, framebuffer: SharedFramebuffer) {
+    pub fn render_progressive(
+        &mut self,
+        world: &impl Hittable,
+        lights: &dyn Hittable,
+        framebuffer: SharedFramebuffer,
+    ) {
         let _span = tracing::info_span!(
             "render_progressive",
             width = self.image_width,
@@ -366,7 +376,7 @@ impl Camera {
                     let i = (idx % width) as f64;
                     let j = (idx / width) as f64;
                     let ray = self.get_ray(i, j, si, sj, &mut rng, recip_sqrt_spp);
-                    self.ray_color(&ray, self.max_depth, &*world, &mut rng)
+                    self.ray_color(&ray, self.max_depth, &*world, &*lights, &mut rng)
                 })
                 .collect::<Vec<_>>();
             // TODO(opt-preview): avoid full `collect` by parallel writing directly into
@@ -472,11 +482,12 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
-    fn ray_color<R: rand::Rng + ?Sized>(
+    fn ray_color<R: rand::Rng>(
         &self,
         initial_ray: &Ray,
         depth: i32,
         world: &dyn Hittable,
+        _lights: &dyn Hittable,
         rng: &mut R,
     ) -> Color3 {
         // TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
@@ -508,37 +519,27 @@ impl Camera {
                     accumulated_attenuation /= survival;
                 }
 
-                let on_light = Point3::from(
-                    rng.random_range(213.0..343.0),
-                    554.0,
-                    rng.random_range(227.0..332.0),
-                );
-                let mut to_light = on_light - record.point;
-
-                let distance_squared = to_light.length_squared();
-                to_light = to_light.unit_vector();
-
-                let light_area = (343.0 - 213.0) * (332.0 - 227.0);
-                let light_cosine = to_light.y.abs();
-
                 if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
                     match record.material {
                         Material::Lambertian { tex: _ } | Material::Isotropic { tex: _ } => {
-                            if to_light.dot(&record.normal) < 0. || light_cosine < 1e-6 {
-                                return accumulated_color;
-                            }
+                            // Cosine-weighted hemisphere PDF for the surface BRDF,
+                            // matching the book's approach in Chapter 10.1.
+                            let surface_pdf = CosinePDF::new(record.normal);
+                            let scattered = Ray::new_with_time(
+                                record.point,
+                                surface_pdf.generate(rng),
+                                ray.time,
+                            );
 
-                            let pdf_val = distance_squared / (light_cosine * light_area);
-                            let scattered = Ray::new_with_time(record.point, to_light, ray.time);
-
+                            // Evaluate the PDF at the SAMPLED outgoing direction,
+                            // not the incoming direction (book: pdf_value = surface_pdf.value(scattered.direction())).
+                            let pdf_val = surface_pdf.value(scattered.direction);
                             let scattering_pdf =
                                 record.material.scattering_pdf(&ray, &record, &scattered);
 
                             accumulated_attenuation =
                                 (accumulated_attenuation * scatter.attenuation * scattering_pdf)
                                     / pdf_val;
-                            // Replace the ray with one pointing directly at the light,
-                            // matching the book's light-directed path tracing approach.
                             ray = scattered;
                         }
                         _ => {

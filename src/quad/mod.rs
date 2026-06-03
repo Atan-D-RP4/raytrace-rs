@@ -29,6 +29,7 @@ pub(crate) struct PlanarPatch {
     bbox: Aabb,
     normal: Vec3,
     d: f64,
+    area: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -56,6 +57,7 @@ impl PlanarPatch {
             bbox: bbox_diagonal1.merge(bbox_diagonal2),
             normal,
             d: normal.dot(&corner),
+            area: n.length(),
         }
     }
 

@@ -1,11 +1,34 @@
 use std::sync::Arc;
 
+use rand::RngExt;
+
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::Point3;
+use crate::vec3::{Point3, Vec3};
 use tracing::{info, trace};
+
+/// A Hittable that never registers a hit. Used as a sentinel child in empty BVH nodes.
+struct AlwaysMiss;
+
+impl Hittable for AlwaysMiss {
+    fn hit(&self, _ray: &Ray, _ray_t: Interval) -> Option<HitRecord<'_>> {
+        None
+    }
+
+    fn bounding_box(&self) -> Aabb {
+        Aabb::new()
+    }
+
+    fn random(&self, _origin: Vec3, _rng: &mut dyn rand::Rng) -> Vec3 {
+        Vec3::from(1., 0., 0.)
+    }
+
+    fn pdf_value(&self, _origin: Vec3, _direction: Vec3) -> f64 {
+        0.0
+    }
+}
 
 /// A binary BVH node for accelerating ray-scene intersection queries.
 pub struct BvhNode {
@@ -42,6 +65,11 @@ impl BvhNode {
         });
 
         let (left, right): (Arc<dyn Hittable>, Arc<dyn Hittable>) = match obj_span {
+            0 => {
+                trace!("bvh empty");
+                let sentinel = Arc::new(AlwaysMiss);
+                (sentinel.clone(), sentinel)
+            }
             1 => {
                 trace!(object_count = obj_span, "bvh leaf");
                 (centroids[0].0.clone(), centroids[0].0.clone())
@@ -91,5 +119,17 @@ impl Hittable for BvhNode {
 
     fn bounding_box(&self) -> Aabb {
         self.bbox
+    }
+
+    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+        0.5 * self.left.pdf_value(origin, direction) + 0.5 * self.right.pdf_value(origin, direction)
+    }
+
+    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+        if rng.random_bool(0.5) {
+            self.left.random(origin, rng)
+        } else {
+            self.right.random(origin, rng)
+        }
     }
 }

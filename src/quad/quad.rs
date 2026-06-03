@@ -1,10 +1,12 @@
+use rand::RngExt;
+
+use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::material::Material;
+use crate::quad::{PlanarPatch, Region2D};
 use crate::ray::Ray;
-
-use super::{PlanarPatch, Region2D};
-use crate::aabb::Aabb;
+use crate::vec3::Vec3;
 
 #[derive(Clone)]
 #[allow(non_snake_case)]
@@ -46,5 +48,27 @@ impl Hittable for Quad {
 
     fn bounding_box(&self) -> Aabb {
         self.patch.bounding_box()
+    }
+
+    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+        if let Some(hit) = self.hit(
+            &Ray::new(origin, direction),
+            Interval::from(0., f64::INFINITY),
+        ) {
+            let distance_squared = hit.time * hit.time * direction.length_squared();
+            let cosine = hit.normal.dot(&direction.unit_vector()).abs();
+
+            distance_squared / (cosine * self.patch.area)
+        } else {
+            0.0
+        }
+    }
+
+    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+        let random_point = self.patch.corner
+            + (self.patch.side_a * rng.random_range(0.0..1.0))
+            + (self.patch.side_b * rng.random_range(0.0..1.0));
+
+        random_point - origin
     }
 }
