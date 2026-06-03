@@ -18,7 +18,7 @@ use tracing::info;
 use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::material::Material;
-use crate::pdf::{CosinePDF, PDF};
+use crate::pdf::{CosinePDF, HittablePDF, MixturePDF, PDF};
 use crate::ray::Ray;
 use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
 
@@ -487,7 +487,7 @@ impl Camera {
         initial_ray: &Ray,
         depth: i32,
         world: &dyn Hittable,
-        _lights: &dyn Hittable,
+        lights: &dyn Hittable,
         rng: &mut R,
     ) -> Color3 {
         // TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
@@ -522,18 +522,19 @@ impl Camera {
                 if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
                     match record.material {
                         Material::Lambertian { tex: _ } | Material::Isotropic { tex: _ } => {
-                            // Cosine-weighted hemisphere PDF for the surface BRDF,
-                            // matching the book's approach in Chapter 10.1.
+                            // Non-Specular materials use explicit light sampling for better convergence.
+                            let light_pdf = HittablePDF::new(lights, record.point);
                             let surface_pdf = CosinePDF::new(record.normal);
+                            let sampling_pdf = MixturePDF::new(vec![&light_pdf, &surface_pdf]);
                             let scattered = Ray::new_with_time(
                                 record.point,
-                                surface_pdf.generate(rng),
+                                sampling_pdf.generate(rng),
                                 ray.time,
                             );
 
                             // Evaluate the PDF at the SAMPLED outgoing direction,
                             // not the incoming direction (book: pdf_value = surface_pdf.value(scattered.direction())).
-                            let pdf_val = surface_pdf.value(scattered.direction);
+                            let pdf_val = sampling_pdf.value(scattered.direction);
                             let scattering_pdf =
                                 record.material.scattering_pdf(&ray, &record, &scattered);
 

@@ -88,3 +88,28 @@ impl<'a> PDF for HittablePDF<'a> {
         self.objects.random(self.origin, rng)
     }
 }
+
+pub struct MixturePDF<'a> {
+    pdfs: Vec<&'a dyn PDF>,
+}
+
+impl<'a> MixturePDF<'a> {
+    pub fn new(pdfs: Vec<&'a dyn PDF>) -> Self {
+        MixturePDF { pdfs }
+    }
+}
+
+impl<'a> PDF for MixturePDF<'a> {
+    fn value(&self, direction: Vec3) -> f64 {
+        let weight = 1.0 / self.pdfs.len() as f64;
+        self.pdfs
+            .iter()
+            .map(|pdf| pdf.value(direction) * weight)
+            .sum()
+    }
+
+    fn generate(&self, rng: &mut dyn rand::Rng) -> Vec3 {
+        let index = rng.random_range(0..self.pdfs.len());
+        self.pdfs[index].generate(rng)
+    }
+}

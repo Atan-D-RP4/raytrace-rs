@@ -460,6 +460,16 @@ impl Scene {
 
         scene.objects.extend(boxes);
 
+        // Add a small sphere in the center to better visualize the light transport effects of the constant media.
+        scene.add_sphere(
+            Point3::from(278., 400., 278.),
+            40.,
+            Material::Metal {
+                albedo: Color3::from(0.8, 0.8, 0.9),
+                fuzz: 1.0,
+            },
+        );
+
         scene.config.samples_per_pixel = 200;
 
         scene
