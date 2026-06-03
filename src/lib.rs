@@ -8,7 +8,7 @@ pub mod material;
 pub mod onb;
 pub mod pdf;
 pub mod perlin;
-pub mod quad;
+pub mod planar;
 pub mod ray;
 pub mod scene;
 pub mod sphere;

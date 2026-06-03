@@ -7,7 +7,7 @@ use crate::camera::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::hittable::Hittable;
 use crate::material::Material;
-use crate::quad::{Quad, box3d};
+use crate::planar::{box3d, quad};
 use crate::sphere::Sphere;
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,
@@ -125,9 +125,9 @@ impl Scene {
         // Auto-detect emitters: add geometry-only copy for light importance sampling.
         if matches!(material, Material::DiffuseLight { .. }) {
             self.light_objects
-                .push(Arc::new(Quad::new(Q, u, v, material.clone())));
+                .push(Arc::new(quad(Q, u, v, material.clone())));
         }
-        self.objects.push(Arc::new(Quad::new(Q, u, v, material)));
+        self.objects.push(Arc::new(quad(Q, u, v, material)));
     }
 
     pub fn add_sphere_moving(
@@ -189,37 +189,37 @@ impl Scene {
                 let z1 = z0 + w;
 
                 let box_quads: Vec<Arc<dyn Hittable>> = vec![
-                    Arc::new(Quad::new(
+                    Arc::new(quad(
                         Point3::from(x0, y0, z1),
                         Vec3::from(w, 0., 0.),
                         Vec3::from(0., y1 - y0, 0.),
                         ground.clone(),
                     )),
-                    Arc::new(Quad::new(
+                    Arc::new(quad(
                         Point3::from(x1, y0, z1),
                         Vec3::from(0., 0., -(z1 - z0)),
                         Vec3::from(0., y1 - y0, 0.),
                         ground.clone(),
                     )),
-                    Arc::new(Quad::new(
+                    Arc::new(quad(
                         Point3::from(x1, y0, z0),
                         Vec3::from(-(x1 - x0), 0., 0.),
                         Vec3::from(0., y1 - y0, 0.),
                         ground.clone(),
                     )),
-                    Arc::new(Quad::new(
+                    Arc::new(quad(
                         Point3::from(x0, y0, z0),
                         Vec3::from(0., 0., z1 - z0),
                         Vec3::from(0., y1 - y0, 0.),
                         ground.clone(),
                     )),
-                    Arc::new(Quad::new(
+                    Arc::new(quad(
                         Point3::from(x0, y1, z1),
                         Vec3::from(x1 - x0, 0., 0.),
                         Vec3::from(0., 0., -(z1 - z0)),
                         ground.clone(),
                     )),
-                    Arc::new(Quad::new(
+                    Arc::new(quad(
                         Point3::from(x0, y0, z0),
                         Vec3::from(x1 - x0, 0., 0.),
                         Vec3::from(0., 0., z1 - z0),
