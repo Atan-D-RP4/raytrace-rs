@@ -166,7 +166,7 @@ impl<R: Region2D> Hittable for PlanarPatch<R> {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         if let Some(hit) = self.hit(
             &Ray::new(origin, direction),
-            Interval::from(0., f64::INFINITY),
+            Interval::from(0.001, f64::INFINITY),
         ) {
             let distance_squared = hit.time * hit.time * direction.length_squared();
             let cosine = hit.normal.dot(&direction.unit_vector()).abs();

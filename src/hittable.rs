@@ -185,9 +185,8 @@ impl<T: Hittable> Hittable for Vec<T> {
 
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         self.iter()
-            .map(|obj| obj.pdf_value(origin, direction))
-            .sum::<f64>()
-            / (self.len() as f64)
+            .map(|obj| obj.pdf_value(origin, direction) * (1.0 / self.len() as f64))
+            .fold(0.0, |acc, val| acc + val)
     }
 
     fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {

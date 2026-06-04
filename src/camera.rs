@@ -17,8 +17,8 @@ use tracing::info;
 
 use crate::hittable::Hittable;
 use crate::interval::Interval;
-use crate::material::Material;
-use crate::pdf::{CosinePDF, HittablePDF, MixturePDF, PDF};
+use crate::material::Scatter;
+use crate::pdf::{HittablePDF, MixturePDF, PDF};
 use crate::ray::Ray;
 use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
 
@@ -283,18 +283,14 @@ impl Camera {
                     for sj in 0..sqrt_spp {
                         let ray =
                             self.get_ray(i as f64, j as f64, si, sj, &mut rng, recip_sqrt_spp);
-                        pixel_color += self.ray_color(&ray, max_depth, &*world, &*lights, &mut rng);
+                        let sample = self.ray_color(&ray, max_depth, &*world, &*lights, &mut rng);
+                        // Guard per-sample: a single NaN/Inf corrupts the pixel
+                        // accumulator (NaN + anything = NaN), so discard bad
+                        // samples individually rather than post-hoc per-pixel.
+                        if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
+                            pixel_color += sample;
+                        }
                     }
-                }
-
-                if !pixel_color.x.is_finite() {
-                    pixel_color.x = 0.0;
-                }
-                if !pixel_color.y.is_finite() {
-                    pixel_color.y = 0.0;
-                }
-                if !pixel_color.z.is_finite() {
-                    pixel_color.z = 0.0;
                 }
 
                 // Scale by sample count and apply gamma correction.
@@ -383,7 +379,12 @@ impl Camera {
             // preallocated linear sample buffer indexed by pixel.
 
             for (dst, sample) in accum.iter_mut().zip(sample_colors) {
-                *dst += sample;
+                // Guard against NaN/Inf from degenerate paths — without this,
+                // a single non-finite sample permanently corrupts the pixel
+                // accumulator (NaN + anything = NaN).
+                if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
+                    *dst += sample;
+                }
             }
 
             let scale = 1.0 / (sample_idx + 1) as f64;
@@ -506,7 +507,7 @@ impl Camera {
                     .max(accumulated_attenuation.z);
 
                 if max_attenuation < 1e-6 {
-                    return accumulated_color;
+                    return clamp_firefly(accumulated_color);
                 }
 
                 // If we've exceeded the ray bounce limit, no more light is gathered.
@@ -514,44 +515,60 @@ impl Camera {
                     // Russian Roulette
                     let survival = max_attenuation.clamp(0.05, 0.95);
                     if rng.random::<f64>() > survival {
-                        return accumulated_color;
+                        return clamp_firefly(accumulated_color);
                     }
                     accumulated_attenuation /= survival;
                 }
 
                 if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
-                    match record.material {
-                        Material::Lambertian { tex: _ } | Material::Isotropic { tex: _ } => {
-                            // Non-Specular materials use explicit light sampling for better convergence.
-                            let light_pdf = HittablePDF::new(lights, record.point);
-                            let surface_pdf = CosinePDF::new(record.normal);
-                            let sampling_pdf = MixturePDF::new(vec![&light_pdf, &surface_pdf]);
-                            let scattered = Ray::new_with_time(
-                                record.point,
-                                sampling_pdf.generate(rng),
-                                ray.time,
-                            );
+                    match scatter {
+                        Scatter::Diffuse {
+                            attenuation,
+                            surface_pdf,
+                        } => {
+                            // Build mixture PDF: 50% light sampling, 50% surface sampling.
+                            let light_pdf = Box::new(HittablePDF::new(lights, record.point));
+                            let mixture_pdf = MixturePDF::new(vec![light_pdf, surface_pdf]);
 
-                            // Evaluate the PDF at the SAMPLED outgoing direction,
-                            // not the incoming direction (book: pdf_value = surface_pdf.value(scattered.direction())).
-                            let pdf_val = sampling_pdf.value(scattered.direction);
+                            // Sample direction from the mixture.
+                            let direction = mixture_pdf.generate(rng);
+                            let scattered = Ray::new_with_time(record.point, direction, ray.time);
+                            let pdf_val = mixture_pdf.value(direction);
+
+                            // Evaluate the material BRDF at the sampled direction.
                             let scattering_pdf =
                                 record.material.scattering_pdf(&ray, &record, &scattered);
 
+                            // Guard against 0/0 (e.g. tangent direction + no light hit).
+                            let weight = if pdf_val > 0.0 {
+                                scattering_pdf / pdf_val
+                            } else {
+                                0.0
+                            };
                             accumulated_attenuation =
-                                (accumulated_attenuation * scatter.attenuation * scattering_pdf)
-                                    / pdf_val;
+                                accumulated_attenuation * attenuation * weight;
                             ray = scattered;
                         }
-                        _ => {
-                            // Non-Lambertian materials keep their original scatter
-                            // (specular reflection/transmission).
-                            accumulated_attenuation = accumulated_attenuation * scatter.attenuation;
-                            ray = scatter.scattered;
+                        Scatter::Specular {
+                            attenuation,
+                            scattered,
+                        } => {
+                            accumulated_attenuation = accumulated_attenuation * attenuation;
+                            ray = scattered;
                         }
                     }
+                    // Clamp accumulated attenuation to prevent firefly artifacts.
+                    // Balance heuristic weight=2.0 × attenuation=0.73 = 1.46× per
+                    // bounce; without clamping this compounds exponentially over
+                    // max_depth bounces, producing extreme per-sample values that
+                    // manifest as bright firefly pixels.
+                    accumulated_attenuation = Color3::from(
+                        accumulated_attenuation.x.min(10.0),
+                        accumulated_attenuation.y.min(10.0),
+                        accumulated_attenuation.z.min(10.0),
+                    );
                 } else {
-                    return accumulated_color;
+                    return clamp_firefly(accumulated_color);
                 }
             } else {
                 // // If the ray hits nothing, return the background color
@@ -560,11 +577,13 @@ impl Camera {
                 // // The background gradient
                 // let background =
                 //     ((1.0 - t) * Vec3::from(1.0, 1.0, 1.0)) + (t * Vec3::from(0.5, 0.7, 1.0));
-                return accumulated_color + accumulated_attenuation * self.background;
+                return clamp_firefly(
+                    accumulated_color + accumulated_attenuation * self.background,
+                );
             }
         }
 
-        accumulated_color
+        clamp_firefly(accumulated_color)
     }
 
     /// Samples a point on the defocus disk for depth-of-field ray origins.
@@ -572,6 +591,18 @@ impl Camera {
         let point = random_in_unit_disk_with_rng(rng);
         self.look_from + (point.x * self.defocus_disk_u) + (point.y * self.defocus_disk_v)
     }
+}
+
+/// Hard clamp on per-sample contribution to eliminate fireflies.
+///
+/// Paths with extreme attenuation (e.g. 2.0 mixture weight × 0.73 albedo over
+/// many bounces) can produce finite but enormous values. This clamp bounds any
+/// single path's contribution so it cannot manifest as a white pixel after
+/// gamma correction.
+#[inline(always)]
+fn clamp_firefly(color: Color3) -> Color3 {
+    const MAX: f64 = 100.0;
+    Color3::from(color.x.min(MAX), color.y.min(MAX), color.z.min(MAX))
 }
 
 #[inline(always)]

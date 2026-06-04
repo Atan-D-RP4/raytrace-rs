@@ -14,6 +14,13 @@ pub trait Transform: Send + Sync {
     fn hit(&self, hit: &mut HitRecord<'_>);
 
     fn bbox(&self, bbox: Aabb) -> Aabb;
+
+    /// Transform a direction vector from object space to world space.
+    /// For rigid transforms this is the inverse rotation applied to the direction.
+    /// Default assumes identity (direction unchanged), which is correct for Translate.
+    fn object_to_world_direction(&self, dir: Vec3) -> Vec3 {
+        dir
+    }
 }
 
 /// A zero-cost wrapper that applies a transform to any hittable object.
@@ -58,6 +65,27 @@ where
 
     fn bounding_box(&self) -> Aabb {
         self.bbox
+    }
+
+    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+        // Transform the ray into object space and delegate to the inner object.
+        // For rigid transforms (rotation + translation), the Jacobian of the
+        // area mapping is 1, so the solid-angle PDF is preserved.
+        let ray = Ray::new_with_time(origin, direction, 0.0);
+        let transformed = self.transform.ray(&ray);
+        self.object
+            .pdf_value(transformed.origin, transformed.direction)
+    }
+
+    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+        // Transform origin to object space via a dummy ray.
+        let to_obj = self
+            .transform
+            .ray(&Ray::new_with_time(origin, Vec3::ZERO, 0.0));
+        // Sample a direction in object space.
+        let dir = self.object.random(to_obj.origin, rng);
+        // Transform direction back to world space using the inverse rotation.
+        self.transform.object_to_world_direction(dir)
     }
 }
 
@@ -165,6 +193,15 @@ impl Transform for RotateY {
                 });
             });
         Aabb::from_points(&min, &max)
+    }
+
+    fn object_to_world_direction(&self, dir: Vec3) -> Vec3 {
+        // Inverse of the forward rotation: transpose the matrix (negate sin_theta).
+        Vec3::from(
+            (self.cos_theta * dir.x) + (self.sin_theta * dir.z),
+            dir.y,
+            (-self.sin_theta * dir.x) + (self.cos_theta * dir.z),
+        )
     }
 }
 

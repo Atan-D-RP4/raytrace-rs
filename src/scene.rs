@@ -440,7 +440,16 @@ impl Scene {
                 Vec3::from(165., 165., 165.),
                 Vec3::from(130., 0., 65.),
                 -18.,
-                white,
+                white.clone(),
+            ),
+            // A *smaller* box in front of the taller box and beside the smaller box at the front
+            (
+                Vec3::from(100., 100., 100.),
+                Vec3::from(340., 0., 100.),
+                17.,
+                Material::Dielectric {
+                    refractive_idx: 1.5,
+                },
             ),
         ];
 
@@ -462,11 +471,19 @@ impl Scene {
 
         // Add a small sphere in the center to better visualize the light transport effects of the constant media.
         scene.add_sphere(
-            Point3::from(278., 400., 278.),
+            Point3::from(348., 400., 278.),
             40.,
             Material::Metal {
                 albedo: Color3::from(0.8, 0.8, 0.9),
                 fuzz: 1.0,
+            },
+        );
+        // Put a sphere above the smaller box
+        scene.add_sphere(
+            Point3::from(200., 350., 200.),
+            90.,
+            Material::Dielectric {
+                refractive_idx: 1.5,
             },
         );
 

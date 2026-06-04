@@ -1,4 +1,4 @@
-use std::{collections::HashMap, num::NonZeroU32, sync::Arc, thread};
+use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
 use image::{ImageBuffer, Rgb, RgbImage};
 use softbuffer::{Context, Surface};
@@ -211,7 +211,7 @@ impl ApplicationHandler for App {
 
         let id = window.id();
 
-        let state = WindowState::new(window, Arc::clone(&self.framebuffer));
+        let state = WindowState::new(window, self.framebuffer.clone());
         state.window.request_redraw();
 
         self.windows.insert(id, state);
@@ -287,54 +287,6 @@ fn save_framebuffer_png(framebuffer: &SharedFramebuffer, filename: &str) {
     }
 }
 
-#[profiling::function]
-/// Spawns dedicated CPU render worker thread.
-///
-/// Worker thread responsibilities:
-/// - Build scene and root BVH.
-/// - Run progressive renderer writing into shared framebuffer.
-/// - Save completed frame to disk.
-///
-/// UI thread remains free to process events and draw continuously.
-fn spawn_render_thread(framebuffer: SharedFramebuffer) {
-    thread::spawn(move || {
-        let _span = tracing::info_span!("render_thread").entered();
-        info!("starting render thread");
-
-        profiling::scope!("scene_build");
-        let scene = Scene::cornell_box();
-        let mut config = *scene.config();
-
-        config.image_width = WIDTH as i32;
-        config.samples_per_pixel = 1000;
-
-        let (mut objects, mut light_objects) = scene.into_objects();
-        let world_len = objects.len();
-        let light_len = light_objects.len();
-        info!(
-            object_count = world_len,
-            light_count = light_len,
-            "building BVHs"
-        );
-        profiling::scope!("root_bvh_build");
-        let world = Arc::new(BvhNode::new(&mut objects, 0, world_len));
-        let lights: Arc<dyn Hittable> = if light_len > 0 {
-            Arc::new(BvhNode::new(&mut light_objects, 0, light_len))
-        } else {
-            Arc::new(BvhNode::new(&mut vec![], 0, 0))
-        };
-
-        let mut camera = Camera::from_config(&config);
-        // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
-        // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
-        profiling::scope!("render_progressive");
-        camera.render_progressive(&world, &*lights, Arc::clone(&framebuffer));
-
-        save_framebuffer_png(&framebuffer, "cornell_box.png");
-        info!("render thread complete");
-    });
-}
-
 /// Initializes global tracing subscriber for app/process lifetime.
 ///
 /// Uses `RUST_LOG` when available, falls back to `info` level.
@@ -368,18 +320,58 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     Ok(())
 }
 
+#[profiling::function]
 fn live_render() -> Result<(), winit::error::EventLoopError> {
     let scene = Scene::cornell_box();
     let mut config = *scene.config();
-    config.image_width = WIDTH as i32;
     let camera = Camera::from_config(&config);
     let (width, height) = camera.image_dimensions();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new(width, height)));
 
-    spawn_render_thread(Arc::clone(&framebuffer));
+    config.image_width = WIDTH as i32;
+    config.samples_per_pixel = 1000;
 
     let event_loop = EventLoop::new()?;
-    let mut app = App::new(framebuffer, width, height);
+    let mut app = App::new(framebuffer.clone(), width, height);
+
+    // Spawns dedicated CPU render worker thread.
+    //
+    // Worker thread responsibilities:
+    // - Build scene and root BVH.
+    // - Run progressive renderer writing into shared framebuffer.
+    // - Save completed frame to disk.
+    //
+    // UI thread remains free to process events and draw continuously.
+    std::thread::spawn(move || {
+        let _span = tracing::info_span!("render_thread").entered();
+        info!("starting render thread");
+
+        profiling::scope!("scene_build");
+        let (mut objects, mut light_objects) = scene.into_objects();
+        let world_len = objects.len();
+        let light_len = light_objects.len();
+        info!(
+            object_count = world_len,
+            light_count = light_len,
+            "building BVHs"
+        );
+        profiling::scope!("root_bvh_build");
+        let world = Arc::new(BvhNode::new(&mut objects, 0, world_len));
+        let lights: Arc<dyn Hittable> = if light_len > 0 {
+            Arc::new(BvhNode::new(&mut light_objects, 0, light_len))
+        } else {
+            Arc::new(BvhNode::new(&mut vec![], 0, 0))
+        };
+
+        let mut camera = Camera::from_config(&config);
+        // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
+        // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
+        profiling::scope!("render_progressive");
+        camera.render_progressive(&world, &*lights, framebuffer.clone());
+
+        save_framebuffer_png(&framebuffer, "cornell_box.png");
+        info!("render thread complete");
+    });
 
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -395,10 +387,10 @@ fn headless_render() {
 
     let mut config = *scene.config();
     config.image_width = WIDTH as i32;
-    config.samples_per_pixel = 100;
+    config.samples_per_pixel = 1000;
     config.max_depth = 50;
 
-    let (mut objects, mut light_objects) = scene.into_objects();
+    let (mut objects, light_objects) = scene.into_objects();
 
     let world_len = objects.len();
     let light_len = light_objects.len();
@@ -410,11 +402,6 @@ fn headless_render() {
     // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
     profiling::scope!("root_bvh_build");
     let world = Arc::new(BvhNode::new(&mut objects, 0, world_len));
-    let lights: Arc<dyn Hittable> = if light_len > 0 {
-        Arc::new(BvhNode::new(&mut light_objects, 0, light_len))
-    } else {
-        Arc::new(BvhNode::new(&mut vec![], 0, 0))
-    };
 
     let mut camera = Camera::from_config(&config);
 
@@ -430,7 +417,7 @@ fn headless_render() {
 
     let start = std::time::Instant::now();
     profiling::scope!("render_cpu");
-    let (width, height, rgb_data) = camera.render(&world, &lights);
+    let (width, height, rgb_data) = camera.render(&world, &light_objects);
     let end = std::time::Instant::now();
     info!(elapsed = ?(end - start), width, height, "render complete");
 

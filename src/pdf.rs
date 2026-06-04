@@ -89,22 +89,43 @@ impl<'a> PDF for HittablePDF<'a> {
     }
 }
 
+pub struct DiracPDF {
+    direction: Vec3,
+}
+
+impl DiracPDF {
+    pub fn new(direction: Vec3) -> Self {
+        Self { direction }
+    }
+}
+
+impl PDF for DiracPDF {
+    fn value(&self, _direction: Vec3) -> f64 {
+        // Dirac delta: the sampling PDF matches the material's delta distribution.
+        // In the MC estimator, both deltas cancel, leaving just the reflectance.
+        1.0
+    }
+
+    fn generate(&self, _rng: &mut dyn rand::Rng) -> Vec3 {
+        self.direction
+    }
+}
+
 pub struct MixturePDF<'a> {
-    pdfs: Vec<&'a dyn PDF>,
+    pdfs: Vec<Box<dyn PDF + 'a>>,
 }
 
 impl<'a> MixturePDF<'a> {
-    pub fn new(pdfs: Vec<&'a dyn PDF>) -> Self {
+    pub fn new(pdfs: Vec<Box<dyn PDF + 'a>>) -> Self {
         MixturePDF { pdfs }
     }
 }
 
 impl<'a> PDF for MixturePDF<'a> {
     fn value(&self, direction: Vec3) -> f64 {
-        let weight = 1.0 / self.pdfs.len() as f64;
         self.pdfs
             .iter()
-            .map(|pdf| pdf.value(direction) * weight)
+            .map(|pdf| pdf.value(direction) * 1.0 / self.pdfs.len() as f64)
             .sum()
     }
 
