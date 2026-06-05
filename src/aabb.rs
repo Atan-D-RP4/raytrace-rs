@@ -109,7 +109,7 @@ impl Aabb {
         // slab method - test intersection against each axis pair
         for axis in 0..3 {
             let ax = self.axis_interval(axis);
-            let inv_d = 1.0 / ray.direction[axis as usize];
+            let inv_d = ray.inverse_direction[axis as usize];
             let mut t0 = (ax.min - ray.origin[axis as usize]) * inv_d;
             let mut t1 = (ax.max - ray.origin[axis as usize]) * inv_d;
 

@@ -17,8 +17,8 @@ use tracing::info;
 
 use crate::hittable::Hittable;
 use crate::interval::Interval;
-use crate::material::Scatter;
-use crate::pdf::{HittablePDF, MixturePDF, PDF};
+use crate::material::{Scatter, SurfacePDFKind};
+use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
 use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
 
@@ -234,9 +234,7 @@ impl Camera {
             height = self.image_height,
             spp = self.samples_per_pixel,
             max_depth = self.max_depth,
-            background_r = self.background.x,
-            background_g = self.background.y,
-            background_b = self.background.z,
+            background = ?self.background,
         )
         .entered();
 
@@ -365,7 +363,7 @@ impl Camera {
                 tracing::info_span!("progressive_pass", sample = sample_idx + 1).entered();
             profiling::scope!("progressive_pass");
 
-            let sample_colors = (0..total_pixels)
+            (0..total_pixels)
                 .into_par_iter()
                 .map(|idx| {
                     let mut rng = rand::rng();
@@ -374,18 +372,16 @@ impl Camera {
                     let ray = self.get_ray(i, j, si, sj, &mut rng, recip_sqrt_spp);
                     self.ray_color(&ray, self.max_depth, &*world, &*lights, &mut rng)
                 })
-                .collect::<Vec<_>>();
-            // TODO(opt-preview): avoid full `collect` by parallel writing directly into
-            // preallocated linear sample buffer indexed by pixel.
-
-            for (dst, sample) in accum.iter_mut().zip(sample_colors) {
-                // Guard against NaN/Inf from degenerate paths — without this,
-                // a single non-finite sample permanently corrupts the pixel
-                // accumulator (NaN + anything = NaN).
-                if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
-                    *dst += sample;
-                }
-            }
+                // Write samples into accumulators with per-sample NaN/Inf guard.
+                .zip(accum.par_iter_mut())
+                .for_each(|(sample, accum_color)| {
+                    // Guard per-sample: a single NaN/Inf corrupts the pixel
+                    // accumulator (NaN + anything = NaN), so discard bad
+                    // samples individually rather than post-hoc per-pixel.
+                    if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
+                        *accum_color += sample;
+                    }
+                });
 
             let scale = 1.0 / (sample_idx + 1) as f64;
             profiling::scope!("progressive_tonemap");
@@ -524,11 +520,27 @@ impl Camera {
                     match scatter {
                         Scatter::Diffuse {
                             attenuation,
-                            surface_pdf,
+                            surface_pdf_kind,
                         } => {
-                            // Build mixture PDF: 50% light sampling, 50% surface sampling.
-                            let light_pdf = Box::new(HittablePDF::new(lights, record.point));
-                            let mixture_pdf = MixturePDF::new(vec![light_pdf, surface_pdf]);
+                            // Configure the surface PDF from the material's
+                            // descriptor. No allocation — the concrete PDF is
+                            // stack-owned and reused every bounce.
+                            let surface_pdf: &dyn PDF = match surface_pdf_kind {
+                                SurfacePDFKind::Cosine { normal } => &CosinePDF::new(normal),
+                                SurfacePDFKind::Ggx { wo, normal, alpha } => {
+                                    &GgxSamplePDF::new(wo, normal, alpha)
+                                }
+                                SurfacePDFKind::UniformSphere => &UniformSpherePDF::new(),
+                            };
+
+                            // Light sampling PDF — also stack-owned, updated
+                            // with the current hit point each bounce.
+                            let light_pdf = HittablePDF::new(lights, record.point);
+
+                            // Build mixture PDF from thin references. Zero
+                            // allocation — the slice lives on the stack.
+                            let pdfs: &[&dyn PDF] = &[&light_pdf, surface_pdf];
+                            let mixture_pdf = MixturePDF::new(pdfs);
 
                             // Sample direction from the mixture.
                             let direction = mixture_pdf.generate(rng);
@@ -557,11 +569,11 @@ impl Camera {
                             ray = scattered;
                         }
                     }
-                    // Clamp accumulated attenuation to prevent firefly artifacts.
-                    // Balance heuristic weight=2.0 × attenuation=0.73 = 1.46× per
-                    // bounce; without clamping this compounds exponentially over
-                    // max_depth bounces, producing extreme per-sample values that
-                    // manifest as bright firefly pixels.
+
+                    // Clamp accumulated attenuation to prevent firefly artifacts. Balance heuristic
+                    // weight=2.0 × attenuation=0.73 = 1.46× per bounce; without clamping this
+                    // compounds exponentially over max_depth bounces, producing extreme per-sample
+                    // values that manifest as bright firefly pixels.
                     accumulated_attenuation = Color3::from(
                         accumulated_attenuation.x.min(10.0),
                         accumulated_attenuation.y.min(10.0),
@@ -571,10 +583,11 @@ impl Camera {
                     return clamp_firefly(accumulated_color);
                 }
             } else {
-                // // If the ray hits nothing, return the background color
+                // If the ray hits nothing, return the background color
                 // let unit_direction = ray.direction.unit_vector();
                 // let t = 0.5 * (unit_direction.y + 1.0);
-                // // The background gradient
+
+                // The background gradient
                 // let background =
                 //     ((1.0 - t) * Vec3::from(1.0, 1.0, 1.0)) + (t * Vec3::from(0.5, 0.7, 1.0));
                 return clamp_firefly(
@@ -595,10 +608,9 @@ impl Camera {
 
 /// Hard clamp on per-sample contribution to eliminate fireflies.
 ///
-/// Paths with extreme attenuation (e.g. 2.0 mixture weight × 0.73 albedo over
-/// many bounces) can produce finite but enormous values. This clamp bounds any
-/// single path's contribution so it cannot manifest as a white pixel after
-/// gamma correction.
+/// Paths with extreme attenuation (e.g. 2.0 mixture weight × 0.73 albedo over many bounces) can
+/// produce finite but enormous values. This clamp bounds any single path's contribution so it
+/// cannot manifest as a white pixel after gamma correction.
 #[inline(always)]
 fn clamp_firefly(color: Color3) -> Color3 {
     const MAX: f64 = 100.0;

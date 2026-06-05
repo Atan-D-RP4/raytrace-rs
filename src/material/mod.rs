@@ -49,26 +49,23 @@ use rand::RngExt;
 
 use crate::hittable::HitRecord;
 use crate::onb::Onb;
-use crate::pdf::GgxSamplePDF;
-use crate::pdf::{CosinePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, random_unit_vector_with_rng, reflect, refract};
 
 /// Result of material sampling for a single bounce.
 ///
-/// Diffuse materials return only the surface PDF — the integrator builds the
-/// mixture with light sampling and generates the direction. Specular
-/// materials return the fully-determined scattered ray.
-pub enum Scatter<'a> {
+/// Diffuse materials return a [`SurfacePDFKind`] describing *which* PDF to
+/// use and with what parameters. The integrator owns the concrete PDF objects
+/// on the stack and reuses them across bounces — no heap allocation needed.
+pub enum Scatter {
     /// Diffuse path: integrator samples direction from a mixture of the
     /// surface PDF and light PDF.
     Diffuse {
         /// Multiplicative color throughput for this bounce.
         attenuation: Color3,
-        /// Material's surface sampling PDF (e.g. cosine-weighted hemisphere).
-        /// The integrator combines this with light sampling into a mixture.
-        surface_pdf: Box<dyn PDF + 'a>,
+        /// Which surface PDF the integrator should configure and use.
+        surface_pdf_kind: SurfacePDFKind,
     },
     /// Specular path: direction is fully determined by the material
     /// (mirror reflection or dielectric refraction).
@@ -78,6 +75,29 @@ pub enum Scatter<'a> {
         /// Outgoing ray with the determined direction.
         scattered: Ray,
     },
+}
+
+/// Describes which surface sampling PDF the integrator should use.
+///
+/// Instead of returning a heap-allocated `Box<dyn PDF>`, materials return
+/// this lightweight enum. The integrator owns concrete PDF objects on the
+/// stack and updates them from the kind + parameters here.
+#[derive(Clone, Copy, Debug)]
+pub enum SurfacePDFKind {
+    /// Cosine-weighted hemisphere. `normal` defines the hemisphere orientation.
+    Cosine { normal: Vec3 },
+    /// GGX microfacet importance sampling. The half-vector is sampled from
+    /// the GGX NDF, then the incoming direction is reflected about it.
+    Ggx {
+        /// Outgoing direction (from surface toward camera), in world space.
+        wo: Vec3,
+        /// Surface normal.
+        normal: Vec3,
+        /// GGX alpha (roughness² clamped to [0.001, 1]).
+        alpha: f64,
+    },
+    /// Uniform sampling over the full sphere (used by isotropic volumes).
+    UniformSphere,
 }
 
 /// Supported material models.
@@ -157,17 +177,18 @@ impl Material {
         ray: &Ray,
         record: &HitRecord,
         rng: &mut R,
-    ) -> Option<Scatter<'_>> {
+    ) -> Option<Scatter> {
         match self {
             Material::Lambertian { albedo, tex } => {
                 let attenuation = tex
                     .as_ref()
                     .map(|t| t.value(&record.texture_coords()))
                     .unwrap_or(*albedo);
-                let surface_pdf = Box::new(CosinePDF::new(record.normal));
                 Some(Scatter::Diffuse {
                     attenuation,
-                    surface_pdf,
+                    surface_pdf_kind: SurfacePDFKind::Cosine {
+                        normal: record.normal,
+                    },
                 })
             }
             Material::Metal { albedo, fuzz } => {
@@ -181,10 +202,9 @@ impl Material {
                     Ray::new_with_time(record.point, direction / length_sq.sqrt(), ray.time);
                 if scattered.direction.dot(&record.normal) > 0.0 {
                     if *fuzz > 0.0 {
-                        let surface_pdf = Box::new(CosinePDF::new(reflected));
                         Some(Scatter::Diffuse {
                             attenuation: *albedo,
-                            surface_pdf,
+                            surface_pdf_kind: SurfacePDFKind::Cosine { normal: reflected },
                         })
                     } else {
                         Some(Scatter::Specular {
@@ -224,10 +244,9 @@ impl Material {
                     .as_ref()
                     .map(|t| t.value(&record.texture_coords()))
                     .unwrap_or(*albedo);
-                let surface_pdf = Box::new(UniformSpherePDF::new());
                 Some(Scatter::Diffuse {
                     attenuation,
-                    surface_pdf,
+                    surface_pdf_kind: SurfacePDFKind::UniformSphere,
                 })
             }
             Material::Glossy {
@@ -278,12 +297,14 @@ impl Material {
                 };
 
                 // The PDF for this sample: D(H) * (n·H) / (4 * |wo·H|)
-                let surface_pdf = Box::new(GgxSamplePDF::new(wo, record.normal, alpha));
-
                 Some(Scatter::Diffuse {
                     // f_r * cos_i = the *integrand* for the Monte Carlo estimator.
                     attenuation: *albedo * brdf * cos_i,
-                    surface_pdf,
+                    surface_pdf_kind: SurfacePDFKind::Ggx {
+                        wo,
+                        normal: record.normal,
+                        alpha,
+                    },
                 })
             }
             Material::Mix { a, b, weight } => {

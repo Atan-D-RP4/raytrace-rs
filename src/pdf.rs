@@ -114,11 +114,11 @@ impl PDF for DiracPDF {
 }
 
 pub struct MixturePDF<'a> {
-    pdfs: Vec<Box<dyn PDF + 'a>>,
+    pdfs: &'a [&'a dyn PDF],
 }
 
 impl<'a> MixturePDF<'a> {
-    pub fn new(pdfs: Vec<Box<dyn PDF + 'a>>) -> Self {
+    pub fn new(pdfs: &'a [&'a dyn PDF]) -> Self {
         MixturePDF { pdfs }
     }
 }
@@ -127,7 +127,7 @@ impl<'a> PDF for MixturePDF<'a> {
     fn value(&self, direction: Vec3) -> f64 {
         self.pdfs
             .iter()
-            .map(|pdf| pdf.value(direction) * 1.0 / self.pdfs.len() as f64)
+            .map(|pdf| pdf.value(direction) / self.pdfs.len() as f64)
             .sum()
     }
 

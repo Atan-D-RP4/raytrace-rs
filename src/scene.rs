@@ -830,8 +830,8 @@ impl Scene {
             },
         );
         scene.add_light(Arc::new(Sphere::new(
-            &Point3::from(0., 7., 0.),
-            2.,
+            &Point3::from(0., 4.5, 0.),
+            1.5,
             Material::light_textured(Arc::new(ImageTexture::new("./earthmap.jpg").unwrap())),
         )));
 
