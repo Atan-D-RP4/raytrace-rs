@@ -734,8 +734,8 @@ impl Scene {
         ));
         scene.add_sphere(Point3::from(0., -1000., 0.), 1000., ground_material);
 
-        for a in -11..11 {
-            for b in -11..11 {
+        for a in -21..21 {
+            for b in -21..21 {
                 let world_seed = rand::random::<u8>();
                 let center = Point3::from(
                     a as f64 + 0.9 * rand::random::<f64>(),
@@ -754,9 +754,47 @@ impl Scene {
                             albedo: Color3::random_range(0.5, 1.0),
                             fuzz: rand::random::<f64>() * 0.5,
                         }
-                    } else {
+                    } else if world_seed % 3 == 2 {
                         Material::Dielectric {
                             refractive_idx: 1.5,
+                        }
+                    } else if world_seed % 3 == 3 {
+                        Material::Isotropic {
+                            albedo: Color3::random(),
+                            tex: if rand::random() {
+                                Some(Arc::new(ImageTexture::new("./earthmap.jpg").unwrap()))
+                            } else {
+                                None
+                            },
+                        }
+                    } else if world_seed % 3 == 4 {
+                        Material::Glossy {
+                            albedo: Color3::random(),
+                            roughness: rand::random::<f64>(),
+                            ior: 1.5,
+                        }
+                    } else if world_seed % 3 == 5 {
+                        Material::Coated {
+                            substrate: Box::new(Material::Lambertian {
+                                albedo: Color3::random() * Color3::random(),
+                                tex: None,
+                            }),
+                            coating: Box::new(Material::Metal {
+                                albedo: Color3::random_range(0.5, 1.0),
+                                fuzz: rand::random::<f64>() * 0.5,
+                            }),
+                        }
+                    } else {
+                        Material::Mix {
+                            a: Box::new(Material::Lambertian {
+                                albedo: Color3::random() * Color3::random(),
+                                tex: None,
+                            }),
+                            b: Box::new(Material::Metal {
+                                albedo: Color3::random_range(0.5, 1.0),
+                                fuzz: rand::random::<f64>() * 0.5,
+                            }),
+                            weight: rand::random::<f64>(),
                         }
                     };
 
@@ -791,14 +829,19 @@ impl Scene {
                 fuzz: 0.0,
             },
         );
+        scene.add_light(Arc::new(Sphere::new(
+            &Point3::from(0., 7., 0.),
+            2.,
+            Material::light_textured(Arc::new(ImageTexture::new("./earthmap.jpg").unwrap())),
+        )));
 
         scene.config.aspect_ratio = 16.0 / 9.0;
         scene.config.image_width = 800;
         scene.config.samples_per_pixel = 50;
         scene.config.max_depth = 50;
-        scene.config.vfov = 20.0;
-        scene.config.look_from = Point3::from(13., 2., 3.);
-        scene.config.look_at = Point3::from(0., 0., 0.);
+        scene.config.vfov = 40.0;
+        scene.config.look_from = Point3::from(13., 2., 6.);
+        scene.config.look_at = Point3::from(0., 1., 0.);
         scene.config.vup = Vec3::from(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;

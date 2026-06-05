@@ -190,6 +190,9 @@ impl<T: Hittable> Hittable for Vec<T> {
     }
 
     fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+        if self.is_empty() {
+            return Vec3::ZERO;
+        }
         let index = rng.random_range(0..self.len());
         self[index].random(origin, rng)
     }
