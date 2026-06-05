@@ -237,7 +237,7 @@ impl Scene {
                 box_count = boxes_len,
                 "assembled complex_scene ground boxes"
             );
-            Arc::new(BvhNode::new(&mut boxes, 0, boxes_len))
+            Arc::new(BvhNode::new(&mut boxes))
         };
         scene.objects.push(boxes1_bvh);
 
@@ -339,7 +339,7 @@ impl Scene {
             );
             TransformObject::new(
                 Translate::new(Vec3::from(-100., 270., 395.)),
-                TransformObject::new(RotateY::new(15.), BvhNode::new(&mut boxes, 0, boxes_len)),
+                TransformObject::new(RotateY::new(15.), BvhNode::new(&mut boxes)),
             )
         };
         scene.objects.push(Arc::new(cluster));

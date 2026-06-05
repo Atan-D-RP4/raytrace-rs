@@ -383,11 +383,11 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
             "building BVHs"
         );
         profiling::scope!("root_bvh_build");
-        let world = Arc::new(BvhNode::new(&mut objects, 0, world_len));
+        let world = Arc::new(BvhNode::new(&mut objects));
         let lights: Arc<dyn Hittable> = if light_len > 0 {
-            Arc::new(BvhNode::new(&mut light_objects, 0, light_len))
+            Arc::new(BvhNode::new(&mut light_objects))
         } else {
-            Arc::new(BvhNode::new(&mut vec![], 0, 0))
+            Arc::new(BvhNode::new(&mut []))
         };
 
         let mut camera = Camera::from_config(&config);
@@ -438,7 +438,7 @@ fn headless_render(scene: Scene, scene_name: &str) {
     );
     // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
     profiling::scope!("root_bvh_build");
-    let world = Arc::new(BvhNode::new(&mut objects, 0, world_len));
+    let world = Arc::new(BvhNode::new(&mut objects));
 
     let mut camera = Camera::from_config(&config);
 

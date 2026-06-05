@@ -41,28 +41,26 @@ pub struct BvhNode {
 }
 
 impl BvhNode {
-    /// Builds a BVH subtree from `objects[start..end]`.
+    const BIN_SIZE: usize = 32;
+
+    /// Builds a BVH subtree from `objects` (a mutable slice).
     ///
     /// Strategy:
-    /// - compute merged bounds for this span,
-    /// - choose longest axis,
-    /// - sort by min bound on that axis,
-    /// - recurse on two halves.
-    pub fn new(objects: &mut Vec<Arc<dyn Hittable>>, start: usize, end: usize) -> Self {
-        let obj_span = end - start;
-        let is_root = start == 0 && end == objects.len();
-        if is_root {
-            info!(object_count = obj_span, "building bvh");
-        }
+    /// - compute merged bounds for all objects,
+    /// - bin centroids on each axis and evaluate SAH cost,
+    /// - split at cheapest partition, recurse.
+    pub fn new(objects: &mut [Arc<dyn Hittable>]) -> Self {
+        info!(object_count = objects.len(), "building bvh");
+        let obj_span = objects.len();
 
         let mut bbox = Aabb::new();
         let mut centroids: Vec<(Arc<dyn Hittable>, Point3)> = Vec::with_capacity(obj_span);
 
-        (start..end).for_each(|idx| {
+        for idx in 0..obj_span {
             let object_bbox = objects[idx].bounding_box();
             bbox = bbox.merge(object_bbox);
             centroids.push((objects[idx].clone(), object_bbox.centroid()));
-        });
+        }
 
         let (left, right): (Arc<dyn Hittable>, Arc<dyn Hittable>) = match obj_span {
             0 => {
@@ -79,49 +77,75 @@ impl BvhNode {
                 (centroids[0].0.clone(), centroids[1].0.clone())
             }
             _ => {
-                // Surface Area Heuristic (SAH) for optimal BVH construction.
+                // Binned Surface Area Heuristic (SAH) for optimal BVH construction.
                 let mut best_cost = f64::INFINITY;
                 let mut best_axis = 0;
                 let mut best_split = 0;
 
                 for axis in 0..3 {
-                    // Sort by centroid along this axis, then sweep from left and right to compute
-                    // SAH cost of each split.
-                    centroids.sort_by(|(_, a), (_, b)| a[axis].partial_cmp(&b[axis]).unwrap());
+                    // Find Centroid range along the axis
+                    let (min_c, max_c) = centroids.iter().fold(
+                        (f64::INFINITY, f64::NEG_INFINITY),
+                        |(min, max), (_, centroid)| {
+                            (min.min(centroid[axis]), max.max(centroid[axis]))
+                        },
+                    );
 
-                    // Precompute surface areas of left and right bounding boxes for each split
-                    // point.
-                    let mut left_areas = Vec::with_capacity(obj_span);
-                    let mut right_areas = Vec::with_capacity(obj_span);
+                    // Create the Bins
+                    let mut bin_count = [0; Self::BIN_SIZE];
+                    let mut bin_bbox = [Aabb::new(); Self::BIN_SIZE];
 
-                    // Sweep from left to right, keeping track of the bounding box for the left side
-                    // of the split.
+                    let range = max_c - min_c;
+                    if range < 1e-10 {
+                        continue; // Degenerate on this axis — skip it
+                    }
+
+                    // Bin the objects
+                    for (object, centroid) in centroids.iter() {
+                        let t = (centroid[axis] - min_c) / range;
+                        let b = (t * Self::BIN_SIZE as f64)
+                            .floor()
+                            .clamp(0., Self::BIN_SIZE as f64 - 1.)
+                            as usize;
+                        bin_count[b] += 1;
+                        bin_bbox[b] = bin_bbox[b].merge(object.bounding_box());
+                    }
+
+                    // Precompute suffix AABBs and counts.
+                    // suffix_bbox[b] = AABB of bins[b..B-1], suffix_count[b] = #objects in those bins.
+                    let mut suffix_bbox = [Aabb::new(); Self::BIN_SIZE];
+                    let mut suffix_count = [0usize; Self::BIN_SIZE];
+                    {
+                        let mut bbox = Aabb::new();
+                        let mut count = 0;
+                        for b in (0..Self::BIN_SIZE).rev() {
+                            bbox = bbox.merge(bin_bbox[b]);
+                            count += bin_count[b];
+                            suffix_bbox[b] = bbox;
+                            suffix_count[b] = count;
+                        }
+                    }
+
+                    // Sweep from left to right, using precomputed suffix for the right side.
                     let mut left_bbox = Aabb::new();
-                    for (object, _centroid) in &centroids {
-                        left_bbox = left_bbox.merge(object.bounding_box());
-                        left_areas.push(left_bbox.surface_area());
-                    }
+                    let mut left_count = 0;
+                    for b in 0..Self::BIN_SIZE - 1 {
+                        left_bbox = left_bbox.merge(bin_bbox[b]);
+                        left_count += bin_count[b];
+                        let right_bbox = suffix_bbox[b + 1];
+                        let right_count = suffix_count[b + 1];
 
-                    // Sweep from right to left, keeping track of the bounding box for the right
-                    // side of the split.
-                    let mut right_bbox = Aabb::new();
-                    for (object, _centroid) in centroids.iter().rev() {
-                        right_bbox = right_bbox.merge(object.bounding_box());
-                        right_areas.push(right_bbox.surface_area());
-                    }
-                    // Reverse right areas to align with split points: right_areas[i] is the area of
-                    // the right side if we split after the i-th object.
-                    right_areas.reverse();
+                        if left_count == 0 || right_count == 0 {
+                            continue; // Skip empty splits
+                        }
 
-                    // Compute SAH cost for each split point and update best split if we find a
-                    // cheaper one.
-                    for i in 0..obj_span - 1 {
-                        let cost = left_areas[i] * (i as f64 + 1.)
-                            + right_areas[i + 1] * ((obj_span - i - 1) as f64);
+                        let cost = left_count as f64 * left_bbox.surface_area()
+                            + right_count as f64 * right_bbox.surface_area();
+
                         if cost < best_cost {
                             best_cost = cost;
                             best_axis = axis;
-                            best_split = i + 1;
+                            best_split = left_count; // Object count, not bin index
                         }
                     }
                 }
@@ -130,26 +154,30 @@ impl BvhNode {
                     object_count = obj_span,
                     best_axis, best_split, "splitting bvh node with SAH"
                 );
+
                 // Sort objects by centroid along the best axis, then split at the best point.
-                centroids
-                    .sort_by(|(_, a), (_, b)| a[best_axis].partial_cmp(&b[best_axis]).unwrap());
+                centroids.select_nth_unstable_by(best_split, |a, b| {
+                    a.1[best_axis]
+                        .partial_cmp(&b.1[best_axis])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
                 // Copy sorted objects back to the original slice for recursive construction.
                 for (slot, (object, _)) in centroids.iter().enumerate() {
-                    objects[start + slot] = object.clone();
+                    objects[slot] = object.clone();
                 }
 
                 // Recurse on the two halves to build child nodes.
-                let mid = start + best_split;
-                let left: Arc<dyn Hittable> = Arc::new(BvhNode::new(objects, start, mid));
-                let right: Arc<dyn Hittable> = Arc::new(BvhNode::new(objects, mid, end));
+                let (left_half, right_half) = objects.split_at_mut(best_split);
+                let (left, right) = rayon::join(
+                    || Arc::new(Self::new(left_half)),
+                    || Arc::new(Self::new(right_half)),
+                );
                 (left, right)
             }
         };
 
-        if is_root {
-            info!(object_count = obj_span, "bvh built");
-        }
-
+        info!(object_count = objects.len(), "bvh built");
         Self { left, right, bbox }
     }
 }
