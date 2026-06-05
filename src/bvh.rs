@@ -72,20 +72,74 @@ impl BvhNode {
             }
             1 => {
                 trace!(object_count = obj_span, "bvh leaf");
-                (centroids[0].0.clone(), centroids[0].0.clone())
+                (centroids[0].0.clone(), Arc::new(AlwaysMiss))
             }
             2 => {
                 trace!(object_count = obj_span, "bvh leaf");
                 (centroids[0].0.clone(), centroids[1].0.clone())
             }
             _ => {
-                let axis = bbox.longest_axis() as usize;
-                trace!(object_count = obj_span, axis, "splitting bvh node");
-                centroids.sort_by(|(_, a), (_, b)| a[axis].partial_cmp(&b[axis]).unwrap());
+                // Surface Area Heuristic (SAH) for optimal BVH construction.
+                let mut best_cost = f64::INFINITY;
+                let mut best_axis = 0;
+                let mut best_split = 0;
+
+                for axis in 0..3 {
+                    // Sort by centroid along this axis, then sweep from left and right to compute
+                    // SAH cost of each split.
+                    centroids.sort_by(|(_, a), (_, b)| a[axis].partial_cmp(&b[axis]).unwrap());
+
+                    // Precompute surface areas of left and right bounding boxes for each split
+                    // point.
+                    let mut left_areas = Vec::with_capacity(obj_span);
+                    let mut right_areas = Vec::with_capacity(obj_span);
+
+                    // Sweep from left to right, keeping track of the bounding box for the left side
+                    // of the split.
+                    let mut left_bbox = Aabb::new();
+                    for (object, _centroid) in &centroids {
+                        left_bbox = left_bbox.merge(object.bounding_box());
+                        left_areas.push(left_bbox.surface_area());
+                    }
+
+                    // Sweep from right to left, keeping track of the bounding box for the right
+                    // side of the split.
+                    let mut right_bbox = Aabb::new();
+                    for (object, _centroid) in centroids.iter().rev() {
+                        right_bbox = right_bbox.merge(object.bounding_box());
+                        right_areas.push(right_bbox.surface_area());
+                    }
+                    // Reverse right areas to align with split points: right_areas[i] is the area of
+                    // the right side if we split after the i-th object.
+                    right_areas.reverse();
+
+                    // Compute SAH cost for each split point and update best split if we find a
+                    // cheaper one.
+                    for i in 0..obj_span - 1 {
+                        let cost = left_areas[i] * (i as f64 + 1.)
+                            + right_areas[i + 1] * ((obj_span - i - 1) as f64);
+                        if cost < best_cost {
+                            best_cost = cost;
+                            best_axis = axis;
+                            best_split = i + 1;
+                        }
+                    }
+                }
+
+                trace!(
+                    object_count = obj_span,
+                    best_axis, best_split, "splitting bvh node with SAH"
+                );
+                // Sort objects by centroid along the best axis, then split at the best point.
+                centroids
+                    .sort_by(|(_, a), (_, b)| a[best_axis].partial_cmp(&b[best_axis]).unwrap());
+                // Copy sorted objects back to the original slice for recursive construction.
                 for (slot, (object, _)) in centroids.iter().enumerate() {
                     objects[start + slot] = object.clone();
                 }
-                let mid = start + obj_span / 2;
+
+                // Recurse on the two halves to build child nodes.
+                let mid = start + best_split;
                 let left: Arc<dyn Hittable> = Arc::new(BvhNode::new(objects, start, mid));
                 let right: Arc<dyn Hittable> = Arc::new(BvhNode::new(objects, mid, end));
                 (left, right)

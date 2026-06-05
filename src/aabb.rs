@@ -83,6 +83,13 @@ impl Aabb {
         }
     }
 
+    pub fn surface_area(&self) -> f64 {
+        let dx = self.x.size();
+        let dy = self.y.size();
+        let dz = self.z.size();
+        2.0 * (dx * dy + dx * dz + dy * dz)
+    }
+
     pub fn centroid(&self) -> Point3 {
         Point3::from(
             0.5 * (self.x.min + self.x.max),
