@@ -201,17 +201,15 @@ impl Material {
                 let scattered =
                     Ray::new_with_time(record.point, direction / length_sq.sqrt(), ray.time);
                 if scattered.direction.dot(&record.normal) > 0.0 {
-                    if *fuzz > 0.0 {
-                        Some(Scatter::Diffuse {
-                            attenuation: *albedo,
-                            surface_pdf_kind: SurfacePDFKind::Cosine { normal: reflected },
-                        })
-                    } else {
-                        Some(Scatter::Specular {
-                            attenuation: *albedo,
-                            scattered,
-                        })
-                    }
+                    let alpha = (*fuzz * *fuzz).clamp(0.001, 1.0);
+                    Some(Scatter::Diffuse {
+                        attenuation: *albedo,
+                        surface_pdf_kind: SurfacePDFKind::Ggx {
+                            wo: -ray.direction.unit_vector(),
+                            normal: record.normal,
+                            alpha,
+                        },
+                    })
                 } else {
                     None
                 }

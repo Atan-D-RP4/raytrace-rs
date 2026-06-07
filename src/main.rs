@@ -343,19 +343,35 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     // Re-emit into a headless render using the selected scene.
     // Optional env-var overrides: RT_SAMPLES, RT_WIDTH, RT_DEPTH (for fast debugging).
     headless_render(scene, &scene_name);
+    // live_render(scene, &scene_name)?;
 
     Ok(())
 }
 
 #[profiling::function]
 fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::EventLoopError> {
+    // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
+    profiling::scope!("scene_build");
+
     let mut config = *scene.config();
+
+    // Allow env-var overrides for fast iteration during debugging.
+    config.image_width = std::env::var("RT_WIDTH")
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(WIDTH as i32);
+    config.samples_per_pixel = std::env::var("RT_SAMPLES")
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1000);
+    config.max_depth = std::env::var("RT_DEPTH")
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(50);
+
     let camera = Camera::from_config(&config);
     let (width, height) = camera.image_dimensions();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new(width, height)));
-
-    config.image_width = WIDTH as i32;
-    config.samples_per_pixel = 1000;
 
     let event_loop = EventLoop::new()?;
     let mut app = App::new(framebuffer.clone(), width, height);
@@ -427,6 +443,8 @@ fn headless_render(scene: Scene, scene_name: &str) {
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(50);
 
+    let mut camera = Camera::from_config(&config);
+
     let (mut objects, light_objects) = scene.into_objects();
 
     let world_len = objects.len();
@@ -439,8 +457,6 @@ fn headless_render(scene: Scene, scene_name: &str) {
     // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
     profiling::scope!("root_bvh_build");
     let world = Arc::new(BvhNode::new(&mut objects));
-
-    let mut camera = Camera::from_config(&config);
 
     // let max_threads = rayon::max_num_threads();
     // let _ = rayon::ThreadPoolBuilder::new()

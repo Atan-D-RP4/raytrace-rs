@@ -117,15 +117,11 @@ impl Aabb {
         for axis in 0..3 {
             let ax = self.axis_interval(axis);
             let inv_d = ray.inverse_direction[axis as usize];
-            let mut t0 = (ax.min - ray.origin[axis as usize]) * inv_d;
-            let mut t1 = (ax.max - ray.origin[axis as usize]) * inv_d;
+            let t0 = (ax.min - ray.origin[axis as usize]) * inv_d;
+            let t1 = (ax.max - ray.origin[axis as usize]) * inv_d;
 
-            if inv_d < 0.0 {
-                std::mem::swap(&mut t0, &mut t1);
-            }
-
-            ray_t.min = ray_t.min.max(t0);
-            ray_t.max = ray_t.max.min(t1);
+            ray_t.min = ray_t.min.max(t0.min(t1));
+            ray_t.max = ray_t.max.min(t0.max(t1));
 
             if ray_t.max <= ray_t.min {
                 return false;
