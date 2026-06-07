@@ -9,35 +9,18 @@ use crate::ray::Ray;
 use crate::vec3::{Point3, Vec3};
 use tracing::{info, trace};
 
-/// A Hittable that never registers a hit. Used as a sentinel child in empty BVH nodes.
-struct AlwaysMiss;
-
-impl Hittable for AlwaysMiss {
-    fn hit(&self, _ray: &Ray, _ray_t: Interval) -> Option<HitRecord<'_>> {
-        None
-    }
-
-    fn bounding_box(&self) -> Aabb {
-        Aabb::new()
-    }
-
-    fn random(&self, _origin: Vec3, _rng: &mut dyn rand::Rng) -> Vec3 {
-        Vec3::from(1., 0., 0.)
-    }
-
-    fn pdf_value(&self, _origin: Vec3, _direction: Vec3) -> f64 {
-        0.0
-    }
-}
-
 /// A binary BVH node for accelerating ray-scene intersection queries.
-pub struct BvhNode {
-    /// Left child subtree or leaf primitive.
-    left: Arc<dyn Hittable>,
-    /// Right child subtree or leaf primitive.
-    right: Arc<dyn Hittable>,
-    /// World-space bounds enclosing both children.
-    bbox: Aabb,
+pub enum BvhNode {
+    Empty,
+    Interior {
+        left: Box<BvhNode>,
+        right: Box<BvhNode>,
+        bbox: Aabb,
+    },
+    Leaf {
+        object: Arc<dyn Hittable>,
+        bbox: Aabb,
+    },
 }
 
 impl BvhNode {
@@ -53,28 +36,38 @@ impl BvhNode {
         info!(object_count = objects.len(), "building bvh");
         let obj_span = objects.len();
 
-        let mut bbox = Aabb::new();
         let mut centroids: Vec<(Arc<dyn Hittable>, Point3)> = Vec::with_capacity(obj_span);
+        let mut bbox = Aabb::new();
 
-        for idx in 0..obj_span {
-            let object_bbox = objects[idx].bounding_box();
+        for object in objects.iter() {
+            let object_bbox = object.bounding_box();
             bbox = bbox.merge(object_bbox);
-            centroids.push((objects[idx].clone(), object_bbox.centroid()));
+            centroids.push((object.clone(), object_bbox.centroid()));
         }
 
-        let (left, right): (Arc<dyn Hittable>, Arc<dyn Hittable>) = match obj_span {
+        let result = match obj_span {
             0 => {
                 trace!("bvh empty");
-                let sentinel = Arc::new(AlwaysMiss);
-                (sentinel.clone(), sentinel)
+                Self::Empty
             }
             1 => {
                 trace!(object_count = obj_span, "bvh leaf");
-                (centroids[0].0.clone(), Arc::new(AlwaysMiss))
+                Self::Leaf {
+                    object: centroids[0].0.clone(),
+                    bbox: centroids[0].0.bounding_box(),
+                }
             }
             2 => {
                 trace!(object_count = obj_span, "bvh leaf");
-                (centroids[0].0.clone(), centroids[1].0.clone())
+                let left = Box::new(Self::Leaf {
+                    object: centroids[0].0.clone(),
+                    bbox: centroids[0].0.bounding_box(),
+                });
+                let right = Box::new(Self::Leaf {
+                    object: centroids[1].0.clone(),
+                    bbox: centroids[1].0.bounding_box(),
+                });
+                Self::Interior { left, right, bbox }
             }
             _ => {
                 // Binned Surface Area Heuristic (SAH) for optimal BVH construction.
@@ -170,48 +163,65 @@ impl BvhNode {
                 // Recurse on the two halves to build child nodes.
                 let (left_half, right_half) = objects.split_at_mut(best_split);
                 let (left, right) = rayon::join(
-                    || Arc::new(Self::new(left_half)),
-                    || Arc::new(Self::new(right_half)),
+                    || Box::new(Self::new(left_half)),
+                    || Box::new(Self::new(right_half)),
                 );
-                (left, right)
+                Self::Interior { left, right, bbox }
             }
         };
 
         info!(object_count = objects.len(), "bvh built");
-        Self { left, right, bbox }
+        result
     }
 }
 
 impl Hittable for BvhNode {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
-        // Prune entire subtree if node bounds are missed.
-        if !self.bbox.hit(ray, ray_t) {
-            return None;
+        match self {
+            Self::Empty => None,
+            Self::Leaf { object, .. } => object.hit(ray, ray_t),
+            Self::Interior { left, right, bbox } => {
+                if !bbox.hit(ray, ray_t) {
+                    return None;
+                }
+                let hit_left = left.hit(ray, ray_t);
+                let hit_right = right.hit(
+                    ray,
+                    Interval::from(ray_t.min, hit_left.as_ref().map_or(ray_t.max, |h| h.time)),
+                );
+                hit_right.or(hit_left)
+            }
         }
-
-        // Hit left first, then clamp right traversal to nearest left hit time.
-        let hit_left = self.left.hit(ray, ray_t);
-        let hit_right = self.right.hit(
-            ray,
-            Interval::from(ray_t.min, hit_left.as_ref().map_or(ray_t.max, |h| h.time)),
-        );
-
-        hit_right.or(hit_left)
     }
 
     fn bounding_box(&self) -> Aabb {
-        self.bbox
+        match self {
+            Self::Empty => Aabb::new(),
+            Self::Leaf { bbox, .. } | Self::Interior { bbox, .. } => *bbox,
+        }
     }
 
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        0.5 * self.left.pdf_value(origin, direction) + 0.5 * self.right.pdf_value(origin, direction)
+        match self {
+            Self::Empty => 0.0,
+            Self::Leaf { object, .. } => object.pdf_value(origin, direction),
+            Self::Interior { left, right, .. } => {
+                0.5 * left.pdf_value(origin, direction) + 0.5 * right.pdf_value(origin, direction)
+            }
+        }
     }
 
     fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
-        if rng.random_bool(0.5) {
-            self.left.random(origin, rng)
-        } else {
-            self.right.random(origin, rng)
+        match self {
+            Self::Empty => Vec3::from(1., 0., 0.),
+            Self::Leaf { object, .. } => object.random(origin, rng),
+            Self::Interior { left, right, .. } => {
+                if rng.random_bool(0.5) {
+                    left.random(origin, rng)
+                } else {
+                    right.random(origin, rng)
+                }
+            }
         }
     }
 }
