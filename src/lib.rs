@@ -2,6 +2,7 @@ pub mod aabb;
 pub mod bvh;
 pub mod camera;
 pub mod const_medium;
+pub mod flat_bvh;
 pub mod hittable;
 pub mod interval;
 pub mod material;

@@ -16,6 +16,7 @@ use winit::{
 
 use raytrace_rs::bvh::BvhNode;
 use raytrace_rs::camera::{Camera, Framebuffer, SharedFramebuffer};
+use raytrace_rs::flat_bvh::FlatBvh;
 use raytrace_rs::hittable::Hittable;
 use raytrace_rs::scene::Scene;
 
@@ -399,7 +400,8 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
             "building BVHs"
         );
         profiling::scope!("root_bvh_build");
-        let world = Arc::new(BvhNode::new(&mut objects));
+        let world_bvh = BvhNode::new(&mut objects);
+        let world = FlatBvh::from_bvh(world_bvh);
         let lights: Arc<dyn Hittable> = if light_len > 0 {
             Arc::new(BvhNode::new(&mut light_objects))
         } else {
@@ -456,7 +458,8 @@ fn headless_render(scene: Scene, scene_name: &str) {
     );
     // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
     profiling::scope!("root_bvh_build");
-    let world = Arc::new(BvhNode::new(&mut objects));
+    let world_bvh = BvhNode::new(&mut objects);
+    let world = FlatBvh::from_bvh(world_bvh);
 
     // let max_threads = rayon::max_num_threads();
     // let _ = rayon::ThreadPoolBuilder::new()
