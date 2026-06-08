@@ -170,7 +170,8 @@ impl PDF for GgxSamplePDF {
     fn value(&self, direction: Vec3) -> f64 {
         let wi = direction.unit_vector();
         let h = (self.wo + wi).unit_vector();
-        let cos_h = h.dot(&wi); // |wo·H| == |wi·H| when H is the half-vector
+        // let cos_h = h.dot(&wi); // |wo·H| == |wi·H| when H is the half-vector
+        let cos_h = self.wo.unit_vector().dot(&h).abs();
         if cos_h <= 0.0 {
             return 0.0;
         }

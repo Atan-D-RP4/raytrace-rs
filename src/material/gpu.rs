@@ -105,8 +105,8 @@ pub(super) fn write_node(mat: &Material, buf: &mut GpuMaterialBuffer) -> u32 {
             GPU_NONE,
             GPU_NONE,
         ),
-        Material::Metal { albedo, fuzz } => (
-            vec![albedo.x, albedo.y, albedo.z, *fuzz],
+        Material::Metal { albedo, fuzz, ior } => (
+            vec![albedo.x, albedo.y, albedo.z, *fuzz, *ior],
             GpuMaterialType::Metal,
             GPU_NONE,
             GPU_NONE,

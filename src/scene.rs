@@ -270,6 +270,7 @@ impl Scene {
             Material::Metal {
                 albedo: Color3::from(0.8, 0.8, 0.9),
                 fuzz: 1.0,
+                ior: 2.5,
             },
         );
 
@@ -460,6 +461,7 @@ impl Scene {
             Material::Metal {
                 albedo: Color3::from(0.8, 0.8, 0.9),
                 fuzz: 1.0,
+                ior: 2.5,
             },
         );
         // Put a sphere above the smaller box
@@ -753,6 +755,7 @@ impl Scene {
                         Material::Metal {
                             albedo: Color3::random_range(0.5, 1.0),
                             fuzz: rand::random::<f64>() * 0.5,
+                            ior: 2.5,
                         }
                     } else if world_seed % 3 == 2 {
                         Material::Dielectric {
@@ -782,6 +785,7 @@ impl Scene {
                             coating: Box::new(Material::Metal {
                                 albedo: Color3::random_range(0.5, 1.0),
                                 fuzz: rand::random::<f64>() * 0.5,
+                                ior: 2.5,
                             }),
                         }
                     } else {
@@ -793,6 +797,7 @@ impl Scene {
                             b: Box::new(Material::Metal {
                                 albedo: Color3::random_range(0.5, 1.0),
                                 fuzz: rand::random::<f64>() * 0.5,
+                                ior: 2.5,
                             }),
                             weight: rand::random::<f64>(),
                         }
@@ -827,6 +832,7 @@ impl Scene {
             Material::Metal {
                 albedo: Color3::from(0.7, 0.6, 0.5),
                 fuzz: 0.0,
+                ior: 2.5,
             },
         );
         scene.add_light(Arc::new(Sphere::new(
@@ -864,6 +870,7 @@ impl Scene {
         let material_right = Material::Metal {
             albedo: Color3::from(0.8, 0.6, 0.2),
             fuzz: 1.0,
+            ior: 2.5,
         };
 
         scene.add_sphere(Point3::from(0., -100.5, -1.), 100., material_ground);

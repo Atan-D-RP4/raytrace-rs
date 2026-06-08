@@ -51,7 +51,7 @@ use crate::hittable::HitRecord;
 use crate::onb::Onb;
 use crate::ray::Ray;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3, random_unit_vector_with_rng, reflect, refract};
+use crate::vec3::{Color3, Vec3, reflect, refract};
 
 /// Result of material sampling for a single bounce.
 ///
@@ -111,8 +111,9 @@ pub enum Material {
         /// representation falls back to `albedo` (CPU-only feature).
         tex: Option<Arc<dyn Texture>>,
     },
-    /// Mirror-like reflection with optional roughness (`fuzz`).
-    Metal { albedo: Color3, fuzz: f64 },
+    /// Microfacet conductor BRDF (GGX). Uses `fuzz` (roughness²) for the
+    /// specular lobe width and `ior` for the Fresnel reflectance.
+    Metal { albedo: Color3, fuzz: f64, ior: f64 },
     /// Dielectric transmission/reflection controlled by refractive index.
     Dielectric { refractive_idx: f64 },
     /// Light emitting surface.
@@ -191,28 +192,45 @@ impl Material {
                     },
                 })
             }
-            Material::Metal { albedo, fuzz } => {
-                let reflected = reflect(&ray.direction.unit_vector(), &record.normal);
-                let direction = reflected + (*fuzz * random_unit_vector_with_rng(rng));
-                let length_sq = direction.length_squared();
-                if length_sq < 1e-12 {
+            Material::Metal {
+                albedo,
+                fuzz,
+                ior: _,
+            } => {
+                let alpha = (*fuzz * *fuzz).clamp(0.001, 1.0);
+                let wo = -ray.direction.unit_vector();
+                // Sample H from GGX NDF (same as Glossy).
+                let u1: f64 = rng.random();
+                let u2: f64 = rng.random();
+                let cos_theta = ((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2))
+                    .clamp(0.0, 1.0)
+                    .sqrt();
+                let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+                let phi = 2.0 * PI * u1;
+                let h_local = Vec3::from(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
+
+                // Build ONB aligned with the surface normal.
+                let onb = Onb::build_from_normal(record.normal);
+                let h_world = onb.local_to_world(h_local);
+
+                // Reflect wo about H to get wi.
+                // `reflect` expects incident direction (toward surface),
+                // so negate wo which points away from the surface.
+                let wi = reflect(&-wo, &h_world);
+
+                // Discard samples that go below the surface.
+                if wi.dot(&record.normal) <= 0.0 {
                     return None;
                 }
-                let scattered =
-                    Ray::new_with_time(record.point, direction / length_sq.sqrt(), ray.time);
-                if scattered.direction.dot(&record.normal) > 0.0 {
-                    let alpha = (*fuzz * *fuzz).clamp(0.001, 1.0);
-                    Some(Scatter::Diffuse {
-                        attenuation: *albedo,
-                        surface_pdf_kind: SurfacePDFKind::Ggx {
-                            wo: -ray.direction.unit_vector(),
-                            normal: record.normal,
-                            alpha,
-                        },
-                    })
-                } else {
-                    None
-                }
+
+                Some(Scatter::Diffuse {
+                    attenuation: *albedo,
+                    surface_pdf_kind: SurfacePDFKind::Ggx {
+                        wo,
+                        normal: record.normal,
+                        alpha,
+                    },
+                })
             }
             Material::Dielectric { refractive_idx } => {
                 let attenuation = Color3::from(1., 1., 1.);
@@ -262,14 +280,16 @@ impl Material {
                     .sqrt();
                 let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
                 let phi = 2.0 * PI * u1;
-                let h_local = Vec3::from(sin_theta * phi.cos(), cos_theta, sin_theta * phi.sin());
+                let h_local = Vec3::from(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
 
                 // Build ONB aligned with the surface normal.
                 let onb = Onb::build_from_normal(record.normal);
                 let h_world = onb.local_to_world(h_local);
 
                 // Reflect wo about H to get wi.
-                let wi = reflect(&wo, &h_world);
+                // `reflect` expects incident direction (toward surface),
+                // so negate wo which points away from the surface.
+                let wi = reflect(&-wo, &h_world);
 
                 // Discard samples that go below the surface.
                 if wi.dot(&record.normal) <= 0.0 {
@@ -356,10 +376,23 @@ impl Material {
                 let cos_theta = record.normal.dot(&scattered.direction.unit_vector());
                 if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
             }
-            Material::Metal { fuzz, .. } if *fuzz > 0.0 => {
-                let reflected = reflect(&ray_in.direction.unit_vector(), &record.normal);
-                let cos_alpha = reflected.dot(&scattered.direction.unit_vector());
-                if cos_alpha < 0.0 { 0.0 } else { cos_alpha / PI }
+            Material::Metal { fuzz, ior, .. } => {
+                let alpha = (fuzz * fuzz).clamp(0.001, 1.0);
+                let wo = -ray_in.direction.unit_vector();
+                let wi = scattered.direction.unit_vector();
+                let h = (wo + wi).unit_vector();
+                let cos_h_n = h.dot(&record.normal).max(0.0);
+                let cos_h_o = wo.dot(&h).max(0.0);
+                let cos_o = wo.dot(&record.normal).max(0.0);
+                let cos_i = wi.dot(&record.normal).max(0.0);
+                if cos_h_o <= 0.0 || cos_o <= 0.0 || cos_i <= 0.0 {
+                    return 0.0;
+                }
+                let d = ggx_d(cos_h_n, alpha);
+                let f = fresnel_schlick(cos_h_o, *ior);
+                let g = geometry_schlick_ggx(cos_o, alpha) * geometry_schlick_ggx(cos_i, alpha);
+                // f_r * cos(theta_i) = F * D * G / (4 * cos_o)
+                f * d * g / (4.0 * cos_o)
             }
             Material::Isotropic { .. } => 1.0 / (4.0 * PI),
             Material::Glossy { roughness, .. } => {
@@ -414,9 +447,19 @@ impl Material {
         }
     }
 
-    /// Metal mirror with optional roughness (fuzz).
+    /// Microfacet conductor (GGX metal).  `fuzz` ∈ [0, 1] controls roughness;
+    /// `ior` sets the index of refraction for the Fresnel term (default 2.5).
     pub fn metal(albedo: Color3, fuzz: f64) -> Self {
-        Self::Metal { albedo, fuzz }
+        Self::Metal {
+            albedo,
+            fuzz,
+            ior: 2.5,
+        }
+    }
+
+    /// Microfacet conductor with an explicit IOR for the Fresnel term.
+    pub fn metal_with_ior(albedo: Color3, fuzz: f64, ior: f64) -> Self {
+        Self::Metal { albedo, fuzz, ior }
     }
 
     /// Glass / dielectric material with refractive index.
