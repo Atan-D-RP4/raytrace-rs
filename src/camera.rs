@@ -17,10 +17,10 @@ use tracing::info;
 
 use crate::hittable::Hittable;
 use crate::interval::Interval;
-use crate::material::{Scatter, SurfacePDFKind};
-use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
+use crate::material::PdfKind;
+use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, UniformSpherePDF, PDF};
 use crate::ray::Ray;
-use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
+use crate::vec3::{random_in_unit_disk_with_rng, Color3, Point3, Vec3};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
 ///
@@ -192,7 +192,7 @@ impl Camera {
         // the u and v directions. These are used to calculate the ray direction for each pixel.
         let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
         let viewport_v = viewport_height * -v; // Vector across viewport vertical edge
-        // Negated because the v vector points up but the image coordinates increase downwards.
+                                               // Negated because the v vector points up but the image coordinates increase downwards.
 
         // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
         // the u and v directions. These are used to calculate the ray direction for each pixel
@@ -515,59 +515,45 @@ impl Camera {
                     }
                     accumulated_attenuation /= survival;
                 }
+                // Outgoing direction (away from surface).
+                let wo = -ray.direction.unit_vector();
 
-                if let Some(scatter) = record.material.scatter(&ray, &record, rng) {
-                    match scatter {
-                        Scatter::Diffuse {
-                            attenuation,
-                            surface_pdf_kind,
-                        } => {
-                            // Configure the surface PDF from the material's
-                            // descriptor. No allocation — the concrete PDF is
-                            // stack-owned and reused every bounce.
-                            let surface_pdf: &dyn PDF = match surface_pdf_kind {
-                                SurfacePDFKind::Cosine { normal } => &CosinePDF::new(normal),
-                                SurfacePDFKind::Ggx { wo, normal, alpha } => {
-                                    &GgxSamplePDF::new(wo, normal, alpha)
-                                }
-                                SurfacePDFKind::UniformSphere => &UniformSpherePDF::new(),
-                            };
+                if let Some(sample) = record.material.sample(wo, &record, rng) {
+                    if record.material.is_delta() {
+                        // Delta distribution (perfect specular): use sampled
+                        // direction directly — no MIS weighting needed.
+                        accumulated_attenuation = accumulated_attenuation * sample.f_cos;
+                        ray = Ray::new_with_time(record.point, sample.wi, ray.time);
+                    } else {
+                        // Non-delta material: build mixture PDF of surface
+                        // sampling + light sampling for MIS.
+                        let surface_pdf: &dyn PDF = match sample.pdf_kind {
+                            PdfKind::Cosine { normal } => &CosinePDF::new(normal),
+                            PdfKind::Ggx {
+                                wo: ggx_wo,
+                                normal,
+                                alpha,
+                            } => &GgxSamplePDF::new(ggx_wo, normal, alpha),
+                            PdfKind::UniformSphere => &UniformSpherePDF::new(),
+                            // Delta materials are handled by the is_delta() branch above.
+                            PdfKind::Delta => unreachable!(),
+                        };
 
-                            // Light sampling PDF — also stack-owned, updated
-                            // with the current hit point each bounce.
-                            let light_pdf = HittablePDF::new(lights, record.point);
+                        let light_pdf = HittablePDF::new(lights, record.point);
+                        let pdfs: &[&dyn PDF] = &[&light_pdf, surface_pdf];
+                        let mixture_pdf = MixturePDF::new(pdfs);
 
-                            // Build mixture PDF from thin references. Zero
-                            // allocation — the slice lives on the stack.
-                            let pdfs: &[&dyn PDF] = &[&light_pdf, surface_pdf];
-                            let mixture_pdf = MixturePDF::new(pdfs);
+                        let direction = mixture_pdf.generate(rng);
+                        let scattered = Ray::new_with_time(record.point, direction, ray.time);
+                        let pdf_val = mixture_pdf.value(direction);
 
-                            // Sample direction from the mixture.
-                            let direction = mixture_pdf.generate(rng);
-                            let scattered = Ray::new_with_time(record.point, direction, ray.time);
-                            let pdf_val = mixture_pdf.value(direction);
+                        let f_cos = record.material.eval(wo, direction, &record);
 
-                            // Evaluate the material BRDF at the sampled direction.
-                            let scattering_pdf =
-                                record.material.scattering_pdf(&ray, &record, &scattered);
-
-                            // Guard against 0/0 (e.g. tangent direction + no light hit).
-                            let weight = if pdf_val > 0.0 {
-                                scattering_pdf / pdf_val
-                            } else {
-                                0.0
-                            };
-                            accumulated_attenuation =
-                                accumulated_attenuation * attenuation * weight;
-                            ray = scattered;
-                        }
-                        Scatter::Specular {
-                            attenuation,
-                            scattered,
-                        } => {
-                            accumulated_attenuation = accumulated_attenuation * attenuation;
-                            ray = scattered;
-                        }
+                        // Standard Monte Carlo estimator: integrand / p_sample.
+                        // p_sample = mixture_pdf.value(direction).
+                        let weight = if pdf_val > 0.0 { 1.0 / pdf_val } else { 0.0 };
+                        accumulated_attenuation = accumulated_attenuation * f_cos * weight;
+                        ray = scattered;
                     }
 
                     // Clamp accumulated attenuation to prevent firefly artifacts. Balance heuristic

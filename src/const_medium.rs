@@ -43,7 +43,7 @@ impl ConstantMedium {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
-            phase_fn: Arc::new(Material::Isotropic { albedo, tex: None }),
+            phase_fn: Arc::new(Material::isotropic(albedo)),
         }
     }
 }

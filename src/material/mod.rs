@@ -1,7 +1,7 @@
 //! Material models and scattering behavior for path tracing.
 //!
 //! Materials form a **tree of BSDFs** — the [`Material`] enum is recursive via
-//! `Box<Material>` in composition variants ([`Material::Mix`], [`Material::Coated`]).
+//! `Box<dyn Bsdf>` in composition variants ([`Material::Mix`], [`Material::Coated`]).
 //! The tree can't have cycles by construction (Rust's type system forbids it),
 //! so no graph validation is needed at runtime.
 //!
@@ -27,54 +27,91 @@
 //!     .coated(Material::dielectric(1.5));
 //! ```
 //!
+//! # Extensibility
+//!
+//! Library consumers can implement custom materials via the [`Bsdf`] trait and
+//! wrap them in [`Material::Custom`]:
+//!
+//! ```ignore
+//! use raytrace_rs::material::{Bsdf, BsdfSample, Material, PdfKind};
+//! use raytrace_rs::hittable::HitRecord;
+//! use raytrace_rs::vec3::{Color3, Vec3};
+//!
+//! struct MyCustomBrdf { ... }
+//!
+//! impl Bsdf for MyCustomBrdf {
+//!     fn sample(&self, wo: Vec3, hit: &HitRecord, rng: &mut dyn rand::Rng) -> Option<BsdfSample> { ... }
+//!     fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 { ... }
+//!     fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 { ... }
+//! }
+//!
+//! let my_mat = Material::Custom(Box::new(MyCustomBrdf { ... }));
+//! ```
+//!
 //! # GPU Serialization
 //!
 //! The material tree can be flattened into a GPU-friendly buffer via
 //! [`Material::to_gpu_buffer`]. Each node is a [`GpuMaterialNode`] with
 //! optional child indices. The shader mirrors the CPU's enum match via a
-//! switch on `material_type`.
+//! switch on `material_type`. Custom materials return `None` from
+//! are not serialized to the GPU buffer.
+
+// ─── Submodules ─────────────────────────────────────────────────────────────
 
 mod gpu;
 
-#[cfg(test)]
-use gpu::GPU_NONE;
-use gpu::write_node;
+mod dielectric;
+mod diffuse_light;
+mod glossy;
+mod isotropic;
+mod lambertian;
+mod metal;
+
+// ─── Re-exports ─────────────────────────────────────────────────────────────
 
 pub use gpu::{GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
+
+pub use dielectric::DielectricMaterial;
+pub use diffuse_light::DiffuseLightMaterial;
+pub use glossy::GlossyMaterial;
+pub use isotropic::IsotropicMaterial;
+pub use lambertian::LambertianMaterial;
+pub use metal::MetalMaterial;
+
+use gpu::write_node;
+use gpu::GPU_NONE;
+
+// ─── Imports ────────────────────────────────────────────────────────────────
 
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use rand::RngExt;
-
 use crate::hittable::HitRecord;
-use crate::onb::Onb;
-use crate::ray::Ray;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3, reflect, refract};
+use crate::vec3::{Color3, Vec3};
+
+// ─── Public API types ───────────────────────────────────────────────────────
 
 /// Result of material sampling for a single bounce.
 ///
-/// Diffuse materials return a [`SurfacePDFKind`] describing *which* PDF to
-/// use and with what parameters. The integrator owns the concrete PDF objects
-/// on the stack and reuses them across bounces — no heap allocation needed.
-pub enum Scatter {
-    /// Diffuse path: integrator samples direction from a mixture of the
-    /// surface PDF and light PDF.
-    Diffuse {
-        /// Multiplicative color throughput for this bounce.
-        attenuation: Color3,
-        /// Which surface PDF the integrator should configure and use.
-        surface_pdf_kind: SurfacePDFKind,
-    },
-    /// Specular path: direction is fully determined by the material
-    /// (mirror reflection or dielectric refraction).
-    Specular {
-        /// Multiplicative color throughput for this bounce.
-        attenuation: Color3,
-        /// Outgoing ray with the determined direction.
-        scattered: Ray,
-    },
+/// Contains the sampled direction, the BSDF value × cosine term, and the PDF
+/// used for that sample. The direction and its PDF come from the same internal
+/// sample, so they cannot diverge — making the Glossy direction-PDF mismatch
+/// bug structurally impossible.
+#[derive(Clone, Copy, Debug)]
+pub struct BsdfSample {
+    /// Sampled outgoing direction (world space, away from surface).
+    pub wi: Vec3,
+    /// Product of BSDF value and cosine of the angle between `wi` and the
+    /// surface normal. This is the Monte Carlo *integrand* weight.
+    pub f_cos: Color3,
+    /// Probability density of this sample, under the material's own
+    /// sampling distribution.
+    pub pdf: f64,
+    /// Which PDF the integrator should configure for the mixture with
+    /// light sampling. The material returns this so the integrator can
+    /// build the correct MIS mixture.
+    pub pdf_kind: PdfKind,
 }
 
 /// Describes which surface sampling PDF the integrator should use.
@@ -83,7 +120,7 @@ pub enum Scatter {
 /// this lightweight enum. The integrator owns concrete PDF objects on the
 /// stack and updates them from the kind + parameters here.
 #[derive(Clone, Copy, Debug)]
-pub enum SurfacePDFKind {
+pub enum PdfKind {
     /// Cosine-weighted hemisphere. `normal` defines the hemisphere orientation.
     Cosine { normal: Vec3 },
     /// GGX microfacet importance sampling. The half-vector is sampled from
@@ -98,410 +135,445 @@ pub enum SurfacePDFKind {
     },
     /// Uniform sampling over the full sphere (used by isotropic volumes).
     UniformSphere,
+    /// Delta distribution (perfect specular). The integrator skips MIS
+    /// weighting for delta materials — the sampled direction is used directly.
+    Delta,
 }
 
+// ─── Internal BSDF trait ────────────────────────────────────────────────────
+
+/// Trait for BSDF implementations.
+///
+/// This trait is **public** so library consumers can implement custom
+/// materials. The methods correspond to the standard BSDF interface:
+///
+/// - `sample()` — generate a direction sample from the material's distribution
+/// - `eval()` — evaluate the BSDF at an externally-chosen direction (for MIS)
+/// - `pdf()` — evaluate the material's sampling PDF at a direction
+/// - `emitted()` — emission contribution (only for light sources)
+/// - `gpu_node()` — optional GPU serialization (returns `None` for custom materials)
+pub trait Bsdf: Send + Sync {
+    /// Sample an outgoing direction for the given outgoing direction and hit.
+    ///
+    /// Returns `None` for materials that don't scatter (e.g., pure emitters).
+    /// The returned [`BsdfSample`] contains the direction, BSDF × cosine,
+    /// and PDF — all from the same internal sample.
+    fn sample(&self, wo: Vec3, hit: &HitRecord, rng: &mut dyn rand::Rng) -> Option<BsdfSample>;
+
+    /// Evaluate the BSDF for an outgoing→incoming direction pair.
+    ///
+    /// Used by the integrator when the direction was sampled externally
+    /// (e.g., from a light source PDF) and we need the material's response
+    /// at that direction.
+    fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3;
+
+    /// Evaluate the material's sampling PDF for a given direction pair.
+    ///
+    /// Used by MIS when the integrator needs to know the probability
+    /// that this material would have sampled `wi` given `wo`.
+    fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64;
+
+    /// Returns the emitted light color at the hit point.
+    ///
+    /// Default: no emission. Override for light-emitting materials.
+    fn emitted(&self, _hit: &HitRecord) -> Color3 {
+        Color3::from(0., 0., 0.)
+    }
+
+    /// Returns `true` if this material emits light. Default: `false`.
+    fn is_emissive(&self) -> bool {
+        false
+    }
+
+    /// Returns `true` if this material is a delta distribution (perfect
+    /// specular). Delta materials skip MIS weighting. Default: `false`.
+    fn is_delta(&self) -> bool {
+        false
+    }
+
+    /// Serialize this material node for the GPU buffer.
+    ///
+    /// Leaf materials return their node directly. Composition materials
+    /// should recursively serialize children. Return `None` if this
+    /// material has no GPU representation (e.g., custom materials).
+    fn gpu_node(&self, _buf: &mut GpuMaterialBuffer) -> Option<u32> {
+        None
+    }
+
+    /// Clone this material into a boxed trait object.
+    ///
+    /// Required for `Material` to be `Clone` when it contains
+    /// `Box<dyn Bsdf>`.
+    fn clone_box(&self) -> Box<dyn Bsdf>;
+
+    /// Recursively serialize this material into the GPU buffer.
+    ///
+    /// Leaf materials call `GpuMaterialBuffer` methods directly.
+    /// Composition materials serialize children first, then register
+    /// themselves with child indices. Returns the node index.
+    ///
+    /// The default implementation pushes a `Custom` node (unknown type).
+    /// Built-in materials override this.
+    fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
+        let param_offset = buf.params.len() as u32;
+        buf.nodes.push(GpuMaterialNode {
+            material_type: GpuMaterialType::Passthrough as u32,
+            param_offset,
+            child_a: GPU_NONE,
+            child_b: GPU_NONE,
+            texture_index: GPU_NONE,
+        });
+        buf.nodes.len() as u32 - 1
+    }
+}
+
+// ─── Material enum ──────────────────────────────────────────────────────────
+
 /// Supported material models.
-#[derive(Clone)]
+///
+/// The enum wraps concrete structs for built-in materials and delegates
+/// to their [`Bsdf`] implementations. Library consumers can add custom
+/// materials via the [`Material::Custom`] variant.
 pub enum Material {
     /// Diffuse (Lambertian) surface.
-    Lambertian {
-        albedo: Color3,
-        /// Optional texture for spatial variation. When set, the texture's
-        /// `value()` is used at hit time instead of `albedo`. The GPU buffer
-        /// representation falls back to `albedo` (CPU-only feature).
-        tex: Option<Arc<dyn Texture>>,
-    },
-    /// Microfacet conductor BRDF (GGX). Uses `fuzz` (roughness²) for the
-    /// specular lobe width and `ior` for the Fresnel reflectance.
-    Metal { albedo: Color3, fuzz: f64, ior: f64 },
-    /// Dielectric transmission/reflection controlled by refractive index.
-    Dielectric { refractive_idx: f64 },
+    Lambertian(LambertianMaterial),
+    /// Microfacet conductor BRDF (GGX).
+    Metal(MetalMaterial),
+    /// Dielectric transmission/reflection.
+    Dielectric(DielectricMaterial),
     /// Light emitting surface.
-    DiffuseLight {
-        emit: Color3,
-        /// Optional texture for emission. CPU-only.
-        tex: Option<Arc<dyn Texture>>,
-    },
-    /// Isotropic scattering medium (volumes).
-    Isotropic {
-        albedo: Color3,
-        /// Optional texture for spatial variation. CPU-only.
-        tex: Option<Arc<dyn Texture>>,
-    },
-    /// Glossy microfacet BRDF (GGX). Use `roughness` ∈ [0,1] for surface
-    /// smoothness; `ior` is the index of refraction used by the Fresnel
-    /// term.
-    Glossy {
-        albedo: Color3,
-        roughness: f64,
-        ior: f64,
-    },
+    DiffuseLight(DiffuseLightMaterial),
+    /// Isotropic scattering medium.
+    Isotropic(IsotropicMaterial),
+    /// Glossy microfacet BRDF (GGX).
+    Glossy(GlossyMaterial),
     /// Stochastic mix of two materials, weighted by a scalar in [0, 1].
-    ///
-    /// At each scattering event, we pick either `a` or `b` with probability
-    /// `weight` (where `weight = 0` means always `a`, `weight = 1` always
-    /// `b`). This is PBRT-v4's `MixMaterial`.
     Mix {
-        a: Box<Material>,
-        b: Box<Material>,
+        a: Box<dyn Bsdf>,
+        b: Box<dyn Bsdf>,
         /// Selection probability for `b`.
         weight: f64,
     },
     /// A vertical layer: light hits `coating` first; if it transmits, it
-    /// interacts with `substrate`. Used for clear coats, varnishes, etc.
-    ///
-    /// This is a simplified single-bounce approximation: the coating is
-    /// treated as a thin dielectric that reflects via Schlick Fresnel and
-    /// transmits (1 - F) of the energy to the substrate. PBRT-v4's full
-    /// `LayeredBxDF` does multi-bounce transport; we defer that.
+    /// interacts with `substrate`.
     Coated {
-        substrate: Box<Material>,
-        coating: Box<Material>,
+        substrate: Box<dyn Bsdf>,
+        coating: Box<dyn Bsdf>,
     },
+    /// Custom material provided by a library consumer.
+    Custom(Box<dyn Bsdf>),
 }
 
-impl Material {
-    /// Samples this material for a given incoming ray and hit record.
-    ///
-    /// For diffuse materials, returns a [`Scatter::Diffuse`] containing only
-    /// the surface PDF. The integrator is responsible for building the
-    /// mixture PDF with light sampling and generating the scattered
-    /// direction.
-    ///
-    /// For specular materials, returns a [`Scatter::Specular`] with the
-    /// fully-determined scattered ray.
-    ///
-    /// Returns `None` for light-emitting materials (no scattering).
-    /// Ray time is preserved across bounces for motion blur.
-    pub fn scatter<R: rand::Rng + ?Sized>(
-        &self,
-        ray: &Ray,
-        record: &HitRecord,
-        rng: &mut R,
-    ) -> Option<Scatter> {
+impl Clone for Material {
+    fn clone(&self) -> Self {
         match self {
-            Material::Lambertian { albedo, tex } => {
-                let attenuation = tex
-                    .as_ref()
-                    .map(|t| t.value(&record.texture_coords()))
-                    .unwrap_or(*albedo);
-                Some(Scatter::Diffuse {
-                    attenuation,
-                    surface_pdf_kind: SurfacePDFKind::Cosine {
-                        normal: record.normal,
-                    },
-                })
-            }
-            Material::Metal {
-                albedo,
-                fuzz,
-                ior: _,
-            } => {
-                let alpha = (*fuzz * *fuzz).clamp(0.001, 1.0);
-                let wo = -ray.direction.unit_vector();
-                // Sample H from GGX NDF (same as Glossy).
-                let u1: f64 = rng.random();
-                let u2: f64 = rng.random();
-                let cos_theta = ((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2))
-                    .clamp(0.0, 1.0)
-                    .sqrt();
-                let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-                let phi = 2.0 * PI * u1;
-                let h_local = Vec3::from(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
+            Material::Lambertian(inner) => Material::Lambertian(inner.clone()),
+            Material::Metal(inner) => Material::Metal(inner.clone()),
+            Material::Dielectric(inner) => Material::Dielectric(inner.clone()),
+            Material::DiffuseLight(inner) => Material::DiffuseLight(inner.clone()),
+            Material::Isotropic(inner) => Material::Isotropic(inner.clone()),
+            Material::Glossy(inner) => Material::Glossy(inner.clone()),
+            Material::Mix { a, b, weight } => Material::Mix {
+                a: a.clone_box(),
+                b: b.clone_box(),
+                weight: *weight,
+            },
+            Material::Coated { substrate, coating } => Material::Coated {
+                substrate: substrate.clone_box(),
+                coating: coating.clone_box(),
+            },
+            Material::Custom(inner) => Material::Custom(inner.clone_box()),
+        }
+    }
+}
 
-                // Build ONB aligned with the surface normal.
-                let onb = Onb::build_from_normal(record.normal);
-                let h_world = onb.local_to_world(h_local);
+// ─── Material dispatch (inherent methods) ───────────────────────────────────
 
-                // Reflect wo about H to get wi.
-                // `reflect` expects incident direction (toward surface),
-                // so negate wo which points away from the surface.
-                let wi = reflect(&-wo, &h_world);
-
-                // Discard samples that go below the surface.
-                if wi.dot(&record.normal) <= 0.0 {
-                    return None;
-                }
-
-                Some(Scatter::Diffuse {
-                    attenuation: *albedo,
-                    surface_pdf_kind: SurfacePDFKind::Ggx {
-                        wo,
-                        normal: record.normal,
-                        alpha,
-                    },
-                })
-            }
-            Material::Dielectric { refractive_idx } => {
-                let attenuation = Color3::from(1., 1., 1.);
-                let ri = if record.front_face {
-                    1.0 / refractive_idx
-                } else {
-                    *refractive_idx
-                };
-                let unit_dir = ray.direction.unit_vector();
-                let cos_theta = (-unit_dir).dot(&record.normal).min(1.0);
-                let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-                let direction = if ri * sin_theta > 1.0
-                    || fresnel_schlick(cos_theta, *refractive_idx) > rng.random::<f64>()
-                {
-                    reflect(&unit_dir, &record.normal)
-                } else {
-                    refract(&unit_dir, &record.normal, ri)
-                };
-                let scattered = Ray::new_with_time(record.point, direction, ray.time);
-                Some(Scatter::Specular {
-                    attenuation,
-                    scattered,
-                })
-            }
-            Material::Isotropic { albedo, tex } => {
-                let attenuation = tex
-                    .as_ref()
-                    .map(|t| t.value(&record.texture_coords()))
-                    .unwrap_or(*albedo);
-                Some(Scatter::Diffuse {
-                    attenuation,
-                    surface_pdf_kind: SurfacePDFKind::UniformSphere,
-                })
-            }
-            Material::Glossy {
-                albedo,
-                roughness,
-                ior,
-            } => {
-                let alpha = (roughness * roughness).clamp(0.001, 1.0);
-                let wo = -ray.direction.unit_vector();
-                // Sample H from GGX (in the local frame where the normal is +y).
-                let u1: f64 = rng.random();
-                let u2: f64 = rng.random();
-                let cos_theta = ((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2))
-                    .clamp(0.0, 1.0)
-                    .sqrt();
-                let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-                let phi = 2.0 * PI * u1;
-                let h_local = Vec3::from(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
-
-                // Build ONB aligned with the surface normal.
-                let onb = Onb::build_from_normal(record.normal);
-                let h_world = onb.local_to_world(h_local);
-
-                // Reflect wo about H to get wi.
-                // `reflect` expects incident direction (toward surface),
-                // so negate wo which points away from the surface.
-                let wi = reflect(&-wo, &h_world);
-
-                // Discard samples that go below the surface.
-                if wi.dot(&record.normal) <= 0.0 {
-                    return None;
-                }
-
-                // Compute BRDF for the attenuation.
-                let cos_o = wo.dot(&record.normal).max(0.0);
-                let cos_i = wi.dot(&record.normal).max(0.0);
-                let cos_h_o = wo.dot(&h_world).max(0.0);
-                let cos_h_n = h_world.dot(&record.normal).max(0.0);
-
-                let d = ggx_d(cos_h_n, alpha);
-                let f = fresnel_schlick(cos_h_o, *ior);
-                let g = geometry_schlick_ggx(cos_o, alpha) * geometry_schlick_ggx(cos_i, alpha);
-
-                // Cook-Torrance: f_r = F * D * G / (4 * cos_o * cos_i)
-                let denom = 4.0 * cos_o * cos_i;
-                let brdf = if denom > 1e-12 {
-                    f * d * g / denom
-                } else {
-                    0.0
-                };
-
-                // The PDF for this sample: D(H) * (n·H) / (4 * |wo·H|)
-                Some(Scatter::Diffuse {
-                    // f_r * cos_i = the *integrand* for the Monte Carlo estimator.
-                    attenuation: *albedo * brdf * cos_i,
-                    surface_pdf_kind: SurfacePDFKind::Ggx {
-                        wo,
-                        normal: record.normal,
-                        alpha,
-                    },
-                })
-            }
+impl Material {
+    /// Sample this material for a given outgoing direction and hit record.
+    ///
+    /// Returns `None` for light-emitting materials (no scattering) or if the
+    /// sampled direction is invalid (e.g., below surface).
+    pub fn sample(
+        &self,
+        wo: Vec3,
+        record: &HitRecord,
+        rng: &mut dyn rand::Rng,
+    ) -> Option<BsdfSample> {
+        use rand::RngExt;
+        match self {
+            Material::Lambertian(inner) => inner.sample(wo, record, rng),
+            Material::Metal(inner) => inner.sample(wo, record, rng),
+            Material::Dielectric(inner) => inner.sample(wo, record, rng),
+            Material::DiffuseLight(inner) => inner.sample(wo, record, rng),
+            Material::Isotropic(inner) => inner.sample(wo, record, rng),
+            Material::Glossy(inner) => inner.sample(wo, record, rng),
+            Material::Custom(inner) => inner.sample(wo, record, rng),
             Material::Mix { a, b, weight } => {
-                // Stochastic selection: pick a or b with probability weight.
-                let chosen = if rng.random::<f64>() < *weight { b } else { a };
-                chosen.scatter(ray, record, rng)
+                let chosen: &dyn Bsdf = if rng.random::<f64>() < *weight {
+                    b.as_ref()
+                } else {
+                    a.as_ref()
+                };
+                chosen.sample(wo, record, rng)
             }
             Material::Coated { substrate, coating } => {
-                // Single-bounce approximation: choose coating vs substrate by
-                // Fresnel. The coating's reflectance at this angle is evaluated
-                // once and used to branch stochastically.
-                //
-                // We assume the coating is a thin dielectric with ior from
-                // fresnel_schlick; the substrate handles the transmitted path.
-                let wo = -ray.direction.unit_vector();
                 let cos_o = wo.dot(&record.normal).abs();
-                // Use a fixed ior=1.5 for the coat interface (clear-coat
-                // assumption). A full implementation would let the coating
-                // material carry its own ior.
                 let coat_ior = 1.5;
                 let f = fresnel_schlick(cos_o, coat_ior);
                 if rng.random::<f64>() < f {
-                    // Reflect off the coating.
-                    coating.scatter(ray, record, rng)
+                    coating.sample(wo, record, rng)
                 } else {
-                    // Transmit through the coating to the substrate.
-                    substrate.scatter(ray, record, rng)
+                    substrate.sample(wo, record, rng)
                 }
             }
-            Material::DiffuseLight { .. } => None,
+        }
+    }
+
+    /// Evaluate the material's BSDF for an externally-chosen direction pair.
+    ///
+    /// Used by MIS when the integrator samples a direction from the light
+    /// PDF and needs to evaluate the material at that direction.
+    pub fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 {
+        match self {
+            Material::Lambertian(inner) => inner.eval(wo, wi, hit),
+            Material::Metal(inner) => inner.eval(wo, wi, hit),
+            Material::Dielectric(inner) => inner.eval(wo, wi, hit),
+            Material::DiffuseLight(inner) => inner.eval(wo, wi, hit),
+            Material::Isotropic(inner) => inner.eval(wo, wi, hit),
+            Material::Glossy(inner) => inner.eval(wo, wi, hit),
+            Material::Custom(inner) => inner.eval(wo, wi, hit),
+            Material::Mix { a, b, weight } => {
+                let w = *weight;
+                (1.0 - w) * a.eval(wo, wi, hit) + w * b.eval(wo, wi, hit)
+            }
+            Material::Coated { substrate, coating } => {
+                let cos_o = wo.dot(&hit.normal).abs();
+                let f = fresnel_schlick(cos_o, 1.5);
+                f * coating.eval(wo, wi, hit) + (1.0 - f) * substrate.eval(wo, wi, hit)
+            }
+        }
+    }
+
+    /// Evaluate the material's sampling PDF for a given direction pair.
+    pub fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 {
+        match self {
+            Material::Lambertian(inner) => inner.pdf(wo, wi, hit),
+            Material::Metal(inner) => inner.pdf(wo, wi, hit),
+            Material::Dielectric(inner) => inner.pdf(wo, wi, hit),
+            Material::DiffuseLight(inner) => inner.pdf(wo, wi, hit),
+            Material::Isotropic(inner) => inner.pdf(wo, wi, hit),
+            Material::Glossy(inner) => inner.pdf(wo, wi, hit),
+            Material::Custom(inner) => inner.pdf(wo, wi, hit),
+            Material::Mix { a, b, weight } => {
+                (1.0 - weight) * a.pdf(wo, wi, hit) + weight * b.pdf(wo, wi, hit)
+            }
+            Material::Coated { substrate, coating } => {
+                let cos_o = wo.dot(&hit.normal).abs();
+                let f = fresnel_schlick(cos_o, 1.5);
+                f * coating.pdf(wo, wi, hit) + (1.0 - f) * substrate.pdf(wo, wi, hit)
+            }
         }
     }
 
     /// Returns the emitted light color at the hit point.
     pub fn emitted(&self, hit_rec: &HitRecord) -> Color3 {
         match self {
-            Material::DiffuseLight { emit, tex } if hit_rec.front_face => tex
-                .as_ref()
-                .map(|t| t.value(&hit_rec.texture_coords()))
-                .unwrap_or(*emit),
-            _ => Color3::from(0., 0., 0.),
+            Material::Lambertian(inner) => inner.emitted(hit_rec),
+            Material::Metal(inner) => inner.emitted(hit_rec),
+            Material::Dielectric(inner) => inner.emitted(hit_rec),
+            Material::DiffuseLight(inner) => inner.emitted(hit_rec),
+            Material::Isotropic(inner) => inner.emitted(hit_rec),
+            Material::Glossy(inner) => inner.emitted(hit_rec),
+            Material::Custom(inner) => inner.emitted(hit_rec),
+            Material::Mix { a, b, weight } => {
+                let w = *weight;
+                (1.0 - w) * a.emitted(hit_rec) + w * b.emitted(hit_rec)
+            }
+            Material::Coated { substrate, coating } => {
+                // No view direction available in emitted(), so we can't compute
+                // a proper Fresnel term. Sum both — in practice coatings don't
+                // emit, so this just returns the substrate's emission.
+                coating.emitted(hit_rec) + substrate.emitted(hit_rec)
+            }
         }
     }
 
-    /// Evaluates the material's scattering PDF for a given incoming ray, hit record,
-    /// and scattered direction. Used by the integrator in the Monte Carlo
-    /// estimator: `attenuation * scattering_pdf / sampling_pdf`.
-    pub fn scattering_pdf(&self, ray_in: &Ray, record: &HitRecord, scattered: &Ray) -> f64 {
+    /// Returns `true` if this material emits light.
+    ///
+    /// Recursively checks composition variants — a `Coated` or `Mix`
+    /// containing an emissive material will also return `true`.
+    pub fn is_emissive(&self) -> bool {
         match self {
-            Material::Lambertian { .. } => {
-                let cos_theta = record.normal.dot(&scattered.direction.unit_vector());
-                if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
-            }
-            Material::Metal { fuzz, ior, .. } => {
-                let alpha = (fuzz * fuzz).clamp(0.001, 1.0);
-                let wo = -ray_in.direction.unit_vector();
-                let wi = scattered.direction.unit_vector();
-                let h = (wo + wi).unit_vector();
-                let cos_h_n = h.dot(&record.normal).max(0.0);
-                let cos_h_o = wo.dot(&h).max(0.0);
-                let cos_o = wo.dot(&record.normal).max(0.0);
-                let cos_i = wi.dot(&record.normal).max(0.0);
-                if cos_h_o <= 0.0 || cos_o <= 0.0 || cos_i <= 0.0 {
-                    return 0.0;
-                }
-                let d = ggx_d(cos_h_n, alpha);
-                let f = fresnel_schlick(cos_h_o, *ior);
-                let g = geometry_schlick_ggx(cos_o, alpha) * geometry_schlick_ggx(cos_i, alpha);
-                // f_r * cos(theta_i) = F * D * G / (4 * cos_o)
-                f * d * g / (4.0 * cos_o)
-            }
-            Material::Isotropic { .. } => 1.0 / (4.0 * PI),
-            Material::Glossy { roughness, .. } => {
-                let alpha = (roughness * roughness).clamp(0.001, 1.0);
-                let wo = -ray_in.direction.unit_vector();
-                let wi = scattered.direction.unit_vector();
-                let h = (wo + wi).unit_vector();
-                let cos_h_n = h.dot(&record.normal).max(0.0);
-                let cos_h_o = wo.dot(&h).max(0.0);
-                if cos_h_o <= 0.0 {
-                    return 0.0;
-                }
-                let d = ggx_d(cos_h_n, alpha);
-                d * cos_h_n / (4.0 * cos_h_o)
-            }
-            Material::Mix { a, b, weight } => {
-                // Average the PDFs weighted by selection probability.
-                let pdf_a = a.scattering_pdf(ray_in, record, scattered);
-                let pdf_b = b.scattering_pdf(ray_in, record, scattered);
-                (1.0 - weight) * pdf_a + weight * pdf_b
-            }
+            Material::DiffuseLight(_) => true,
+            Material::Mix { a, b, .. } => a.is_emissive() || b.is_emissive(),
             Material::Coated { substrate, coating } => {
-                // Same Fresnel-based split as scatter: return the weighted
-                // sum of the two PDFs. (For a single-bounce coat
-                // approximation.)
-                let wo = -ray_in.direction.unit_vector();
-                let cos_o = wo.dot(&record.normal).abs();
-                let f = fresnel_schlick(cos_o, 1.5);
-                let pdf_coat = coating.scattering_pdf(ray_in, record, scattered);
-                let pdf_sub = substrate.scattering_pdf(ray_in, record, scattered);
-                f * pdf_coat + (1.0 - f) * pdf_sub
+                substrate.is_emissive() || coating.is_emissive()
             }
-            _ => 0.0,
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if this material is a delta distribution (perfect
+    /// specular reflection or refraction). Delta materials cannot be
+    /// evaluated at arbitrary directions — the integrator must use the
+    /// sampled direction directly without MIS weighting.
+    ///
+    /// Recursively checks composition variants.
+    pub fn is_delta(&self) -> bool {
+        match self {
+            Material::Dielectric(_) => true,
+            Material::Mix { a, b, .. } => a.is_delta() || b.is_delta(),
+            Material::Coated { substrate, coating } => substrate.is_delta() || coating.is_delta(),
+            _ => false,
         }
     }
 }
 
+// ─── Bsdf impl for Material (enables boxing for composition) ────────────────
+
+impl Bsdf for Material {
+    fn sample(&self, wo: Vec3, hit: &HitRecord, rng: &mut dyn rand::Rng) -> Option<BsdfSample> {
+        self.sample(wo, hit, rng)
+    }
+
+    fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 {
+        self.eval(wo, wi, hit)
+    }
+
+    fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 {
+        self.pdf(wo, wi, hit)
+    }
+
+    fn emitted(&self, hit: &HitRecord) -> Color3 {
+        self.emitted(hit)
+    }
+
+    fn gpu_node(&self, _buf: &mut GpuMaterialBuffer) -> Option<u32> {
+        // Not used — serialization goes through write_node directly.
+        None
+    }
+
+    fn clone_box(&self) -> Box<dyn Bsdf> {
+        Box::new(self.clone())
+    }
+
+    fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
+        write_node(self, buf)
+    }
+}
+
+// ─── Constructors ───────────────────────────────────────────────────────────
+
 impl Material {
     /// Lambertian diffuse material from a solid color.
     pub fn lambertian_color(r: f64, g: f64, b: f64) -> Self {
-        Self::Lambertian {
+        Material::Lambertian(LambertianMaterial {
             albedo: Color3::from(r, g, b),
             tex: None,
-        }
+        })
     }
 
     /// Lambertian diffuse material with a texture for spatial variation.
     pub fn lambertian(tex: Arc<dyn Texture>) -> Self {
-        Self::Lambertian {
+        Material::Lambertian(LambertianMaterial {
             albedo: Color3::ZERO,
             tex: Some(tex),
-        }
+        })
     }
 
-    /// Microfacet conductor (GGX metal).  `fuzz` ∈ [0, 1] controls roughness;
+    /// Microfacet conductor (GGX). `fuzz` ∈ [0, 1] controls roughness;
     /// `ior` sets the index of refraction for the Fresnel term (default 2.5).
     pub fn metal(albedo: Color3, fuzz: f64) -> Self {
-        Self::Metal {
+        Material::Metal(MetalMaterial {
             albedo,
+            tex: None,
             fuzz,
             ior: 2.5,
-        }
+        })
     }
 
     /// Microfacet conductor with an explicit IOR for the Fresnel term.
     pub fn metal_with_ior(albedo: Color3, fuzz: f64, ior: f64) -> Self {
-        Self::Metal { albedo, fuzz, ior }
+        Material::Metal(MetalMaterial {
+            albedo,
+            tex: None,
+            fuzz,
+            ior,
+        })
     }
 
     /// Glass / dielectric material with refractive index.
     pub fn dielectric(ior: f64) -> Self {
-        Self::Dielectric {
+        Material::Dielectric(DielectricMaterial {
             refractive_idx: ior,
-        }
+        })
     }
 
     /// Area light emitting a constant color.
     pub fn light(emit: Color3) -> Self {
-        Self::DiffuseLight { emit, tex: None }
+        Material::DiffuseLight(DiffuseLightMaterial { emit, tex: None })
     }
 
     /// Area light with a texture for spatial emission variation.
     pub fn light_textured(tex: Arc<dyn Texture>) -> Self {
-        Self::DiffuseLight {
+        Material::DiffuseLight(DiffuseLightMaterial {
             emit: Color3::ZERO,
             tex: Some(tex),
-        }
+        })
     }
 
     /// Isotropic scattering medium with a uniform albedo.
     pub fn isotropic(albedo: Color3) -> Self {
-        Self::Isotropic { albedo, tex: None }
+        Material::Isotropic(IsotropicMaterial { albedo, tex: None })
     }
 
     /// Isotropic scattering medium with a textured albedo.
     pub fn isotropic_texture(tex: Arc<dyn Texture>) -> Self {
-        Self::Isotropic {
+        Material::Isotropic(IsotropicMaterial {
             albedo: Color3::ZERO,
             tex: Some(tex),
-        }
+        })
     }
 
     /// Glossy microfacet BRDF (GGX).
     pub fn glossy(albedo: Color3, roughness: f64, ior: f64) -> Self {
-        Self::Glossy {
+        Material::Glossy(GlossyMaterial {
             albedo,
+            tex: None,
             roughness,
             ior,
-        }
+        })
+    }
+
+    /// Microfacet conductor with a textured albedo.
+    pub fn metal_textured(tex: Arc<dyn Texture>, fuzz: f64) -> Self {
+        Material::Metal(MetalMaterial {
+            albedo: Color3::ZERO,
+            tex: Some(tex),
+            fuzz,
+            ior: 2.5,
+        })
+    }
+
+    /// Microfacet conductor with a textured albedo and explicit IOR.
+    pub fn metal_textured_with_ior(tex: Arc<dyn Texture>, fuzz: f64, ior: f64) -> Self {
+        Material::Metal(MetalMaterial {
+            albedo: Color3::ZERO,
+            tex: Some(tex),
+            fuzz,
+            ior,
+        })
+    }
+
+    /// Glossy microfacet BRDF with a textured albedo.
+    pub fn glossy_textured(tex: Arc<dyn Texture>, roughness: f64, ior: f64) -> Self {
+        Material::Glossy(GlossyMaterial {
+            albedo: Color3::ZERO,
+            tex: Some(tex),
+            roughness,
+            ior,
+        })
     }
 
     /// Stochastic mix of two materials.
@@ -510,29 +582,31 @@ impl Material {
     /// blend.
     pub fn mix(self, other: Material, weight: f64) -> Self {
         let weight = weight.clamp(0.0, 1.0);
-        Self::Mix {
-            a: Box::new(self),
-            b: Box::new(other),
+        Material::Mix {
+            a: Box::new(self) as Box<dyn Bsdf>,
+            b: Box::new(other) as Box<dyn Bsdf>,
             weight,
         }
     }
 
     /// Coat this material with a clear-coat layer (thin dielectric).
     pub fn coated(self, coat: Material) -> Self {
-        Self::Coated {
-            substrate: Box::new(self),
-            coating: Box::new(coat),
+        Material::Coated {
+            substrate: Box::new(self) as Box<dyn Bsdf>,
+            coating: Box::new(coat) as Box<dyn Bsdf>,
         }
+    }
+
+    /// Wrap a custom [`Bsdf`] implementation in a `Material`.
+    pub fn custom(bsdf: impl Bsdf + 'static) -> Self {
+        Material::Custom(Box::new(bsdf))
     }
 }
 
+// ─── GPU serialization ──────────────────────────────────────────────────────
+
 impl Material {
     /// Flatten this material tree into a GPU-friendly buffer.
-    ///
-    /// The CPU material tree is a recursive enum. The GPU sees a flat array
-    /// of [`GpuMaterialNode`]s; composition variants reference children by
-    /// index. The shader's switch on `material_type` mirrors the CPU's
-    /// match.
     pub fn to_gpu_buffer(&self) -> GpuMaterialBuffer {
         let mut buf = GpuMaterialBuffer::new();
         write_node(self, &mut buf);
@@ -540,7 +614,14 @@ impl Material {
     }
 }
 
-/// GGX/Trowbridge-Reitz normal distribution function.
+// ─── Shared BSDF helper functions ───────────────────────────────────────────
+
+/// GGX/Trowbridge-Reitz normal distribution function (NDF).
+///
+/// Returns the probability density that a microfacet has half-vector H with
+/// the surface normal. `cos_theta_h` is `cos(H·N)`, `alpha` is `roughness²`.
+/// The NDF controls the specular lobe width: low alpha = sharp highlights,
+/// high alpha = broad sheen.
 pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
     if cos_theta_h <= 0.0 {
         return 0.0;
@@ -551,7 +632,10 @@ pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
 }
 
 /// Smith's geometry function (Schlick-GGX approximation).
-/// Accounts for self-shadowing/masking of microfacets.
+///
+/// Models microfacet self-shadowing: at grazing angles, some microfacets are
+/// blocked by others, reducing the effective reflection. `cos_theta` is
+/// `cos(ω·N)`, `alpha` is `roughness²`. Returns a multiplier in [0, 1].
 pub(super) fn geometry_schlick_ggx(cos_theta: f64, alpha: f64) -> f64 {
     if cos_theta <= 0.0 {
         return 0.0;
@@ -563,10 +647,16 @@ pub(super) fn geometry_schlick_ggx(cos_theta: f64, alpha: f64) -> f64 {
 }
 
 /// Schlick Fresnel reflectance for unpolarized light.
+///
+/// Approximates the fraction of light reflected at a dielectric interface.
+/// `cos_theta` is `cos(ω·N)`, `ior` is the ratio of refractive indices.
+/// At normal incidence returns `((1-ior)/(1+ior))²`; approaches 1 at grazing.
 pub(super) fn fresnel_schlick(cos_theta: f64, ior: f64) -> f64 {
     let r0 = ((1.0 - ior) / (1.0 + ior)).powi(2);
     r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
 }
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -669,14 +759,53 @@ mod tests {
     /// fallback albedo).
     #[test]
     fn gpu_buffer_lambertian_textured() {
-        let mat = Material::Lambertian {
+        let mat = Material::Lambertian(LambertianMaterial {
             albedo: Color3::from(0.5, 0.5, 0.5),
             tex: Some(Arc::new(SolidColor::new(Color3::from(0.7, 0.3, 0.1)))),
-        };
+        });
         let buf = mat.to_gpu_buffer();
         assert_eq!(buf.nodes.len(), 1);
         // The GPU buffer should use the fallback albedo, not the texture's
         // color.
         assert_eq!(buf.params.len(), 12);
+    }
+
+    /// Custom material returns empty GPU buffer (no GPU representation).
+    #[test]
+    fn gpu_buffer_custom() {
+        // A simple custom material for testing.
+        struct DummyBsdf;
+        impl Bsdf for DummyBsdf {
+            fn sample(
+                &self,
+                _wo: Vec3,
+                _hit: &HitRecord,
+                _rng: &mut dyn rand::Rng,
+            ) -> Option<BsdfSample> {
+                None
+            }
+            fn eval(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> Color3 {
+                Color3::from(0., 0., 0.)
+            }
+            fn pdf(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> f64 {
+                0.0
+            }
+            fn clone_box(&self) -> Box<dyn Bsdf> {
+                Box::new(self.clone())
+            }
+        }
+        impl Clone for DummyBsdf {
+            fn clone(&self) -> Self {
+                DummyBsdf
+            }
+        }
+        let mat = Material::custom(DummyBsdf);
+        let buf = mat.to_gpu_buffer();
+        // Custom material serializes as a Passthrough node (unknown type).
+        assert_eq!(buf.nodes.len(), 1);
+        assert_eq!(
+            buf.nodes[0].material_type,
+            GpuMaterialType::Passthrough as u32
+        );
     }
 }

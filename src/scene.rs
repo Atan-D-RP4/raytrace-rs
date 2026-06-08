@@ -6,7 +6,7 @@ use crate::bvh::BvhNode;
 use crate::camera::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::hittable::Hittable;
-use crate::material::Material;
+use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
 use crate::sphere::Sphere;
 use crate::texture::{
@@ -260,26 +260,18 @@ impl Scene {
         scene.add_sphere(
             Point3::from(260., 150., 45.),
             50.,
-            Material::Dielectric {
-                refractive_idx: 1.5,
-            },
+            Material::dielectric(1.5),
         );
         scene.add_sphere(
             Point3::from(0., 150., 145.),
             50.,
-            Material::Metal {
-                albedo: Color3::from(0.8, 0.8, 0.9),
-                fuzz: 1.0,
-                ior: 2.5,
-            },
+            Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 1.0, 2.5),
         );
 
         let boundary = Arc::new(Sphere::new(
             &Point3::from(360., 150., 145.),
             70.,
-            Material::Dielectric {
-                refractive_idx: 1.5,
-            },
+            Material::dielectric(1.5),
         ));
         scene.objects.push(boundary.clone());
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
@@ -291,9 +283,7 @@ impl Scene {
         let boundary = Arc::new(Sphere::new(
             &Point3::from(0., 0., 0.),
             5000.,
-            Material::Dielectric {
-                refractive_idx: 1.5,
-            },
+            Material::dielectric(1.5),
         ));
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             boundary,
@@ -432,9 +422,7 @@ impl Scene {
                 Vec3::from(100., 100., 100.),
                 Vec3::from(340., 0., 100.),
                 17.,
-                Material::Dielectric {
-                    refractive_idx: 1.5,
-                },
+                Material::dielectric(1.5),
             ),
         ];
 
@@ -458,19 +446,13 @@ impl Scene {
         scene.add_sphere(
             Point3::from(348., 400., 278.),
             40.,
-            Material::Metal {
-                albedo: Color3::from(0.8, 0.8, 0.9),
-                fuzz: 1.0,
-                ior: 2.5,
-            },
+            Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 1.0, 2.5),
         );
         // Put a sphere above the smaller box
         scene.add_sphere(
             Point3::from(200., 350., 200.),
             90.,
-            Material::Dielectric {
-                refractive_idx: 1.5,
-            },
+            Material::dielectric(1.5),
         );
 
         scene.config.samples_per_pixel = 200;
@@ -746,61 +728,54 @@ impl Scene {
                 );
 
                 if (center - Point3::from(4., 0.2, 0.)).length() > 0.9 {
+                    let rand_albedo = || Color3::random() * Color3::random();
                     let material = if world_seed.is_multiple_of(3) {
-                        Material::Lambertian {
-                            albedo: Color3::random() * Color3::random(),
+                        Material::Lambertian(LambertianMaterial {
+                            albedo: rand_albedo(),
                             tex: None,
-                        }
+                        })
                     } else if world_seed % 3 == 1 {
-                        Material::Metal {
-                            albedo: Color3::random_range(0.5, 1.0),
-                            fuzz: rand::random::<f64>() * 0.5,
-                            ior: 2.5,
-                        }
+                        Material::metal_with_ior(
+                            Color3::random_range(0.5, 1.0),
+                            rand::random::<f64>() * 0.5,
+                            2.5,
+                        )
                     } else if world_seed % 3 == 2 {
-                        Material::Dielectric {
-                            refractive_idx: 1.5,
-                        }
+                        Material::dielectric(1.5)
                     } else if world_seed % 3 == 3 {
-                        Material::Isotropic {
+                        Material::Isotropic(IsotropicMaterial {
                             albedo: Color3::random(),
                             tex: if rand::random() {
                                 Some(Arc::new(ImageTexture::new("./earthmap.jpg").unwrap()))
                             } else {
                                 None
                             },
-                        }
+                        })
                     } else if world_seed % 3 == 4 {
-                        Material::Glossy {
-                            albedo: Color3::random(),
-                            roughness: rand::random::<f64>(),
-                            ior: 1.5,
-                        }
+                        Material::glossy(Color3::random(), rand::random::<f64>(), 1.5)
                     } else if world_seed % 3 == 5 {
-                        Material::Coated {
-                            substrate: Box::new(Material::Lambertian {
-                                albedo: Color3::random() * Color3::random(),
+                        Material::coated(
+                            Material::Lambertian(LambertianMaterial {
+                                albedo: rand_albedo(),
                                 tex: None,
                             }),
-                            coating: Box::new(Material::Metal {
-                                albedo: Color3::random_range(0.5, 1.0),
-                                fuzz: rand::random::<f64>() * 0.5,
-                                ior: 2.5,
-                            }),
-                        }
+                            Material::metal(
+                                Color3::random_range(0.5, 1.0),
+                                rand::random::<f64>() * 0.5,
+                            ),
+                        )
                     } else {
-                        Material::Mix {
-                            a: Box::new(Material::Lambertian {
-                                albedo: Color3::random() * Color3::random(),
-                                tex: None,
-                            }),
-                            b: Box::new(Material::Metal {
-                                albedo: Color3::random_range(0.5, 1.0),
-                                fuzz: rand::random::<f64>() * 0.5,
-                                ior: 2.5,
-                            }),
-                            weight: rand::random::<f64>(),
-                        }
+                        Material::Lambertian(LambertianMaterial {
+                            albedo: rand_albedo(),
+                            tex: None,
+                        })
+                        .mix(
+                            Material::metal(
+                                Color3::random_range(0.5, 1.0),
+                                rand::random::<f64>() * 0.5,
+                            ),
+                            rand::random::<f64>(),
+                        )
                     };
 
                     if world_seed.is_multiple_of(2) {
@@ -814,13 +789,7 @@ impl Scene {
             }
         }
 
-        scene.add_sphere(
-            Point3::from(0., 1., 0.),
-            1.,
-            Material::Dielectric {
-                refractive_idx: 1.5,
-            },
-        );
+        scene.add_sphere(Point3::from(0., 1., 0.), 1., Material::dielectric(1.5));
         scene.add_sphere(
             Point3::from(-4., 1., 0.),
             1.,
@@ -829,11 +798,7 @@ impl Scene {
         scene.add_sphere(
             Point3::from(4., 1., 0.),
             1.,
-            Material::Metal {
-                albedo: Color3::from(0.7, 0.6, 0.5),
-                fuzz: 0.0,
-                ior: 2.5,
-            },
+            Material::metal_with_ior(Color3::from(0.7, 0.6, 0.5), 0.0, 2.5),
         );
         scene.add_light(Arc::new(Sphere::new(
             &Point3::from(0., 4.5, 0.),
@@ -861,17 +826,9 @@ impl Scene {
 
         let material_ground = Material::lambertian_color(0.8, 0.8, 0.0);
         let material_center = Material::lambertian_color(0.1, 0.2, 0.5);
-        let material_left = Material::Dielectric {
-            refractive_idx: 1.50,
-        };
-        let material_bubble = Material::Dielectric {
-            refractive_idx: 1.0 / 1.50,
-        };
-        let material_right = Material::Metal {
-            albedo: Color3::from(0.8, 0.6, 0.2),
-            fuzz: 1.0,
-            ior: 2.5,
-        };
+        let material_left = Material::dielectric(1.50);
+        let material_bubble = Material::dielectric(1.0 / 1.50);
+        let material_right = Material::metal_with_ior(Color3::from(0.8, 0.6, 0.2), 1.0, 2.5);
 
         scene.add_sphere(Point3::from(0., -100.5, -1.), 100., material_ground);
         scene.add_sphere(Point3::from(0., 0., -1.2), 0.5, material_center);
