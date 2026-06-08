@@ -400,10 +400,6 @@ impl Scene {
         let mut scene = Scene::empty_cornell_box();
 
         let white = Material::lambertian_color(0.73, 0.73, 0.73);
-        // let white = Material::Metal {
-        //     albedo: Color3::from(0.73, 0.73, 0.73),
-        //     fuzz: 1.0,
-        // };
         let box_params = [
             (
                 Vec3::from(165., 330., 165.),
@@ -448,7 +444,6 @@ impl Scene {
             40.,
             Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 1.0, 2.5),
         );
-        // Put a sphere above the smaller box
         scene.add_sphere(
             Point3::from(200., 350., 200.),
             90.,
@@ -524,13 +519,6 @@ impl Scene {
 
     pub fn simple_light() -> Self {
         let mut scene = Self::noisy_spheres();
-        //
-        // scene.add_quad(
-        //     Point3::from(3., 1., -2.),
-        //     Vec3::from(2., 0., 0.),
-        //     Vec3::from(0., 2., 0.),
-        //     Material::light(Color3::from(4.0, 0.4, 0.4)),
-        // );
 
         scene.add_sphere(
             Point3::from(0., 7., 0.),

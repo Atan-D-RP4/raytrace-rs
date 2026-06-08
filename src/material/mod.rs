@@ -56,18 +56,13 @@
 //! switch on `material_type`. Custom materials return `None` from
 //! are not serialized to the GPU buffer.
 
-// ─── Submodules ─────────────────────────────────────────────────────────────
-
-mod gpu;
-
 mod dielectric;
 mod diffuse_light;
 mod glossy;
+mod gpu;
 mod isotropic;
 mod lambertian;
 mod metal;
-
-// ─── Re-exports ─────────────────────────────────────────────────────────────
 
 pub use gpu::{GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 
@@ -81,16 +76,12 @@ pub use metal::MetalMaterial;
 use gpu::GPU_NONE;
 use gpu::write_node;
 
-// ─── Imports ────────────────────────────────────────────────────────────────
-
 use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
-
-// ─── Public API types ───────────────────────────────────────────────────────
 
 /// Result of material sampling for a single bounce.
 ///
@@ -139,8 +130,6 @@ pub enum PdfKind {
     /// weighting for delta materials — the sampled direction is used directly.
     Delta,
 }
-
-// ─── Internal BSDF trait ────────────────────────────────────────────────────
 
 /// Trait for BSDF implementations.
 ///
@@ -227,8 +216,6 @@ pub trait Bsdf: Send + Sync {
     }
 }
 
-// ─── Material enum ──────────────────────────────────────────────────────────
-
 /// Supported material models.
 ///
 /// The enum wraps concrete structs for built-in materials and delegates
@@ -286,8 +273,6 @@ impl Clone for Material {
         }
     }
 }
-
-// ─── Material dispatch (inherent methods) ───────────────────────────────────
 
 impl Material {
     /// Sample this material for a given outgoing direction and hit record.
@@ -430,8 +415,6 @@ impl Material {
     }
 }
 
-// ─── Bsdf impl for Material (enables boxing for composition) ────────────────
-
 impl Bsdf for Material {
     fn sample(&self, wo: Vec3, hit: &HitRecord, rng: &mut dyn rand::Rng) -> Option<BsdfSample> {
         self.sample(wo, hit, rng)
@@ -462,8 +445,6 @@ impl Bsdf for Material {
         write_node(self, buf)
     }
 }
-
-// ─── Constructors ───────────────────────────────────────────────────────────
 
 impl Material {
     /// Lambertian diffuse material from a solid color.
@@ -603,8 +584,6 @@ impl Material {
     }
 }
 
-// ─── GPU serialization ──────────────────────────────────────────────────────
-
 impl Material {
     /// Flatten this material tree into a GPU-friendly buffer.
     pub fn to_gpu_buffer(&self) -> GpuMaterialBuffer {
@@ -613,8 +592,6 @@ impl Material {
         buf
     }
 }
-
-// ─── Shared BSDF helper functions ───────────────────────────────────────────
 
 /// GGX/Trowbridge-Reitz normal distribution function (NDF).
 ///
@@ -655,8 +632,6 @@ pub(super) fn fresnel_schlick(cos_theta: f64, ior: f64) -> f64 {
     let r0 = ((1.0 - ior) / (1.0 + ior)).powi(2);
     r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
 }
-
-// ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

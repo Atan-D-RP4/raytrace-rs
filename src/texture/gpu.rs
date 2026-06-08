@@ -81,6 +81,12 @@ impl GpuTextureBuffer {
     ///
     /// GPU uses f32, but the CPU representation keeps f64 precision. Cast
     /// here so the rest of the code doesn't have to think about it.
+    ///
+    /// # Safety
+    ///
+    /// Uses `slice::from_raw_parts` to reinterpret `[f32]` as `[u8]`.
+    /// This is safe because `f32` is `#[repr(transparent)]` over `u32`
+    /// and has no padding bytes — the bit pattern is valid as raw bytes.
     pub fn push_params(&mut self, params: &[f64]) {
         let floats: Vec<f32> = params.iter().map(|v| *v as f32).collect();
         let bytes = unsafe {

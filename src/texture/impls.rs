@@ -1,3 +1,9 @@
+//! Concrete texture implementations.
+//!
+//! Each type implements the [`Texture`] trait and evaluates a color from
+//! the coordinate context. These are the leaf nodes that materials sample
+//! during shading.
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -28,7 +34,10 @@ impl Texture for MappedTexture {
     }
 }
 
-/// Constant color texture
+/// Uniform color texture — returns the same [`Color3`] at every point.
+///
+/// Used as the fallback when no texture is provided (e.g. `Material::lambertian_color`),
+/// and as the GPU serialization color for textured materials.
 pub struct SolidColor {
     albedo: Color3,
 }
@@ -60,6 +69,7 @@ pub struct CheckerTexture {
 }
 
 impl CheckerTexture {
+    /// Creates a checker from two arbitrary child textures.
     pub fn new(even: Arc<dyn Texture>, odd: Arc<dyn Texture>) -> Self {
         Self { even, odd }
     }
@@ -93,6 +103,7 @@ pub struct ImageTexture {
 }
 
 impl ImageTexture {
+    /// Loads an image from disk and converts it to float RGBA.
     pub fn new<P: AsRef<Path>>(filename: P) -> image::ImageResult<Self> {
         let image = image::open(filename)?.to_rgba32f();
         Ok(Self { image })
@@ -128,6 +139,7 @@ impl Default for NoiseTexture {
 }
 
 impl NoiseTexture {
+    /// Creates a new noise texture with random Perlin permutation tables.
     pub fn new() -> Self {
         Self {
             noise: Perlin::new(),

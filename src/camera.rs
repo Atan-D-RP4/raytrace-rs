@@ -178,41 +178,33 @@ impl Camera {
 
         let h = (theta / 2.0).tan();
 
-        // Determine the viewport dimensions based on the vertical field of view and aspect ratio. The
-        // viewport is the plane that the camera rays will be cast through, and is centered at focal_length
-        // units in front of the camera origin.
+        // Derive viewport dimensions from vertical FOV and aspect ratio. The viewport is a plane
+        // centered at the focal plane, with size determined by the FOV and aspect ratio.
         let viewport_height = 2.0 * h * self.focus_distance;
         let viewport_width = viewport_height * (self.image_width as f64 / self.image_height as f64);
 
+        // Compute camera basis vectors. The camera looks from `look_from` towards `look_at`, with
+        // `vup` as the up direction. The viewport is oriented according to these vectors
         let w = (self.look_from - self.look_at).unit_vector();
         let u = self.vup.cross(&w).unit_vector();
         let v = w.cross(&u);
 
-        // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
-        // the u and v directions. These are used to calculate the ray direction for each pixel.
+        // Compute pixel deltas by scaling viewport basis vectors by the number of pixels, which
+        // represent the world-space vector from pixel to pixel.
         let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
         let viewport_v = viewport_height * -v; // Vector across viewport vertical edge
         // Negated because the v vector points up but the image coordinates increase downwards.
 
-        // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
-        // the u and v directions. These are used to calculate the ray direction for each pixel
-        // by dividing the viewport dimensions by the image dimensions.
         self.pixel_delta_u = viewport_u / self.image_width as f64;
         self.pixel_delta_v = viewport_v / self.image_height as f64;
 
-        // Calculate the location of the upper left pixel, which is the starting point for calculating
-        // the ray directions for each pixel. This is done by starting at the camera center,
-        // moving forward by focal_length units, and then moving left and up by half the viewport dimensions.
+        // Compute the world-space location of the upper-left pixel (0,0).
         let viewport_upper_left =
             center - (self.focus_distance * w) - (viewport_u / 2.0) - (viewport_v / 2.0);
 
         self.pixel00_loc = viewport_upper_left + 0.5 * (self.pixel_delta_u + self.pixel_delta_v);
 
-        // Calculate the defocus disk vectors, which are used to calculate the ray origin for depth
-        // of field effects. The defocus disk is a disk centered at the focal plane that represents
-        // the area of the scene that will be in focus. The radius of the defocus disk is determined
-        // by the focus distance and the defocus angle, which represents how much of the scene
-        // should be in focus.
+        // Depth of field: randomize ray origin within a disk of this radius.
         let defocus_radius = self.focus_distance * (self.defocus_angle / 2.0).to_radians().tan();
         self.defocus_disk_u = u * defocus_radius;
         self.defocus_disk_v = v * defocus_radius;
@@ -226,8 +218,6 @@ impl Camera {
     /// TODO(renderer-abstraction): move this method and [`Camera::ray_color`]
     /// into a renderer/pipeline component so alternate engines can share camera setup.
     pub fn render(&mut self, world: &impl Hittable, lights: &impl Hittable) -> (u32, u32, Vec<u8>) {
-        // No need to initialize it here, `from_config` does it, or caller should do it manually
-        // self.initialize();
         let _span = tracing::info_span!(
             "render",
             width = self.image_width,
@@ -248,19 +238,14 @@ impl Camera {
         let sqrt_spp = self.samples_per_pixel.isqrt();
         let recip_sqrt_spp = 1.0 / sqrt_spp as f64;
 
-        // Single flat buffer: avoids millions of small Vec allocations.
-        // Format: [R, G, B, R, G, B, ...] for each pixel.
         let mut output = vec![0u8; total_pixels as usize * 3];
 
-        // Parallel chunked writes: each thread writes RGB directly to its slice.
-        // par_chunks_mut(3) gives mutable slices of exactly 3 bytes (one pixel).
         output
             .par_chunks_mut(3)
             .enumerate()
             .for_each(|(idx, chunk)| {
                 let mut rng = rand::rng();
-                // Convert flat index to 2D pixel coordinates.
-                // Image coordinate origin: top-left (i increases right, j increases down).
+                // Top-left origin: i → right, j → down.
                 let i = idx as i32 % image_width;
                 let j = idx as i32 / image_width;
 

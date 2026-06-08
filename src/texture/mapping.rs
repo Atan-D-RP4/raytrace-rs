@@ -1,3 +1,9 @@
+//! Coordinate transformations applied before texture evaluation.
+//!
+//! A mapping converts the raw hit coordinates into the space expected by
+//! the texture. For example, [`TextureMapping::Spherical`] converts a
+//! unit-sphere position into UV coordinates for image textures.
+
 use std::f64::consts::PI;
 
 use super::TextureCoords;

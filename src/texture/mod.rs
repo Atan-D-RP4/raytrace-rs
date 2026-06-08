@@ -53,30 +53,46 @@ impl TexturePoints {
     }
 }
 
-/// Optional derivatives for future filtering/LOD work.
+/// Screen-space partial derivatives for texture filtering and LOD.
 ///
-/// These are currently initialized to zero until ray/pixel differentials are added.
+/// When populated, these enable anisotropic filtering and mipmap selection
+/// on GPU. Currently zeroed — ray/pixel differentials are not yet computed
+/// by the path tracer.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextureDerivatives {
+    /// Screen-space derivative of the hit position with respect to screen x.
     pub dpdx: Vec3,
+    /// Screen-space derivative of the hit position with respect to screen y.
     pub dpdy: Vec3,
+    /// Screen-space derivative of U with respect to screen x.
     pub dudx: f64,
+    /// Screen-space derivative of U with respect to screen y.
     pub dudy: f64,
+    /// Screen-space derivative of V with respect to screen x.
     pub dvdx: f64,
+    /// Screen-space derivative of V with respect to screen y.
     pub dvdy: f64,
 }
 
 /// Full texture evaluation context passed to mappings and textures.
 ///
-/// Carries UVs, coordinate spaces, geometric normal, and derivative slots.
+/// Built by [`HitRecord::texture_coords`](crate::hittable::HitRecord::texture_coords)
+/// from geometry hit data. Flows through [`TextureMapping::map`] then into
+/// [`Texture::value`].
+///
 /// TODO(mapping-2d3d): when 2D/3D mapping channels are split, move UV-only and
 /// point-only fields into dedicated sub-contexts to prevent accidental cross-use.
 #[derive(Debug, Clone, Copy)]
 pub struct TextureCoords {
+    /// Surface U coordinate in [0, 1] from primitive parameterization.
     pub u: f64,
+    /// Surface V coordinate in [0, 1] from primitive parameterization.
     pub v: f64,
+    /// Coordinate spaces (world, mapping, texture) carried through the pipeline.
     pub tex_points: TexturePoints,
+    /// Outward geometric normal at the hit point (before shading adjustments).
     pub geometry_normal: Vec3,
+    /// Screen-space derivatives for filtering (currently zeroed).
     pub derivatives: TextureDerivatives,
 }
 
@@ -114,8 +130,18 @@ impl TextureCoords {
     }
 }
 
-/// A texture evaluates a color from a fully prepared texture context.
+/// A texture that evaluates a color at a surface point.
+///
+/// Textures are the leaf nodes in the material tree — they provide spatially
+/// varying color (albedo, emission, etc.) that materials sample during
+/// shading. The pipeline is: geometry → [`TextureCoords`] →
+/// [`TextureMapping::map`] → `Texture::value` → [`Color3`].
 pub trait Texture: Send + Sync {
+    /// Evaluate the texture at the given coordinate context.
+    ///
+    /// For image textures, this samples the image at `(u, v)`. For procedural
+    /// textures (checker, noise), this evaluates the function at
+    /// `tex_points.texture`.
     fn value(&self, coords: &TextureCoords) -> Color3;
 
     /// Serialize this texture node for the GPU buffer.
