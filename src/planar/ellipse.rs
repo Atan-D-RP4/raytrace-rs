@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use rand::RngExt;
 
-use super::Region2D;
+use crate::planar::Region2D;
 
 /// Region type for a unit-disk ellipse in (a,b) space.
 #[derive(Clone)]

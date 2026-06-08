@@ -314,15 +314,40 @@ fn init_tracing() {
 fn main() -> Result<(), winit::error::EventLoopError> {
     init_tracing();
 
-    // live_render()?;
-    headless_render();
+    // Parse scene name from CLI args (optional first positional arg).
+    // Default is "cornell_box" to preserve original behavior.
+    let scene_name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "cornell_box".to_string());
+    let scene = match scene_name.as_str() {
+        "cornell_box" => Scene::cornell_box(),
+        "cornell_box_const_meds" => Scene::cornell_box_const_meds(),
+        "complex_scene" => Scene::complex_scene(),
+        "simple_light" => Scene::simple_light(),
+        "simple_world" => Scene::simple_world(),
+        "earth_sphere" => Scene::earth_sphere(),
+        "noisy_spheres" => Scene::noisy_spheres(),
+        "checkered_spheres" => Scene::checkered_spheres(),
+        "quads" => Scene::quads(),
+        "random_world" => Scene::random_world(),
+        other => {
+            error!(scene = %other, "unknown scene");
+            eprintln!("Available scenes:");
+            eprintln!("  cornell_box, cornell_box_const_meds, complex_scene,");
+            eprintln!("  simple_light, simple_world, earth_sphere, noisy_spheres,");
+            eprintln!("  checkered_spheres, quads, random_world, composition_demo");
+            std::process::exit(1);
+        }
+    };
+    // Re-emit into a headless render using the selected scene.
+    // Optional env-var overrides: RT_SAMPLES, RT_WIDTH, RT_DEPTH (for fast debugging).
+    headless_render(scene, &scene_name);
 
     Ok(())
 }
 
 #[profiling::function]
-fn live_render() -> Result<(), winit::error::EventLoopError> {
-    let scene = Scene::cornell_box();
+fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::EventLoopError> {
     let mut config = *scene.config();
     let camera = Camera::from_config(&config);
     let (width, height) = camera.image_dimensions();
@@ -333,6 +358,7 @@ fn live_render() -> Result<(), winit::error::EventLoopError> {
 
     let event_loop = EventLoop::new()?;
     let mut app = App::new(framebuffer.clone(), width, height);
+    let scene_name = scene_name.to_string();
 
     // Spawns dedicated CPU render worker thread.
     //
@@ -369,7 +395,7 @@ fn live_render() -> Result<(), winit::error::EventLoopError> {
         profiling::scope!("render_progressive");
         camera.render_progressive(&world, &*lights, framebuffer.clone());
 
-        save_framebuffer_png(&framebuffer, "cornell_box.png");
+        save_framebuffer_png(&framebuffer, &scene_name);
         info!("render thread complete");
     });
 
@@ -378,17 +404,27 @@ fn live_render() -> Result<(), winit::error::EventLoopError> {
 }
 
 #[profiling::function]
-fn headless_render() {
+fn headless_render(scene: Scene, scene_name: &str) {
     // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
     profiling::scope!("scene_build");
 
-    let scene = Scene::cornell_box();
-    let filename = "cornell_box.png";
+    let filename = format!("{}.png", scene_name);
 
     let mut config = *scene.config();
-    config.image_width = WIDTH as i32;
-    config.samples_per_pixel = 1000;
-    config.max_depth = 50;
+
+    // Allow env-var overrides for fast iteration during debugging.
+    config.image_width = std::env::var("RT_WIDTH")
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(WIDTH as i32);
+    config.samples_per_pixel = std::env::var("RT_SAMPLES")
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(1000);
+    config.max_depth = std::env::var("RT_DEPTH")
+        .ok()
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(50);
 
     let (mut objects, light_objects) = scene.into_objects();
 
@@ -430,13 +466,13 @@ fn headless_render() {
 
     info!(%filename, "saving image");
     profiling::scope!("image_save");
-    if let Err(error) = img.save(filename) {
+    if let Err(error) = img.save(&filename) {
         error!(%filename, ?error, "failed to save image");
         return;
     }
     info!(%filename, "image saved");
 
-    display_image(filename);
+    display_image(&filename);
 }
 
 fn display_image(filename: &str) {

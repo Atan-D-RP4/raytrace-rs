@@ -1,6 +1,6 @@
 use rand::RngExt;
 
-use super::Region2D;
+use crate::planar::Region2D;
 
 /// Region type for a triangle (a ≥ 0, b ≥ 0, a+b ≤ 1).
 #[derive(Clone)]

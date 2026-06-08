@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use rand::RngExt;
 
-use super::Region2D;
+use crate::planar::Region2D;
 
 /// Region type for a rounded rectangle in `[-1, 1] × [-1, 1]` (a, b) parametric space.
 ///

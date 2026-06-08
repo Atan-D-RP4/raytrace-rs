@@ -1,6 +1,6 @@
 use rand::RngExt;
 
-use super::Region2D;
+use crate::planar::Region2D;
 
 /// Region type for an arbitrary convex or simple polygon defined by vertices
 /// in (a, b) parametric space.
