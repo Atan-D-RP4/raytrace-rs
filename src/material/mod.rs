@@ -432,6 +432,14 @@ impl Bsdf for Material {
         self.emitted(hit)
     }
 
+    fn is_emissive(&self) -> bool {
+        Material::is_emissive(self)
+    }
+
+    fn is_delta(&self) -> bool {
+        Material::is_delta(self)
+    }
+
     fn gpu_node(&self, _buf: &mut GpuMaterialBuffer) -> Option<u32> {
         // Not used — serialization goes through write_node directly.
         None

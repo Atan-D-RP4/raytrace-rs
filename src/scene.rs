@@ -273,7 +273,6 @@ impl Scene {
             70.,
             Material::dielectric(1.5),
         ));
-        scene.objects.push(boundary.clone());
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             boundary,
             0.2,
@@ -717,32 +716,23 @@ impl Scene {
 
                 if (center - Point3::from(4., 0.2, 0.)).length() > 0.9 {
                     let rand_albedo = || Color3::random() * Color3::random();
-                    let material = if world_seed.is_multiple_of(3) {
-                        Material::Lambertian(LambertianMaterial {
+                    let material = match world_seed % 7 {
+                        0 => Material::Lambertian(LambertianMaterial {
                             albedo: rand_albedo(),
                             tex: None,
-                        })
-                    } else if world_seed % 3 == 1 {
-                        Material::metal_with_ior(
+                        }),
+                        1 => Material::metal_with_ior(
                             Color3::random_range(0.5, 1.0),
                             rand::random::<f64>() * 0.5,
                             2.5,
-                        )
-                    } else if world_seed % 3 == 2 {
-                        Material::dielectric(1.5)
-                    } else if world_seed % 3 == 3 {
-                        Material::Isotropic(IsotropicMaterial {
+                        ),
+                        2 => Material::dielectric(1.5),
+                        3 => Material::Isotropic(IsotropicMaterial {
                             albedo: Color3::random(),
-                            tex: if rand::random() {
-                                Some(Arc::new(ImageTexture::new("./earthmap.jpg").unwrap()))
-                            } else {
-                                None
-                            },
-                        })
-                    } else if world_seed % 3 == 4 {
-                        Material::glossy(Color3::random(), rand::random::<f64>(), 1.5)
-                    } else if world_seed % 3 == 5 {
-                        Material::coated(
+                            tex: None,
+                        }),
+                        4 => Material::glossy(Color3::random(), rand::random::<f64>(), 1.5),
+                        5 => Material::coated(
                             Material::Lambertian(LambertianMaterial {
                                 albedo: rand_albedo(),
                                 tex: None,
@@ -751,9 +741,8 @@ impl Scene {
                                 Color3::random_range(0.5, 1.0),
                                 rand::random::<f64>() * 0.5,
                             ),
-                        )
-                    } else {
-                        Material::Lambertian(LambertianMaterial {
+                        ),
+                        _ => Material::Lambertian(LambertianMaterial {
                             albedo: rand_albedo(),
                             tex: None,
                         })
@@ -763,7 +752,7 @@ impl Scene {
                                 rand::random::<f64>() * 0.5,
                             ),
                             rand::random::<f64>(),
-                        )
+                        ),
                     };
 
                     if world_seed.is_multiple_of(2) {

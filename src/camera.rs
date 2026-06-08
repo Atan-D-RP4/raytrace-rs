@@ -488,7 +488,7 @@ impl Camera {
                     .max(accumulated_attenuation.z);
 
                 if max_attenuation < 1e-6 {
-                    return clamp_firefly(accumulated_color);
+                    return accumulated_color;
                 }
 
                 // If we've exceeded the ray bounce limit, no more light is gathered.
@@ -496,7 +496,7 @@ impl Camera {
                     // Russian Roulette
                     let survival = max_attenuation.clamp(0.05, 0.95);
                     if rng.random::<f64>() > survival {
-                        return clamp_firefly(accumulated_color);
+                        return accumulated_color;
                     }
                     accumulated_attenuation /= survival;
                 }
@@ -529,29 +529,23 @@ impl Camera {
                         let mixture_pdf = MixturePDF::new(pdfs);
 
                         let direction = mixture_pdf.generate(rng);
+                        // Unitize direction for BRDF evaluation — PlanarPatch::random()
+                        // returns a non-unit vector (distance to light), and BRDFs expect
+                        // unit-length incident directions.
+                        let direction_unit = direction.unit_vector();
                         let scattered = Ray::new_with_time(record.point, direction, ray.time);
-                        let pdf_val = mixture_pdf.value(direction);
+                        let pdf_val = mixture_pdf.value(direction_unit);
 
-                        let f_cos = record.material.eval(wo, direction, &record);
+                        let f_cos = record.material.eval(wo, direction_unit, &record);
 
-                        // Standard Monte Carlo estimator: integrand / p_sample.
-                        // p_sample = mixture_pdf.value(direction).
-                        let weight = if pdf_val > 0.0 { 1.0 / pdf_val } else { 0.0 };
+                        // Standard single-sample MIS unbiased estimator: f(x) / p_mixture(x).
+                        let weight = 1.0 / pdf_val.max(1e-6);
+
                         accumulated_attenuation = accumulated_attenuation * f_cos * weight;
                         ray = scattered;
                     }
-
-                    // Clamp accumulated attenuation to prevent firefly artifacts. Balance heuristic
-                    // weight=2.0 × attenuation=0.73 = 1.46× per bounce; without clamping this
-                    // compounds exponentially over max_depth bounces, producing extreme per-sample
-                    // values that manifest as bright firefly pixels.
-                    accumulated_attenuation = Color3::from(
-                        accumulated_attenuation.x.min(10.0),
-                        accumulated_attenuation.y.min(10.0),
-                        accumulated_attenuation.z.min(10.0),
-                    );
                 } else {
-                    return clamp_firefly(accumulated_color);
+                    return accumulated_color;
                 }
             } else {
                 // If the ray hits nothing, return the background color
@@ -561,13 +555,11 @@ impl Camera {
                 // The background gradient
                 // let background =
                 //     ((1.0 - t) * Vec3::from(1.0, 1.0, 1.0)) + (t * Vec3::from(0.5, 0.7, 1.0));
-                return clamp_firefly(
-                    accumulated_color + accumulated_attenuation * self.background,
-                );
+                return accumulated_color + accumulated_attenuation * self.background;
             }
         }
 
-        clamp_firefly(accumulated_color)
+        accumulated_color
     }
 
     /// Samples a point on the defocus disk for depth-of-field ray origins.
@@ -575,17 +567,6 @@ impl Camera {
         let point = random_in_unit_disk_with_rng(rng);
         self.look_from + (point.x * self.defocus_disk_u) + (point.y * self.defocus_disk_v)
     }
-}
-
-/// Hard clamp on per-sample contribution to eliminate fireflies.
-///
-/// Paths with extreme attenuation (e.g. 2.0 mixture weight × 0.73 albedo over many bounces) can
-/// produce finite but enormous values. This clamp bounds any single path's contribution so it
-/// cannot manifest as a white pixel after gamma correction.
-#[inline(always)]
-fn clamp_firefly(color: Color3) -> Color3 {
-    const MAX: f64 = 100.0;
-    Color3::from(color.x.min(MAX), color.y.min(MAX), color.z.min(MAX))
 }
 
 #[inline(always)]

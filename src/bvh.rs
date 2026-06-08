@@ -173,6 +173,15 @@ impl BvhNode {
         info!(object_count = objects.len(), "bvh built");
         result
     }
+
+    /// Returns the number of leaf objects in this subtree.
+    fn leaf_count(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Leaf { .. } => 1,
+            Self::Interior { left, right, .. } => left.leaf_count() + right.leaf_count(),
+        }
+    }
 }
 
 impl Hittable for BvhNode {
@@ -206,7 +215,11 @@ impl Hittable for BvhNode {
             Self::Empty => 0.0,
             Self::Leaf { object, .. } => object.pdf_value(origin, direction),
             Self::Interior { left, right, .. } => {
-                0.5 * left.pdf_value(origin, direction) + 0.5 * right.pdf_value(origin, direction)
+                let left_count = left.leaf_count() as f64;
+                let right_count = right.leaf_count() as f64;
+                let total = left_count + right_count;
+                (left_count / total) * left.pdf_value(origin, direction)
+                    + (right_count / total) * right.pdf_value(origin, direction)
             }
         }
     }
@@ -216,7 +229,10 @@ impl Hittable for BvhNode {
             Self::Empty => Vec3::from(1., 0., 0.),
             Self::Leaf { object, .. } => object.random(origin, rng),
             Self::Interior { left, right, .. } => {
-                if rng.random_bool(0.5) {
+                let left_count = left.leaf_count() as f64;
+                let right_count = right.leaf_count() as f64;
+                let total = left_count + right_count;
+                if rng.random::<f64>() < left_count / total {
                     left.random(origin, rng)
                 } else {
                     right.random(origin, rng)

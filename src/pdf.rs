@@ -41,7 +41,7 @@ impl PDF for UniformSpherePDF {
 
 #[allow(clippy::new_without_default)]
 impl UniformSpherePDF {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }
