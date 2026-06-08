@@ -450,6 +450,8 @@ impl Scene {
         );
 
         scene.config.samples_per_pixel = 200;
+        // scene.config.exposure = 1.7;
+        scene.config.tone_map = true;
 
         scene
     }

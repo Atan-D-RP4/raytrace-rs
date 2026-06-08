@@ -71,12 +71,17 @@ pub struct CameraConfig {
     pub defocus_angle: f64,     // Depth of field angle
     pub focus_distance: f64,    // Focal plane distance
     pub background: Color3,     // Background color
+    pub exposure: f64,          // Exposure
+    pub tone_map: bool,         // Whether to apply tone mapping to final colors
 }
 
 impl CameraConfig {
     /// Creates a zero-initialized config; scenes usually set all fields explicitly.
     pub fn new() -> Self {
-        Default::default()
+        Self {
+            exposure: 1.0,
+            ..Default::default()
+        }
     }
 }
 
@@ -110,6 +115,10 @@ pub struct Camera {
     focus_distance: f64,
     /// Background color
     background: Color3,
+    /// Exposure
+    exposure: f64,
+    /// Whether to apply tone mapping to final colors
+    tone_map: bool,
 
     /// Defocus disk vector for u-axis (depth of field sampling)
     defocus_disk_u: Vec3,
@@ -141,6 +150,8 @@ impl Camera {
             defocus_angle: config.defocus_angle,
             focus_distance: config.focus_distance,
             background: config.background,
+            exposure: config.exposure,
+            tone_map: config.tone_map,
             ..Default::default()
         };
         camera.initialize();
@@ -276,9 +287,14 @@ impl Camera {
                     }
                 }
 
-                // Scale by sample count and apply gamma correction.
+                // Scale by sample count, exposure, and apply gamma correction.
+                // Apply tone mapping operator before gamma if enabled, otherwise clamp to [0,1].
+                let scaled = if self.tone_map {
+                    reinhard_tone_map(self.exposure, pixel_color * self.pixel_samples_scale)
+                } else {
+                    self.exposure * pixel_color * self.pixel_samples_scale
+                };
                 // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
-                let scaled = pixel_color * self.pixel_samples_scale;
                 chunk[0] = (256.0 * linear_to_gamma(scaled.x).clamp(0.0, 0.999)) as u8;
                 chunk[1] = (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8;
                 chunk[2] = (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8;
@@ -373,9 +389,14 @@ impl Camera {
             let mut rgb = vec![0u8; total_pixels * 3];
             for (idx, color) in accum.iter().enumerate() {
                 let avg = *color * scale;
-                rgb[idx * 3] = (256.0 * linear_to_gamma(avg.x).clamp(0.0, 0.999)) as u8;
-                rgb[idx * 3 + 1] = (256.0 * linear_to_gamma(avg.y).clamp(0.0, 0.999)) as u8;
-                rgb[idx * 3 + 2] = (256.0 * linear_to_gamma(avg.z).clamp(0.0, 0.999)) as u8;
+                let scaled = if self.tone_map {
+                    reinhard_tone_map(self.exposure, avg)
+                } else {
+                    self.exposure * avg
+                };
+                rgb[idx * 3] = (256.0 * linear_to_gamma(scaled.x).clamp(0.0, 0.999)) as u8;
+                rgb[idx * 3 + 1] = (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8;
+                rgb[idx * 3 + 2] = (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8;
             }
 
             profiling::scope!("progressive_publish");
@@ -567,6 +588,16 @@ impl Camera {
         let point = random_in_unit_disk_with_rng(rng);
         self.look_from + (point.x * self.defocus_disk_u) + (point.y * self.defocus_disk_v)
     }
+}
+
+#[inline(always)]
+fn reinhard_tone_map(exposure: f64, color: Color3) -> Color3 {
+    let mapped = color * exposure;
+    Color3::from(
+        mapped.x / (1.0 + mapped.x),
+        mapped.y / (1.0 + mapped.y),
+        mapped.z / (1.0 + mapped.z),
+    )
 }
 
 #[inline(always)]
