@@ -78,8 +78,8 @@ pub use isotropic::IsotropicMaterial;
 pub use lambertian::LambertianMaterial;
 pub use metal::MetalMaterial;
 
-use gpu::write_node;
 use gpu::GPU_NONE;
+use gpu::write_node;
 
 // ─── Imports ────────────────────────────────────────────────────────────────
 

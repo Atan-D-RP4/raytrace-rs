@@ -23,11 +23,11 @@ use rand::RngExt;
 use crate::hittable::HitRecord;
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::{reflect, Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect};
 
 use super::GPU_NONE;
-use super::{fresnel_schlick, geometry_schlick_ggx, ggx_d};
 use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
+use super::{fresnel_schlick, geometry_schlick_ggx, ggx_d};
 
 /// Glossy microfacet BRDF (GGX).
 #[derive(Clone)]

@@ -68,11 +68,7 @@ impl Bsdf for LambertianMaterial {
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
     fn pdf(&self, _wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 {
         let cos_theta = hit.normal.dot(&wi);
-        if cos_theta < 0.0 {
-            0.0
-        } else {
-            cos_theta / PI
-        }
+        if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
     }
 
     fn gpu_node(&self, buf: &mut GpuMaterialBuffer) -> Option<u32> {

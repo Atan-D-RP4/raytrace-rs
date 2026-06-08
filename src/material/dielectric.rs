@@ -19,10 +19,10 @@
 use rand::RngExt;
 
 use crate::hittable::HitRecord;
-use crate::vec3::{reflect, refract, Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect, refract};
 
-use super::fresnel_schlick;
 use super::GPU_NONE;
+use super::fresnel_schlick;
 use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
 
 /// Dielectric transmission/reflection controlled by refractive index.

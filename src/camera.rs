@@ -18,9 +18,9 @@ use tracing::info;
 use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::material::PdfKind;
-use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, UniformSpherePDF, PDF};
+use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
-use crate::vec3::{random_in_unit_disk_with_rng, Color3, Point3, Vec3};
+use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
 ///
@@ -192,7 +192,7 @@ impl Camera {
         // the u and v directions. These are used to calculate the ray direction for each pixel.
         let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
         let viewport_v = viewport_height * -v; // Vector across viewport vertical edge
-                                               // Negated because the v vector points up but the image coordinates increase downwards.
+        // Negated because the v vector points up but the image coordinates increase downwards.
 
         // Calculate the pixel delta vectors, which are the vectors from one pixel to the next in
         // the u and v directions. These are used to calculate the ray direction for each pixel
