@@ -7,12 +7,15 @@ use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::texture::{SolidColor, Texture};
+use crate::texture::Texture;
 use crate::vec3::Vec3;
 
 pub struct ConstantMedium {
+    /// The boundary defines the shape of the volume (e.g., a sphere or box).
     boundary: Arc<dyn Hittable>,
+    /// The phase function determines how light scatters within the volume.
     phase_fn: Arc<Material>,
+    /// The negative inverse of the density is precomputed for efficient sampling of scattering events.
     neg_inv_density: f64,
 }
 
@@ -24,21 +27,23 @@ impl ConstantMedium {
             phase_fn,
         }
     }
+
+    /// Construct a constant medium with a textured phase function (isotropic
+    /// scattering — correct for volumes).
     pub fn new_texture(boundary: Arc<dyn Hittable>, density: f64, tex: Arc<dyn Texture>) -> Self {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
-            phase_fn: Arc::new(Material::Isotropic { tex }),
+            phase_fn: Arc::new(Material::isotropic_texture(tex)),
         }
     }
 
+    /// Construct a constant medium with a uniform albedo (isotropic scattering) for pure uniform-sphere phase.
     pub fn new_albedo(boundary: Arc<dyn Hittable>, density: f64, albedo: Vec3) -> Self {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
-            phase_fn: Arc::new(Material::Isotropic {
-                tex: Arc::new(SolidColor::new(albedo)),
-            }),
+            phase_fn: Arc::new(Material::Isotropic { albedo, tex: None }),
         }
     }
 }

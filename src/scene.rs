@@ -10,7 +10,7 @@ use crate::material::Material;
 use crate::planar::{box3d, quad};
 use crate::sphere::Sphere;
 use crate::texture::{
-    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture, TextureMapping,
+    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Texture, TextureMapping,
 };
 use crate::transform::{RotateY, TransformObject, Translate};
 use crate::vec3::{Color3, Point3, Vec3};
@@ -170,9 +170,7 @@ impl Scene {
         profiling::scope!("complex_scene_build");
         let mut scene = Self::new();
 
-        let ground = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.48, 0.83, 0.53))),
-        };
+        let ground = Material::lambertian_color(0.48, 0.83, 0.53);
 
         let boxes_per_side = 20;
         // TODO(gpu): this dense grid is a prime candidate for GPU instance buffers.
@@ -247,9 +245,7 @@ impl Scene {
             Point3::from(123., 554., 147.),
             Vec3::from(300., 0., 0.),
             Vec3::from(0., 0., 265.),
-            Material::DiffuseLight {
-                tex: Arc::new(SolidColor::new(Color3::from(7.0, 7.0, 7.0))),
-            },
+            Material::light(Color3::from(7.0, 7.0, 7.0)),
         );
 
         let center1 = Point3::from(400., 400., 200.);
@@ -258,9 +254,7 @@ impl Scene {
             center1,
             center2,
             50.,
-            Material::Lambertian {
-                tex: Arc::new(SolidColor::new(Color3::from(0.7, 0.3, 0.1))),
-            },
+            Material::lambertian_color(0.7, 0.3, 0.1),
         );
 
         scene.add_sphere(
@@ -313,7 +307,7 @@ impl Scene {
         scene.add_sphere(
             Point3::from(400., 200., 400.),
             100.,
-            Material::Lambertian { tex: emat },
+            Material::lambertian(emat),
         );
 
         let pertext: Arc<dyn Texture> = Arc::new(MappedTexture::new(
@@ -323,12 +317,10 @@ impl Scene {
         scene.add_sphere(
             Point3::from(220., 280., 300.),
             80.,
-            Material::Lambertian { tex: pertext },
+            Material::lambertian(pertext),
         );
 
-        let white = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
-        };
+        let white = Material::lambertian_color(0.73, 0.73, 0.73);
         let mut boxes2: Vec<Arc<dyn Hittable>> = Vec::with_capacity(1000);
         for _ in 0..1000 {
             boxes2.push(Arc::new(Sphere::new(
@@ -370,9 +362,7 @@ impl Scene {
     pub fn cornell_box_const_meds() -> Self {
         let mut scene = Scene::empty_cornell_box();
 
-        let white = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
-        };
+        let white = Material::lambertian_color(0.73, 0.73, 0.73);
 
         let box_params = [
             (
@@ -380,18 +370,14 @@ impl Scene {
                 Vec3::from(265., 0., 295.),
                 15.,
                 white.clone(),
-                Material::Isotropic {
-                    tex: Arc::new(SolidColor::new(Color3::from(0.00, 0.00, 0.00))),
-                },
+                Material::isotropic(Color3::from(0.00, 0.00, 0.00)),
             ),
             (
                 Vec3::from(165., 165., 165.),
                 Vec3::from(130., 0., 65.),
                 -18.,
                 white,
-                Material::Isotropic {
-                    tex: Arc::new(SolidColor::new(Color3::from(1., 1., 1.))),
-                },
+                Material::isotropic(Color3::from(1., 1., 1.)),
             ),
         ];
 
@@ -422,9 +408,7 @@ impl Scene {
     pub fn cornell_box() -> Self {
         let mut scene = Scene::empty_cornell_box();
 
-        let white = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
-        };
+        let white = Material::lambertian_color(0.73, 0.73, 0.73);
         // let white = Material::Metal {
         //     albedo: Color3::from(0.73, 0.73, 0.73),
         //     fuzz: 1.0,
@@ -494,18 +478,10 @@ impl Scene {
 
     pub fn empty_cornell_box() -> Self {
         let mut scene = Self::new();
-        let red = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.65, 0.05, 0.05))),
-        };
-        let white = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.73, 0.73, 0.73))),
-        };
-        let green = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.12, 0.45, 0.15))),
-        };
-        let light = Material::DiffuseLight {
-            tex: Arc::new(SolidColor::new(Color3::from(15.0, 15.0, 15.0))),
-        };
+        let red = Material::lambertian_color(0.65, 0.05, 0.05);
+        let white = Material::lambertian_color(0.73, 0.73, 0.73);
+        let green = Material::lambertian_color(0.12, 0.45, 0.15);
+        let light = Material::light(Color3::from(15.0, 15.0, 15.0));
 
         scene.add_quad(
             Point3::from(555., 0., 0.),
@@ -569,17 +545,13 @@ impl Scene {
         //     Point3::from(3., 1., -2.),
         //     Vec3::from(2., 0., 0.),
         //     Vec3::from(0., 2., 0.),
-        //     Material::DiffuseLight {
-        //         tex: Arc::new(SolidColor::new(Color3::from(4.0, 0.4, 0.4))),
-        //     },
+        //     Material::light(Color3::from(4.0, 0.4, 0.4)),
         // );
 
         scene.add_sphere(
             Point3::from(0., 7., 0.),
             2.,
-            Material::DiffuseLight {
-                tex: Arc::new(SolidColor::new(Color3::from(4.0, 4.0, 4.0))),
-            },
+            Material::light(Color3::from(4.0, 4.0, 4.0)),
         );
 
         scene.config.aspect_ratio = 16. / 9.;
@@ -639,9 +611,7 @@ impl Scene {
         quad_vecs.iter().zip(colors).for_each(|(vecs, color)| {
             #[allow(non_snake_case)]
             let (Q, u, v) = vecs;
-            let material = Material::Lambertian {
-                tex: Arc::new(SolidColor::new(color)),
-            };
+            let material = Material::lambertian_color(color.x, color.y, color.z);
             scene.add_quad(*Q, *u, *v, material);
         });
 
@@ -675,14 +645,12 @@ impl Scene {
         scene.add_sphere(
             Point3::from(0., -1000., 0.),
             1000.,
-            Material::Lambertian {
-                tex: perlin_tex.clone(),
-            },
+            Material::lambertian(perlin_tex.clone()),
         );
         scene.add_sphere(
             Point3::from(0., 2., 0.),
             2.,
-            Material::Lambertian { tex: perlin_tex },
+            Material::lambertian(perlin_tex),
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
@@ -711,7 +679,7 @@ impl Scene {
             TextureMapping::Identity,
             Arc::new(image_tex),
         ));
-        let checker = Material::Lambertian { tex: image_tex };
+        let checker = Material::lambertian(image_tex);
 
         scene.add_sphere(Point3::from(0., 0., 0.), 2., checker);
 
@@ -733,13 +701,11 @@ impl Scene {
     pub fn checkered_spheres() -> Self {
         let mut scene = Self::new();
 
-        let checker = Material::Lambertian {
-            tex: checker_texture(
-                0.32,
-                Color3::from(0.2, 0.4, 0.1),
-                Color3::from(0.9, 0.9, 0.9),
-            ),
-        };
+        let checker = Material::lambertian(checker_texture(
+            0.32,
+            Color3::from(0.2, 0.4, 0.1),
+            Color3::from(0.9, 0.9, 0.9),
+        ));
         scene.add_sphere(Point3::from(0., -10., 0.), 10., checker.clone());
         scene.add_sphere(Point3::from(0., 10., 0.), 10., checker);
 
@@ -761,13 +727,11 @@ impl Scene {
     pub fn random_world() -> Self {
         let mut scene = Self::new();
 
-        let ground_material = Material::Lambertian {
-            tex: checker_texture(
-                0.32,
-                Color3::from(0.2, 0.4, 0.1),
-                Color3::from(0.9, 0.9, 0.9),
-            ),
-        };
+        let ground_material = Material::lambertian(checker_texture(
+            0.32,
+            Color3::from(0.2, 0.4, 0.1),
+            Color3::from(0.9, 0.9, 0.9),
+        ));
         scene.add_sphere(Point3::from(0., -1000., 0.), 1000., ground_material);
 
         for a in -11..11 {
@@ -782,7 +746,8 @@ impl Scene {
                 if (center - Point3::from(4., 0.2, 0.)).length() > 0.9 {
                     let material = if world_seed.is_multiple_of(3) {
                         Material::Lambertian {
-                            tex: Arc::new(SolidColor::new(Color3::random() * Color3::random())),
+                            albedo: Color3::random() * Color3::random(),
+                            tex: None,
                         }
                     } else if world_seed % 3 == 1 {
                         Material::Metal {
@@ -816,9 +781,7 @@ impl Scene {
         scene.add_sphere(
             Point3::from(-4., 1., 0.),
             1.,
-            Material::Lambertian {
-                tex: Arc::new(SolidColor::new(Color3::from(0.4, 0.2, 0.1))),
-            },
+            Material::lambertian_color(0.4, 0.2, 0.1),
         );
         scene.add_sphere(
             Point3::from(4., 1., 0.),
@@ -847,12 +810,8 @@ impl Scene {
     pub fn simple_world() -> Self {
         let mut scene = Self::new();
 
-        let material_ground = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.8, 0.8, 0.0))),
-        };
-        let material_center = Material::Lambertian {
-            tex: Arc::new(SolidColor::new(Color3::from(0.1, 0.2, 0.5))),
-        };
+        let material_ground = Material::lambertian_color(0.8, 0.8, 0.0);
+        let material_center = Material::lambertian_color(0.1, 0.2, 0.5);
         let material_left = Material::Dielectric {
             refractive_idx: 1.50,
         };
@@ -881,6 +840,64 @@ impl Scene {
         scene.config.defocus_angle = 10.0;
         scene.config.focus_distance = 3.4;
         scene.config.background = Color3::from(0.5, 0.7, 1.0);
+
+        scene
+    }
+
+    /// Test scene for the new material system: demonstrates `Mix` (painted
+    /// metal), `Coated` (clear coat over substrate), and `Glossy` (GGX).
+    pub fn composition_demo() -> Self {
+        let mut scene = Self::new();
+
+        // Ground plane (Lambertian).
+        let ground = Material::lambertian_color(0.5, 0.5, 0.5);
+        scene.add_quad(
+            Point3::from(-5., 0., 0.),
+            Vec3::from(10., 0., 0.),
+            Vec3::from(0., 0., 10.),
+            ground,
+        );
+
+        // Sphere 1: plain glossy (roughness 0.2 — tight highlight).
+        let glossy = Material::glossy(Color3::from(0.9, 0.9, 0.9), 0.2, 1.5);
+        scene.add_sphere(Point3::from(-2.5, 1.0, 4.0), 1.0, glossy);
+
+        // Sphere 2: rough glossy (roughness 0.7 — broad highlight).
+        let rough_glossy = Material::glossy(Color3::from(0.7, 0.3, 0.3), 0.7, 1.5);
+        scene.add_sphere(Point3::from(0.0, 1.0, 4.0), 1.0, rough_glossy);
+
+        // Sphere 3: 50/50 mix of red Lambertian and silver metal.
+        let mixed = Material::lambertian_color(0.8, 0.2, 0.2)
+            .mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0), 0.5);
+        scene.add_sphere(Point3::from(2.5, 1.0, 4.0), 1.0, mixed);
+
+        // Sphere 4: clear-coated red (dielectric coat over red Lambertian).
+        let coated = Material::lambertian_color(0.2, 0.7, 0.2).coated(Material::dielectric(1.5));
+        scene.add_sphere(Point3::from(-1.25, 1.0, 6.0), 1.0, coated);
+
+        // Sphere 5: clear-coated blue.
+        let coated = Material::lambertian_color(0.2, 0.2, 0.8).coated(Material::dielectric(1.5));
+        scene.add_sphere(Point3::from(1.25, 1.0, 6.0), 1.0, coated);
+
+        // Area light above.
+        scene.add_quad(
+            Point3::from(-3., 8., 2.),
+            Vec3::from(6., 0., 0.),
+            Vec3::from(0., 0., 6.),
+            Material::light(Color3::from(8.0, 8.0, 8.0)),
+        );
+
+        scene.config.aspect_ratio = 16.0 / 9.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 100;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 40.0;
+        scene.config.look_from = Point3::from(0., 4., 10.);
+        scene.config.look_at = Point3::from(0., 1., 4.);
+        scene.config.vup = Vec3::from(0., 1., 0.);
+        scene.config.focus_distance = 10.0;
+        scene.config.defocus_angle = 0.0;
+        scene.config.background = Color3::from(0.1, 0.1, 0.1);
 
         scene
     }

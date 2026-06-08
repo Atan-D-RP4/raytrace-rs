@@ -1,6 +1,7 @@
 use std::f64::consts::PI;
 
 use crate::hittable::Hittable;
+use crate::material::ggx_d;
 use crate::onb::Onb;
 use crate::vec3::reflect;
 use crate::vec3::{Point3, Vec3, random_cosine_direction};
@@ -163,16 +164,6 @@ impl GgxSamplePDF {
     pub fn new(wo: Vec3, normal: Vec3, alpha: f64) -> Self {
         Self { alpha, wo, normal }
     }
-}
-
-/// GGX/Trowbridge-Reitz normal distribution function.
-pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
-    if cos_theta_h <= 0.0 {
-        return 0.0;
-    }
-    let a2 = alpha * alpha;
-    let denom = cos_theta_h * cos_theta_h * (a2 - 1.0) + 1.0;
-    a2 / (PI * denom * denom)
 }
 
 impl PDF for GgxSamplePDF {

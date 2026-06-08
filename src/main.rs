@@ -330,6 +330,7 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         "checkered_spheres" => Scene::checkered_spheres(),
         "quads" => Scene::quads(),
         "random_world" => Scene::random_world(),
+        "composition_demo" => Scene::composition_demo(),
         other => {
             error!(scene = %other, "unknown scene");
             eprintln!("Available scenes:");
