@@ -186,44 +186,11 @@ impl Scene {
                 let y1 = rand::rng().random_range(1.0..101.0);
                 let z1 = z0 + w;
 
-                let box_quads: Vec<Arc<dyn Hittable>> = vec![
-                    Arc::new(quad(
-                        Point3::from(x0, y0, z1),
-                        Vec3::from(w, 0., 0.),
-                        Vec3::from(0., y1 - y0, 0.),
-                        ground.clone(),
-                    )),
-                    Arc::new(quad(
-                        Point3::from(x1, y0, z1),
-                        Vec3::from(0., 0., -(z1 - z0)),
-                        Vec3::from(0., y1 - y0, 0.),
-                        ground.clone(),
-                    )),
-                    Arc::new(quad(
-                        Point3::from(x1, y0, z0),
-                        Vec3::from(-(x1 - x0), 0., 0.),
-                        Vec3::from(0., y1 - y0, 0.),
-                        ground.clone(),
-                    )),
-                    Arc::new(quad(
-                        Point3::from(x0, y0, z0),
-                        Vec3::from(0., 0., z1 - z0),
-                        Vec3::from(0., y1 - y0, 0.),
-                        ground.clone(),
-                    )),
-                    Arc::new(quad(
-                        Point3::from(x0, y1, z1),
-                        Vec3::from(x1 - x0, 0., 0.),
-                        Vec3::from(0., 0., -(z1 - z0)),
-                        ground.clone(),
-                    )),
-                    Arc::new(quad(
-                        Point3::from(x0, y0, z0),
-                        Vec3::from(x1 - x0, 0., 0.),
-                        Vec3::from(0., 0., z1 - z0),
-                        ground.clone(),
-                    )),
-                ];
+                let box_quads = box3d(
+                    Point3::from(x0, y0, z0),
+                    Point3::from(x1, y1, z1),
+                    ground.clone(),
+                );
 
                 boxes1.push(Arc::new(box_quads));
             }
@@ -262,10 +229,11 @@ impl Scene {
             50.,
             Material::dielectric(1.5),
         );
+
         scene.add_sphere(
             Point3::from(0., 150., 145.),
             50.,
-            Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 1.0, 2.5),
+            Material::metal(Color3::from(0.8, 0.8, 0.9), 1.0),
         );
 
         let boundary = Arc::new(Sphere::new(
@@ -273,6 +241,9 @@ impl Scene {
             70.,
             Material::dielectric(1.5),
         ));
+        scene
+            .objects
+            .push(Arc::clone(&boundary) as Arc<dyn Hittable>);
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             boundary,
             0.2,
@@ -284,6 +255,9 @@ impl Scene {
             5000.,
             Material::dielectric(1.5),
         ));
+        scene
+            .objects
+            .push(Arc::clone(&boundary) as Arc<dyn Hittable>);
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             boundary,
             0.0001,
@@ -441,7 +415,7 @@ impl Scene {
         scene.add_sphere(
             Point3::from(348., 400., 278.),
             40.,
-            Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 1.0, 2.5),
+            Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 0.3, 20.0),
         );
         scene.add_sphere(
             Point3::from(200., 350., 200.),

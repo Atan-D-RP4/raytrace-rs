@@ -164,11 +164,21 @@ impl<R: Region2D> Hittable for PlanarPatch<R> {
     }
 
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+        // Back-face culling - if the ray is coming from behind the patch, it cannot hit the
+        // emitting side, so return 0 PDF.
+        // This avoids the mismatch where `.abs()` would return a positive PDF but `emitted()`
+        // returns zero for the back face, wasting 50% of light-importance samples.
+        if self.normal.dot(&direction) >= 0.0 {
+            return 0.0;
+        }
+
         if let Some(hit) = self.hit(
             &Ray::new(origin, direction),
             Interval::from(0.001, f64::INFINITY),
         ) {
             let distance_squared = hit.time * hit.time * direction.length_squared();
+            // After set_face_normal, hit.normal always faces the incoming ray (negative dot).
+            // .abs() gives the Jacobian factor for the area-to-solid-angle measure conversion.
             let cosine = hit.normal.dot(&direction.unit_vector()).abs();
             let world_area = self.area * self.region.area();
 

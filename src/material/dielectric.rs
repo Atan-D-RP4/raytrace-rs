@@ -42,14 +42,14 @@ impl Bsdf for DielectricMaterial {
         } else {
             self.refractive_idx
         };
-        let cos_theta = (-wo).dot(&hit.normal).min(1.0);
+        let cos_theta = wo.dot(&hit.normal).min(1.0);
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
         let direction = if ri * sin_theta > 1.0
             || fresnel_schlick(cos_theta, self.refractive_idx) > rng.random::<f64>()
         {
-            reflect(&wo, &hit.normal)
+            reflect(&-wo, &hit.normal)
         } else {
-            refract(&wo, &hit.normal, ri)
+            refract(&-wo, &hit.normal, ri)
         };
         Some(BsdfSample {
             wi: direction,

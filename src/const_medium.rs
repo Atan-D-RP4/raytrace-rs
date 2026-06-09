@@ -50,9 +50,7 @@ impl ConstantMedium {
 
 impl Hittable for ConstantMedium {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
-        let mut rec1 = self
-            .boundary
-            .hit(ray, Interval::from(0.001, f64::INFINITY))?;
+        let mut rec1 = self.boundary.hit(ray, Interval::UNIVERSE)?;
         let mut rec2 = self
             .boundary
             .hit(ray, Interval::from(rec1.time + 0.0001, f64::INFINITY))?;
