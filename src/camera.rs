@@ -254,7 +254,7 @@ impl Camera {
         output
             .par_chunks_mut(3)
             .enumerate()
-            .for_each(|(idx, chunk)| {
+            .for_each(|(idx, rgb_chunk)| {
                 let mut rng = rand::rng();
                 // Top-left origin: i → right, j → down.
                 let i = idx as i32 % image_width;
@@ -287,17 +287,14 @@ impl Camera {
                     }
                 }
 
-                // Scale by sample count, exposure, and apply gamma correction.
-                // Apply tone mapping operator before gamma if enabled, otherwise clamp to [0,1].
-                let scaled = if self.tone_map {
-                    reinhard_tone_map(self.exposure, pixel_color * self.pixel_samples_scale)
-                } else {
-                    self.exposure * pixel_color * self.pixel_samples_scale
-                };
-                // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
-                chunk[0] = (256.0 * linear_to_gamma(scaled.x).clamp(0.0, 0.999)) as u8;
-                chunk[1] = (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8;
-                chunk[2] = (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8;
+                post_process(
+                    pixel_color * self.pixel_samples_scale,
+                    self.exposure,
+                    self.tone_map,
+                )
+                .iter()
+                .enumerate()
+                .for_each(|(c, out)| rgb_chunk[c] = *out);
             });
 
         info!("camera render finished");
@@ -388,15 +385,15 @@ impl Camera {
             profiling::scope!("progressive_tonemap");
             let mut rgb = vec![0u8; total_pixels * 3];
             for (idx, color) in accum.iter().enumerate() {
-                let avg = *color * scale;
-                let scaled = if self.tone_map {
-                    reinhard_tone_map(self.exposure, avg)
-                } else {
-                    self.exposure * avg
-                };
-                rgb[idx * 3] = (256.0 * linear_to_gamma(scaled.x).clamp(0.0, 0.999)) as u8;
-                rgb[idx * 3 + 1] = (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8;
-                rgb[idx * 3 + 2] = (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8;
+                // let post = post_process(*color * scale, self.exposure, self.tone_map);
+                // let out_idx = idx * 3;
+                // rgb[out_idx] = post[0];
+                // rgb[out_idx + 1] = post[1];
+                // rgb[out_idx + 2] = post[2];
+                post_process(*color * scale, self.exposure, self.tone_map)
+                    .iter()
+                    .enumerate()
+                    .for_each(|(c, out)| rgb[idx * 3 + c] = *out);
             }
 
             profiling::scope!("progressive_publish");
@@ -610,6 +607,23 @@ fn reinhard_tone_map(exposure: f64, color: Color3) -> Color3 {
         mapped.y / (1.0 + mapped.y),
         mapped.z / (1.0 + mapped.z),
     )
+}
+
+fn post_process(color: Color3, exposure: f64, tone_map: bool) -> [u8; 3] {
+    // Scale by sample count, exposure, and apply gamma correction.
+    // Apply tone mapping operator before gamma if enabled, otherwise clamp to [0,1].
+    let scaled = if tone_map {
+        reinhard_tone_map(exposure, color)
+    } else {
+        color * exposure
+    };
+
+    // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
+    [
+        (256.0 * linear_to_gamma(scaled.x).clamp(0.0, 0.999)) as u8,
+        (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8,
+        (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8,
+    ]
 }
 
 #[inline(always)]
