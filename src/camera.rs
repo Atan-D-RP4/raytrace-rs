@@ -511,8 +511,12 @@ impl Camera {
 
                 // If we've exceeded the ray bounce limit, no more light is gathered.
                 if bounce >= 5 {
-                    // Russian Roulette
-                    let survival = max_attenuation.clamp(0.05, 0.95);
+                    // Russian Roulette: survival probability proportional to
+                    // current path throughput. High-throughput paths (e.g.,
+                    // non-absorbing volumes with albedo ≈ 1) survive at
+                    // probability 1 — no artificial inflation from compensation.
+                    // The 0.05 floor bounds variance from low-throughput paths.
+                    let survival = max_attenuation.max(0.05);
                     if rng.random::<f64>() > survival {
                         return accumulated_color;
                     }
@@ -527,27 +531,10 @@ impl Camera {
                         // direction directly — no MIS weighting needed.
                         accumulated_attenuation = accumulated_attenuation * sample.f_cos;
                         ray = Ray::new_with_time(record.point, sample.wi, ray.time);
-                    } else if matches!(sample.pdf_kind, PdfKind::UniformSphere) {
-                        // Isotropic volume: uniform sphere PDF is the perfect
-                        // sampler for the phase function (zero variance).
-                        // Skip MIS — light sampling adds noise without benefit.
-                        let surface_pdf = UniformSpherePDF::new();
-                        let direction = surface_pdf.generate(rng);
-
-                        let direction_unit = direction.unit_vector();
-                        let scattered = Ray::new_with_time(record.point, direction, ray.time);
-
-                        let pdf_val = surface_pdf.value(direction_unit);
-
-                        let f_cos = record.material.eval(wo, direction_unit, &record);
-                        let weight = 1.0 / pdf_val.max(1e-6);
-                        accumulated_attenuation = accumulated_attenuation * f_cos * weight;
-
-                        ray = scattered;
                     } else {
-                        // Non-delta surface: mixture PDF of light + surface sampling.
-                        // Weighted 1/3 light, 2/3 surface — surface PDF is usually
-                        // the better match for glossy/Lambertian BRDFs.
+                        // Non-delta material: mixture PDF of light + surface sampling.
+                        // Weighted 1/3 light, 2/3 surface — surface PDF is usually the better match
+                        // for glossy/Lambertian BRDFs.
                         let surface_pdf: &dyn PDF = match sample.pdf_kind {
                             PdfKind::Cosine { normal } => &CosinePDF::new(normal),
                             PdfKind::Ggx {
@@ -555,20 +542,26 @@ impl Camera {
                                 normal,
                                 alpha,
                             } => &GgxSamplePDF::new(ggx_wo, normal, alpha),
-                            // UniformSphere handled above, Delta by is_delta().
-                            PdfKind::UniformSphere | PdfKind::Delta => unreachable!(),
+                            PdfKind::UniformSphere => &UniformSpherePDF::new(),
+                            // Delta materials are handled by the is_delta() branch above.
+                            PdfKind::Delta => unreachable!(),
                         };
 
                         let light_pdf = HittablePDF::new(lights, record.point);
                         let pdfs: &[&dyn PDF] = &[&light_pdf, surface_pdf, surface_pdf];
-                        let mixture_pdf = MixturePDF::new(pdfs);
+                        let sampling_pdf = MixturePDF::new(pdfs);
 
-                        let direction = mixture_pdf.generate(rng);
+                        let direction = sampling_pdf.generate(rng);
+                        // Unitize direction for BRDF evaluation — PlanarPatch::random() returns a
+                        // non-unit vector (distance to light), and BRDFs expect unit-length
+                        // incident directions.
                         let direction_unit = direction.unit_vector();
                         let scattered = Ray::new_with_time(record.point, direction, ray.time);
-                        let pdf_val = mixture_pdf.value(direction_unit);
+                        let pdf_val = sampling_pdf.value(direction_unit);
 
                         let f_cos = record.material.eval(wo, direction_unit, &record);
+
+                        // Standard single-sample MIS unbiased estimator: f(x) / p_mixture(x).
                         let weight = 1.0 / pdf_val.max(1e-6);
 
                         accumulated_attenuation = accumulated_attenuation * f_cos * weight;

@@ -288,6 +288,23 @@ fn save_framebuffer_png(framebuffer: &SharedFramebuffer, filename: &str) {
     }
 }
 
+/// Configures the global rayon thread pool from the `RT_THREADS` environment variable.
+///
+/// Must be called **before** any rayon usage (the global pool is created once, on first use).
+/// Without `RT_THREADS`, rayon defaults to the number of available CPU cores.
+fn configure_rayon() {
+    let mut builder = rayon::ThreadPoolBuilder::new().num_threads(4);
+
+    if let Ok(n) = std::env::var("RT_THREADS")
+        && let Ok(n) = n.parse::<usize>()
+    {
+        builder = builder.num_threads(n);
+    }
+
+    // Silently ignores error if pool was already initialized (shouldn't happen here).
+    let _ = builder.build_global();
+}
+
 /// Initializes global tracing subscriber for app/process lifetime.
 ///
 /// Uses `RUST_LOG` when available, falls back to `info` level.
@@ -313,6 +330,7 @@ fn init_tracing() {
 /// 4. Spawn render worker thread.
 /// 5. Run winit event loop + softbuffer presentation on main thread.
 fn main() -> Result<(), winit::error::EventLoopError> {
+    configure_rayon();
     init_tracing();
 
     // Parse scene name from CLI args (optional first positional arg).
@@ -460,11 +478,6 @@ fn headless_render(scene: Scene, scene_name: &str) {
     profiling::scope!("root_bvh_build");
     let world_bvh = BvhNode::new(&mut objects);
     let world = FlatBvh::from_bvh(world_bvh);
-
-    // let max_threads = rayon::max_num_threads();
-    // let _ = rayon::ThreadPoolBuilder::new()
-    //     .num_threads(max_threads.checked_sub(0).unwrap_or(max_threads))
-    //     .build_global();
 
     info!(
         threads = rayon::current_num_threads(),
