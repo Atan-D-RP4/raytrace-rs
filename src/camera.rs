@@ -177,11 +177,7 @@ impl Camera {
     fn initialize(&mut self) {
         self.image_height = ((self.image_width as f64 / self.aspect_ratio) as i32).max(1);
 
-        // Normalise by the actual number of samples rendered (sqrt_spp²),
-        // not the requested samples_per_pixel, which may not be a perfect square.
-        let sqrt_spp = self.samples_per_pixel.isqrt().max(1);
-        let actual_spp = sqrt_spp * sqrt_spp;
-        self.pixel_samples_scale = 1.0 / actual_spp as f64;
+        self.pixel_samples_scale = 1.0 / self.samples_per_pixel as f64;
 
         let center = self.look_from;
 
@@ -246,9 +242,6 @@ impl Camera {
         let total_pixels = self.image_height * self.image_width;
         let max_depth = self.max_depth;
 
-        let sqrt_spp = self.samples_per_pixel.isqrt();
-        let recip_sqrt_spp = 1.0 / sqrt_spp as f64;
-
         let mut output = vec![0u8; total_pixels as usize * 3];
 
         output
@@ -269,21 +262,26 @@ impl Camera {
                 let _guard = span.as_ref().map(|s| s.enter());
 
                 // Accumulate samples for anti-aliasing.
-                // Stratified sampling: divide pixel into sqrt(spp) × sqrt(spp) grid,
-                // then jitter within each cell. Total samples = spp.
+                // Using Sobol QMC sequence for better convergence and O(1) sample generation.
+                // Sample 0 starts at (0,0) in the Sobol accumulator; each subsequent sample flips
+                // one bit (Gray code incremental, O(1) per sample).
+                // Per-pixel random digital shift decorrelates adjacent pixels.
                 let mut pixel_color = Color3::from(0., 0., 0.);
-                // Using for-loops instead of iterators for better optimization
-                for si in 0..sqrt_spp {
-                    for sj in 0..sqrt_spp {
-                        let ray =
-                            self.get_ray(i as f64, j as f64, si, sj, &mut rng, recip_sqrt_spp);
-                        let sample = self.ray_color(&ray, max_depth, &*world, &*lights, &mut rng);
-                        // Guard per-sample: a single NaN/Inf corrupts the pixel
-                        // accumulator (NaN + anything = NaN), so discard bad
-                        // samples individually rather than post-hoc per-pixel.
-                        if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
-                            pixel_color += sample;
-                        }
+                let mut sobol_state = [0u32; 5];
+
+                // shift[0] = Sobol accumulator x, [1] = y, [2] = sample index,
+                // [3] = shift_x, [4] = shift_y
+                sobol_state[3] = rng.random::<u32>();
+                sobol_state[4] = rng.random::<u32>();
+
+                for _ in 0..self.samples_per_pixel {
+                    let ray = self.get_ray_sobol(i as f64, j as f64, &mut rng, &mut sobol_state);
+                    let sample = self.ray_color(&ray, max_depth, &*world, &*lights, &mut rng);
+                    // Guard per-sample: a single NaN/Inf corrupts the pixel accumulator (NaN +
+                    // anything = NaN), so discard bad samples individually rather than post-hoc
+                    // per-pixel.
+                    if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
+                        pixel_color += sample;
                     }
                 }
 
@@ -338,44 +336,50 @@ impl Camera {
         let height = self.image_height as usize;
         let total_pixels = width * height;
 
-        let sqrt_spp = self.samples_per_pixel.isqrt().max(1);
-        let recip_sqrt_spp = 1.0 / sqrt_spp as f64;
-        let total_samples = sqrt_spp * sqrt_spp;
+        let total_samples = self.samples_per_pixel;
 
         info!(
             width,
             height,
             spp = self.samples_per_pixel,
-            stratified_spp = total_samples,
             "progressive render dimensions"
         );
         // TODO(opt-preview): reuse scratch buffers (`sample_colors`, `rgb`) across passes.
         // Current implementation reallocates each pass and increases allocator pressure.
         let mut accum = vec![Color3::from(0.0, 0.0, 0.0); total_pixels];
 
-        for sample_idx in 0..total_samples {
-            let si = sample_idx / sqrt_spp;
-            let sj = sample_idx % sqrt_spp;
+        // Initialize per-pixel Sobol states with fixed random digital shifts.
+        // States persist across passes so the Sobol sequence progresses through
+        // samples 0, 1, 2, ... — each pass advances every pixel by one Sobol point.
+        let mut sobol_states: Vec<[u32; 5]> = (0..total_pixels)
+            .map(|_| {
+                let mut state = [0u32; 5];
+                let mut rng = rand::rng();
+                state[3] = rng.random::<u32>();
+                state[4] = rng.random::<u32>();
+                state
+            })
+            .collect();
 
+        // Using for-loops instead of iterators for better optimization
+        for sample_idx in 0..total_samples {
             let _sample_span =
                 tracing::info_span!("progressive_pass", sample = sample_idx + 1).entered();
             profiling::scope!("progressive_pass");
 
-            (0..total_pixels)
-                .into_par_iter()
-                .map(|idx| {
+            // Advance Sobol sequence by one sample per pixel, accumulate results.
+            sobol_states
+                .par_iter_mut()
+                .zip(accum.par_iter_mut())
+                .enumerate()
+                .for_each(|(idx, (state, accum_color))| {
                     let mut rng = rand::rng();
                     let i = (idx % width) as f64;
                     let j = (idx / width) as f64;
-                    let ray = self.get_ray(i, j, si, sj, &mut rng, recip_sqrt_spp);
-                    self.ray_color(&ray, self.max_depth, &*world, &*lights, &mut rng)
-                })
-                // Write samples into accumulators with per-sample NaN/Inf guard.
-                .zip(accum.par_iter_mut())
-                .for_each(|(sample, accum_color)| {
-                    // Guard per-sample: a single NaN/Inf corrupts the pixel
-                    // accumulator (NaN + anything = NaN), so discard bad
-                    // samples individually rather than post-hoc per-pixel.
+
+                    let ray = self.get_ray_sobol(i, j, &mut rng, state);
+                    let sample = self.ray_color(&ray, self.max_depth, &*world, &*lights, &mut rng);
+
                     if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
                         *accum_color += sample;
                     }
@@ -385,11 +389,6 @@ impl Camera {
             profiling::scope!("progressive_tonemap");
             let mut rgb = vec![0u8; total_pixels * 3];
             for (idx, color) in accum.iter().enumerate() {
-                // let post = post_process(*color * scale, self.exposure, self.tone_map);
-                // let out_idx = idx * 3;
-                // rgb[out_idx] = post[0];
-                // rgb[out_idx + 1] = post[1];
-                // rgb[out_idx + 2] = post[2];
                 post_process(*color * scale, self.exposure, self.tone_map)
                     .iter()
                     .enumerate()
@@ -424,11 +423,13 @@ impl Camera {
     }
 
     /// Returns a random jitter offset inside the pixel cell.
-    /// TODO(cleanup): remove if stratified-only sampling remains default path.
+    /// TODO(sampler-abstraction): extract sampler trait and implementations to decouple from camera.
     fn sample_square<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
         Vec3::from(rng.random::<f64>() - 0.5, rng.random::<f64>() - 0.5, 0.)
     }
 
+    /// Returns a random jitter offset inside the pixel cell, stratified by pixel and sample index.
+    /// TODO(sampler-abstraction): extract sampler trait and implementations to decouple from camera.
     fn sample_square_stratified<R: rand::Rng + ?Sized>(
         &self,
         rng: &mut R,
@@ -441,6 +442,13 @@ impl Camera {
         let py = (sj as f64 + rng.random::<f64>()) * recip_sqrt_spp;
 
         Vec3::from(px, py, 0.)
+    }
+
+    /// Returns a random jitter offset inside the pixel cell, sampled from a Sobol sequence.
+    /// TODO(sampler-abstraction): extract sampler trait and implementations to decouple from camera.
+    fn sample_square_sobol(&self, state: &mut [u32; 5]) -> Vec3 {
+        let [u, v] = sobol_2d_next(state);
+        Vec3::from(u, v, 0.)
     }
 
     /// Constructs a time-sampled camera ray through a jittered pixel sample.
@@ -472,6 +480,30 @@ impl Camera {
 
         // The center of the camera is the ray origin, and the ray direction is the vector from the
         // camera center to the pixel sample location.
+        Ray::new_with_time(ray_origin, ray_direction, rng.random::<f64>())
+    }
+
+    /// Constructs a time-sampled camera ray through a Sobol-distributed pixel sample.
+    fn get_ray_sobol<R: rand::Rng + ?Sized>(
+        &self,
+        u: f64,
+        v: f64,
+        rng: &mut R,
+        state: &mut [u32; 5],
+    ) -> Ray {
+        let offset = self.sample_square_sobol(state);
+
+        let pixel_sample = self.pixel00_loc
+            + ((u + offset.x) * self.pixel_delta_u)
+            + ((v + offset.y) * self.pixel_delta_v);
+
+        let ray_origin = if self.defocus_angle <= 0. {
+            self.look_from
+        } else {
+            self.defocus_disk_sample(rng)
+        };
+        let ray_direction = pixel_sample - ray_origin;
+
         Ray::new_with_time(ray_origin, ray_direction, rng.random::<f64>())
     }
 
@@ -592,16 +624,65 @@ impl Camera {
     }
 }
 
-#[inline(always)]
-fn reinhard_tone_map(exposure: f64, color: Color3) -> Color3 {
-    let mapped = color * exposure;
-    Color3::from(
-        mapped.x / (1.0 + mapped.x),
-        mapped.y / (1.0 + mapped.y),
-        mapped.z / (1.0 + mapped.z),
-    )
+/// Direction numbers for 2D Sobol sequence.
+///
+/// SOBOL2D_DIRS[dim][bit_pos] = direction number as left-aligned u32.
+///
+/// Dim 0: Van der Corput (mⱼ = 1 for all j)
+/// Dim 1: primitive polynomial x³ + x + 1
+const SOBOL2D_DIRS: [[u32; 32]; 2] = [
+    // Dim 0: vⱼ = 1/2ʲ⁺¹ → mⱼ = 1 << (31 - j)
+    [
+        0x80000000, 0x40000000, 0x20000000, 0x10000000, 0x08000000, 0x04000000, 0x02000000,
+        0x01000000, 0x00800000, 0x00400000, 0x00200000, 0x00100000, 0x00080000, 0x00040000,
+        0x00020000, 0x00010000, 0x00008000, 0x00004000, 0x00002000, 0x00001000, 0x00000800,
+        0x00000400, 0x00000200, 0x00000100, 0x00000080, 0x00000040, 0x00000020, 0x00000010,
+        0x00000008, 0x00000004, 0x00000002, 0x00000001,
+    ],
+    // Dim 1: from polynomial x³ + x + 1
+    [
+        0x80000000, 0xc0000000, 0xa0000000, 0xf0000000, 0x88000000, 0xcc000000, 0xaa000000,
+        0xff000000, 0x88800000, 0xccc00000, 0xaaa00000, 0xfff00000, 0x88880000, 0xcccc0000,
+        0xaaaa0000, 0xffff0000, 0x88888000, 0xccccc000, 0xaaaaa000, 0xfffff000, 0x88888800,
+        0xcccccc00, 0xaaaaaa00, 0xffffff00, 0x88888880, 0xccccccc0, 0xaaaaaaa0, 0xfffffff0,
+        0x88888888, 0xcccccccc, 0xaaaaaaaa, 0xffffffff,
+    ],
+];
+
+// state for 2D Sobol sequence generator, used for stratified sampling in get_ray().
+// Accumulated Sobol value for dimension 0 (Van der Corput)
+// x - state[0]: u32,
+// /// Accumulated Sobol value for dimension 1
+// y - state[1]: u32,
+// /// Number of samples taken (starts at 0)
+// index - state[2]: u32,
+// /// Random digital shift for dimension 0
+// shift_x - state[3]: u32,
+// /// Random digital shift for dimension 1
+// shift_y - state[4]: u32,
+fn sobol_2d_next(state: &mut [u32; 5]) -> [f64; 2] {
+    // For sample k ≥ 1: tzcnt(k) tells us which bit flips in the Gray code
+    // from sample k-1 to sample k.
+    //
+    // CRITICAL: 0u32.trailing_zeros() returns 32, not 0 — that would panic
+    // (SOBOL2D_DIRS has indices 0..31). Guard: skip bit-flip for k=0.
+    if state[2] > 0 {
+        let c = state[2].trailing_zeros() as usize;
+        state[0] ^= SOBOL2D_DIRS[0][c];
+        state[1] ^= SOBOL2D_DIRS[1][c];
+    }
+    state[2] += 1;
+
+    // Apply random digital shift (decorrelates adjacent pixels)
+    let sx = state[0] ^ state[3];
+    let sy = state[1] ^ state[4];
+
+    // Convert u32 fixed-point → f64 in [0, 1)
+    let inv = 1.0 / (1u64 << 32) as f64;
+    [sx as f64 * inv, sy as f64 * inv]
 }
 
+#[inline(always)]
 fn post_process(color: Color3, exposure: f64, tone_map: bool) -> [u8; 3] {
     // Scale by sample count, exposure, and apply gamma correction.
     // Apply tone mapping operator before gamma if enabled, otherwise clamp to [0,1].
@@ -617,6 +698,16 @@ fn post_process(color: Color3, exposure: f64, tone_map: bool) -> [u8; 3] {
         (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8,
         (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8,
     ]
+}
+
+#[inline(always)]
+const fn reinhard_tone_map(exposure: f64, color: Color3) -> Color3 {
+    let mapped = Vec3::from(color.x * exposure, color.y * exposure, color.z * exposure);
+    Color3::from(
+        mapped.x / (1.0 + mapped.x),
+        mapped.y / (1.0 + mapped.y),
+        mapped.z / (1.0 + mapped.z),
+    )
 }
 
 #[inline(always)]
