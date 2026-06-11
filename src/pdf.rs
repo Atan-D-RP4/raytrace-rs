@@ -115,11 +115,32 @@ impl PDF for DiracPDF {
 
 pub struct MixturePDF<'a> {
     pdfs: &'a [&'a dyn PDF],
+    weights: Vec<f64>,
 }
 
 impl<'a> MixturePDF<'a> {
+    /// Creates a mixture PDF with weights inferred from pointer identity.
+    ///
+    /// If a PDF appears multiple times in the slice, its weight is proportional
+    /// to its count. For example, `[light_pdf, surface_pdf, surface_pdf]`
+    /// yields weights `[1/3, 2/3]` — the surface PDF gets double weight.
     pub fn new(pdfs: &'a [&'a dyn PDF]) -> Self {
-        MixturePDF { pdfs }
+        let n = pdfs.len() as f64;
+        let weights: Vec<f64> = pdfs
+            .iter()
+            .map(|pdf| {
+                let ptr: *const (dyn PDF + 'a) = *pdf;
+                let count = pdfs
+                    .iter()
+                    .filter(|p| {
+                        let other: *const (dyn PDF + 'a) = **p;
+                        std::ptr::eq(other, ptr)
+                    })
+                    .count();
+                count as f64 / n
+            })
+            .collect();
+        MixturePDF { pdfs, weights }
     }
 }
 
@@ -127,13 +148,22 @@ impl<'a> PDF for MixturePDF<'a> {
     fn value(&self, direction: Vec3) -> f64 {
         self.pdfs
             .iter()
-            .map(|pdf| pdf.value(direction) / self.pdfs.len() as f64)
+            .zip(&self.weights)
+            .map(|(pdf, &w)| w * pdf.value(direction))
             .sum()
     }
 
     fn generate(&self, rng: &mut dyn rand::Rng) -> Vec3 {
-        let index = rng.random_range(0..self.pdfs.len());
-        self.pdfs[index].generate(rng)
+        let r = rng.random::<f64>();
+        let mut cumulative = 0.0;
+        for (pdf, &w) in self.pdfs.iter().zip(&self.weights) {
+            cumulative += w;
+            if r < cumulative {
+                return pdf.generate(rng);
+            }
+        }
+        // Fallback for floating-point edge case.
+        self.pdfs.last().unwrap().generate(rng)
     }
 }
 
@@ -156,13 +186,21 @@ pub struct GgxSamplePDF {
     alpha: f64,
     /// The outgoing direction (toward camera), kept for value().
     wo: Vec3,
-    /// The surface normal — the GGX distribution is centered on this.
-    normal: Vec3,
+    // /// The surface normal — the GGX distribution is centered on this.
+    // normal: Vec3,
+    onb: Onb,
 }
 
 impl GgxSamplePDF {
     pub fn new(wo: Vec3, normal: Vec3, alpha: f64) -> Self {
-        Self { alpha, wo, normal }
+        // Evaluate D(H) in the local frame where the normal is the up-axis (z in the ONB
+        // convention). Previously this used h.y (world-space Y), which is only correct when the
+        // surface normal is world-up.
+        // Build the ONB from the **surface normal**, not wo, so the GGX lobe is correctly centered
+        // on the normal.
+        let onb = Onb::build_from_normal(normal);
+
+        Self { alpha, wo, onb }
     }
 }
 
@@ -176,12 +214,7 @@ impl PDF for GgxSamplePDF {
             return 0.0;
         }
 
-        // Evaluate D(H) in the local frame where the normal is the up-axis (z in the ONB
-        // convention). Previously this used h.y (world-space Y), which is only correct when the
-        // surface normal is world-up.
-        let onb = Onb::build_from_normal(self.normal);
-
-        let h_local = onb.world_to_local(h);
+        let h_local = self.onb.world_to_local(h);
         let cos_h_n = h_local.z.max(0.0);
 
         let d = ggx_d(cos_h_n, self.alpha);
@@ -206,11 +239,7 @@ impl PDF for GgxSamplePDF {
         // the normal axis (z).
         let h_local = Vec3::from(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
 
-        // Build an ONB from the **surface normal**, not wo, so the GGX lobe is correctly centered
-        // on the normal.
-        let onb = Onb::build_from_normal(self.normal);
-
-        let h_world = onb.local_to_world(h_local);
+        let h_world = self.onb.local_to_world(h_local);
 
         // Reflect wo about H to get wi. `reflect` expects the incident direction (toward surface),
         // so negate wo which points away from the surface.
