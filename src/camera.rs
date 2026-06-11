@@ -20,6 +20,7 @@ use crate::interval::Interval;
 use crate::material::PdfKind;
 use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
+use crate::sampler::{Sampler, SobolSeqSampler, StratifiedRandomSampler};
 use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
@@ -250,16 +251,12 @@ impl Camera {
 
         let mut accum = vec![Color3::from(0.0, 0.0, 0.0); total_pixels];
 
-        // Pre-allocate per-pixel Sobol states with fixed random digital shifts.
-        // States persist across passes so the Sobol sequence progresses through
-        // samples 0, 1, 2, ... — each pass advances every pixel by one Sobol point.
-        let mut sobol_states: Vec<[u32; 5]> = (0..total_pixels)
-            .map(|_| {
-                let mut state = [0u32; 5];
-                let mut rng = rand::rng();
-                state[3] = rng.random::<u32>();
-                state[4] = rng.random::<u32>();
-                state
+        // Per-pixel Sobol sampler — persists across passes so sample k
+        // of pixel (x, y) is always the k-th Sobol point for that pixel.
+        let mut samplers: Vec<_> = (0..total_pixels)
+            .map(|idx| {
+                SobolSeqSampler::for_pixel(idx as i32 % width as i32, idx as i32 / width as i32)
+                // StratifiedRandomSampler::new(self.samples_per_pixel as usize, rand::rng().random())
             })
             .collect();
 
@@ -269,50 +266,22 @@ impl Camera {
                 tracing::info_span!("render_pass", sample = sample_idx + 1).entered();
             profiling::scope!("render_pass");
 
-            // Advance Sobol sequence by one sample per pixel, accumulate results.
             accum
                 .par_iter_mut()
-                .zip(sobol_states.par_iter_mut())
+                .zip(samplers.par_iter_mut())
                 .enumerate()
-                .for_each(|(idx, (accum_color, state))| {
+                .for_each(|(idx, (accum_color, sampler))| {
                     let mut rng = rand::rng();
                     let i = (idx % width) as f64;
                     let j = (idx / width) as f64;
 
-                    let ray = self.get_ray_sobol(i, j, &mut rng, state);
+                    let ray = self.get_ray_with_sampler(i, j, &mut rng, sampler);
                     let sample = self.ray_color(&ray, self.max_depth, world, lights, &mut rng);
 
                     if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
                         *accum_color += sample;
                     }
                 });
-
-            // Stratified random sampling (non-Sobol) for simplicity and to avoid Sobol state
-            // management in this reference implementation. GPU path-tracer will use Sobol.
-            //
-            // Requires these variables before the sample loop:
-            //   let sqrt_spp = self.samples_per_pixel.isqrt().max(1);
-            //   let recip_sqrt_spp = 1.0 / sqrt_spp as f64;
-            //   let total_samples = sqrt_spp * sqrt_spp;
-            // And inside the loop:
-            //   let si = sample_idx / sqrt_spp;
-            //   let sj = sample_idx % sqrt_spp;
-            //
-            // accum
-            //     .par_iter_mut()
-            //     .enumerate()
-            //     .for_each(|(idx, accum_color)| {
-            //         let mut rng = rand::rng();
-            //         let i = (idx % width) as f64;
-            //         let j = (idx / width) as f64;
-            //
-            //         let ray = self.get_ray(i, j, si, sj, &mut rng, recip_sqrt_spp);
-            //         let sample = self.ray_color(&ray, self.max_depth, world, lights, &mut rng);
-            //
-            //         if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
-            //             *accum_color += sample;
-            //         }
-            //     });
 
             // Progressive mode: tonemap and publish intermediate frame.
             if let Some(ref fb) = framebuffer {
@@ -379,54 +348,21 @@ impl Camera {
         (self.image_width as u32, self.image_height as u32, output)
     }
 
-    /// Returns a random jitter offset inside the pixel cell.
-    /// TODO(sampler-abstraction): extract sampler trait and implementations to decouple from camera.
-    fn sample_square<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
-        Vec3::from(rng.random::<f64>() - 0.5, rng.random::<f64>() - 0.5, 0.)
-    }
-
-    /// Returns a random jitter offset inside the pixel cell, stratified by pixel and sample index.
-    /// TODO(sampler-abstraction): extract sampler trait and implementations to decouple from camera.
-    fn sample_square_stratified<R: rand::Rng + ?Sized>(
-        &self,
-        rng: &mut R,
-        si: i32,
-        sj: i32,
-        recip_sqrt_spp: f64,
-    ) -> Vec3 {
-        // Jitter within [0, 1) cell, then scale to cell size
-        let px = (si as f64 + rng.random::<f64>()) * recip_sqrt_spp;
-        let py = (sj as f64 + rng.random::<f64>()) * recip_sqrt_spp;
-
-        Vec3::from(px, py, 0.)
-    }
-
-    /// Returns a random jitter offset inside the pixel cell, sampled from a Sobol sequence.
-    /// TODO(sampler-abstraction): extract sampler trait and implementations to decouple from camera.
-    fn sample_square_sobol(&self, state: &mut [u32; 5]) -> Vec3 {
-        let [u, v] = sobol_2d_next(state);
-        Vec3::from(u, v, 0.)
-    }
-
-    /// Constructs a time-sampled camera ray through a jittered pixel sample.
-    fn get_ray<R: rand::Rng + ?Sized>(
+    // Constructs a time-sampled camera ray through a jittered pixel sample, using the provided
+    // sampler for subpixel sampling.
+    fn get_ray_with_sampler<R: rand::Rng + ?Sized>(
         &self,
         u: f64,
         v: f64,
-        si: i32,
-        sj: i32,
         rng: &mut R,
-        recip_sqrt_spp: f64,
+        sampler: &mut dyn Sampler,
     ) -> Ray {
-        // let offset = self.sample_square(rng);
-
         // Construct a camera ray originating from the defocus disk and directed at a randomly
-        // sampled point around the pixel location i, j for stratified sample square s_i, s_j.
-        let offset = self.sample_square_stratified(rng, si, sj, recip_sqrt_spp);
-
+        // sampled point around the pixel location i, j.
+        let offset = sampler.get_next_2d();
         let pixel_sample = self.pixel00_loc
-            + ((u + offset.x) * self.pixel_delta_u)
-            + ((v + offset.y) * self.pixel_delta_v);
+            + ((u + offset[0]) * self.pixel_delta_u)
+            + ((v + offset[1]) * self.pixel_delta_v);
 
         let ray_origin = if self.defocus_angle <= 0. {
             self.look_from
@@ -437,30 +373,6 @@ impl Camera {
 
         // The center of the camera is the ray origin, and the ray direction is the vector from the
         // camera center to the pixel sample location.
-        Ray::new_with_time(ray_origin, ray_direction, rng.random::<f64>())
-    }
-
-    /// Constructs a time-sampled camera ray through a Sobol-distributed pixel sample.
-    fn get_ray_sobol<R: rand::Rng + ?Sized>(
-        &self,
-        u: f64,
-        v: f64,
-        rng: &mut R,
-        state: &mut [u32; 5],
-    ) -> Ray {
-        let offset = self.sample_square_sobol(state);
-
-        let pixel_sample = self.pixel00_loc
-            + ((u + offset.x) * self.pixel_delta_u)
-            + ((v + offset.y) * self.pixel_delta_v);
-
-        let ray_origin = if self.defocus_angle <= 0. {
-            self.look_from
-        } else {
-            self.defocus_disk_sample(rng)
-        };
-        let ray_direction = pixel_sample - ray_origin;
-
         Ray::new_with_time(ray_origin, ray_direction, rng.random::<f64>())
     }
 
@@ -579,64 +491,6 @@ impl Camera {
         let point = random_in_unit_disk_with_rng(rng);
         self.look_from + (point.x * self.defocus_disk_u) + (point.y * self.defocus_disk_v)
     }
-}
-
-/// Direction numbers for 2D Sobol sequence.
-///
-/// SOBOL2D_DIRS[dim][bit_pos] = direction number as left-aligned u32.
-///
-/// Dim 0: Van der Corput (mⱼ = 1 for all j)
-/// Dim 1: primitive polynomial x³ + x + 1
-const SOBOL2D_DIRS: [[u32; 32]; 2] = [
-    // Dim 0: vⱼ = 1/2ʲ⁺¹ → mⱼ = 1 << (31 - j)
-    [
-        0x80000000, 0x40000000, 0x20000000, 0x10000000, 0x08000000, 0x04000000, 0x02000000,
-        0x01000000, 0x00800000, 0x00400000, 0x00200000, 0x00100000, 0x00080000, 0x00040000,
-        0x00020000, 0x00010000, 0x00008000, 0x00004000, 0x00002000, 0x00001000, 0x00000800,
-        0x00000400, 0x00000200, 0x00000100, 0x00000080, 0x00000040, 0x00000020, 0x00000010,
-        0x00000008, 0x00000004, 0x00000002, 0x00000001,
-    ],
-    // Dim 1: from polynomial x³ + x + 1
-    [
-        0x80000000, 0xc0000000, 0xa0000000, 0xf0000000, 0x88000000, 0xcc000000, 0xaa000000,
-        0xff000000, 0x88800000, 0xccc00000, 0xaaa00000, 0xfff00000, 0x88880000, 0xcccc0000,
-        0xaaaa0000, 0xffff0000, 0x88888000, 0xccccc000, 0xaaaaa000, 0xfffff000, 0x88888800,
-        0xcccccc00, 0xaaaaaa00, 0xffffff00, 0x88888880, 0xccccccc0, 0xaaaaaaa0, 0xfffffff0,
-        0x88888888, 0xcccccccc, 0xaaaaaaaa, 0xffffffff,
-    ],
-];
-
-// state for 2D Sobol sequence generator, used for stratified sampling in get_ray().
-// Accumulated Sobol value for dimension 0 (Van der Corput)
-// x - state[0]: u32,
-// /// Accumulated Sobol value for dimension 1
-// y - state[1]: u32,
-// /// Number of samples taken (starts at 0)
-// index - state[2]: u32,
-// /// Random digital shift for dimension 0
-// shift_x - state[3]: u32,
-// /// Random digital shift for dimension 1
-// shift_y - state[4]: u32,
-fn sobol_2d_next(state: &mut [u32; 5]) -> [f64; 2] {
-    // For sample k ≥ 1: tzcnt(k) tells us which bit flips in the Gray code
-    // from sample k-1 to sample k.
-    //
-    // CRITICAL: 0u32.trailing_zeros() returns 32, not 0 — that would panic
-    // (SOBOL2D_DIRS has indices 0..31). Guard: skip bit-flip for k=0.
-    if state[2] > 0 {
-        let c = state[2].trailing_zeros() as usize;
-        state[0] ^= SOBOL2D_DIRS[0][c];
-        state[1] ^= SOBOL2D_DIRS[1][c];
-    }
-    state[2] += 1;
-
-    // Apply random digital shift (decorrelates adjacent pixels)
-    let sx = state[0] ^ state[3];
-    let sy = state[1] ^ state[4];
-
-    // Convert u32 fixed-point → f64 in [0, 1)
-    let inv = 1.0 / (1u64 << 32) as f64;
-    [sx as f64 * inv, sy as f64 * inv]
 }
 
 #[inline(always)]

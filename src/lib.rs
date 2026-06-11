@@ -11,6 +11,7 @@ pub mod pdf;
 pub mod perlin;
 pub mod planar;
 pub mod ray;
+pub mod sampler;
 pub mod scene;
 pub mod sphere;
 pub mod texture;
