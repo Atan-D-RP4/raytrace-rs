@@ -33,8 +33,6 @@ struct WindowState {
 
     /// Shared render output consumed by draw loop.
     framebuffer: SharedFramebuffer,
-    /// Last progressive pass observed by UI thread.
-    last_seen_pass: u32,
 }
 
 impl WindowState {
@@ -58,7 +56,6 @@ impl WindowState {
             window,
             theme,
             framebuffer,
-            last_seen_pass: 0,
         }
     }
 
@@ -359,10 +356,14 @@ fn main() -> Result<(), winit::error::EventLoopError> {
             std::process::exit(1);
         }
     };
-    // Re-emit into a headless render using the selected scene.
+    // Re-emit into a headless or live render using the selected scene.
     // Optional env-var overrides: RT_SAMPLES, RT_WIDTH, RT_DEPTH (for fast debugging).
-    headless_render(scene, &scene_name);
-    // live_render(scene, &scene_name)?;
+    // Set RT_LIVE=1 for live preview window, otherwise defaults to headless.
+    if std::env::var("RT_LIVE").ok().as_deref() == Some("1") {
+        live_render(scene, &scene_name)?;
+    } else {
+        headless_render(scene, &scene_name);
+    }
 
     Ok(())
 }
@@ -429,8 +430,8 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
         let mut camera = Camera::from_config(&config);
         // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
         // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
-        profiling::scope!("render_progressive");
-        camera.render_progressive(&world, &*lights, framebuffer.clone());
+        profiling::scope!("render");
+        camera.render(&world, &*lights, Some(framebuffer.clone()));
 
         save_framebuffer_png(&framebuffer, &scene_name);
         info!("render thread complete");
@@ -486,7 +487,7 @@ fn headless_render(scene: Scene, scene_name: &str) {
 
     let start = std::time::Instant::now();
     profiling::scope!("render_cpu");
-    let (width, height, rgb_data) = camera.render(&world, &light_objects);
+    let (width, height, rgb_data) = camera.render(&world, &light_objects, None);
     let end = std::time::Instant::now();
     info!(elapsed = ?(end - start), width, height, "render complete");
 

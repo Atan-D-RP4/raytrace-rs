@@ -5,7 +5,7 @@
 //! 2. Run the CPU Monte-Carlo path-tracing loop.
 //! 3. Return an RGB8 image buffer for output.
 //!
-//! TODO(renderer-abstraction): factor the rendering loop into a dedicated
+//! TODO(renderer-abstraction): refactor the rendering loop into a dedicated
 //! renderer/pipeline module so camera ray generation can be reused by GPU,
 //! raster, hybrid, and other future rendering engines.
 
@@ -219,12 +219,15 @@ impl Camera {
 
     /// Renders the scene and returns (width, height, RGB pixel data).
     ///
-    /// Uses parallel iteration over pixel chunks for performance.
-    /// Each chunk writes RGB triples directly into the output buffer.
-    ///
-    /// TODO(renderer-abstraction): move this method and [`Camera::ray_color`]
-    /// into a renderer/pipeline component so alternate engines can share camera setup.
-    pub fn render(&mut self, world: &impl Hittable, lights: &impl Hittable) -> (u32, u32, Vec<u8>) {
+    /// When `framebuffer` is `Some`, publishes progressive intermediate frames
+    /// to the shared framebuffer during rendering (live preview mode).
+    /// When `None`, renders all samples and returns the final image only.
+    pub fn render(
+        &mut self,
+        world: &dyn Hittable,
+        lights: &dyn Hittable,
+        framebuffer: Option<SharedFramebuffer>,
+    ) -> (u32, u32, Vec<u8>) {
         let _span = tracing::info_span!(
             "render",
             width = self.image_width,
@@ -232,123 +235,22 @@ impl Camera {
             spp = self.samples_per_pixel,
             max_depth = self.max_depth,
             background = ?self.background,
+            progressive = framebuffer.is_some(),
         )
         .entered();
 
         info!("camera render started");
         profiling::scope!("camera_render_loop");
 
-        let image_width = self.image_width;
-        let total_pixels = self.image_height * self.image_width;
-        let max_depth = self.max_depth;
-
-        let mut output = vec![0u8; total_pixels as usize * 3];
-
-        output
-            .par_chunks_mut(3)
-            .enumerate()
-            .for_each(|(idx, rgb_chunk)| {
-                let mut rng = rand::rng();
-                // Top-left origin: i → right, j → down.
-                let i = idx as i32 % image_width;
-                let j = idx as i32 / image_width;
-
-                // Sample every 1000th pixel for profiling without overhead.
-                let span = if idx % 1000 == 0 {
-                    Some(tracing::info_span!("pixel", i, j))
-                } else {
-                    None
-                };
-                let _guard = span.as_ref().map(|s| s.enter());
-
-                // Accumulate samples for anti-aliasing.
-                // Using Sobol QMC sequence for better convergence and O(1) sample generation.
-                // Sample 0 starts at (0,0) in the Sobol accumulator; each subsequent sample flips
-                // one bit (Gray code incremental, O(1) per sample).
-                // Per-pixel random digital shift decorrelates adjacent pixels.
-                let mut pixel_color = Color3::from(0., 0., 0.);
-                let mut sobol_state = [0u32; 5];
-
-                // shift[0] = Sobol accumulator x, [1] = y, [2] = sample index,
-                // [3] = shift_x, [4] = shift_y
-                sobol_state[3] = rng.random::<u32>();
-                sobol_state[4] = rng.random::<u32>();
-
-                for _ in 0..self.samples_per_pixel {
-                    let ray = self.get_ray_sobol(i as f64, j as f64, &mut rng, &mut sobol_state);
-                    let sample = self.ray_color(&ray, max_depth, &*world, &*lights, &mut rng);
-                    // Guard per-sample: a single NaN/Inf corrupts the pixel accumulator (NaN +
-                    // anything = NaN), so discard bad samples individually rather than post-hoc
-                    // per-pixel.
-                    if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
-                        pixel_color += sample;
-                    }
-                }
-
-                post_process(
-                    pixel_color * self.pixel_samples_scale,
-                    self.exposure,
-                    self.tone_map,
-                )
-                .iter()
-                .enumerate()
-                .for_each(|(c, out)| rgb_chunk[c] = *out);
-            });
-
-        info!("camera render finished");
-
-        (self.image_width as u32, self.image_height as u32, output)
-    }
-
-    /// Progressive CPU renderer for live preview pipeline.
-    ///
-    /// Behavior:
-    /// - Computes one additional sample per pixel each outer iteration.
-    /// - Accumulates linear radiance in `accum`.
-    /// - Converts running average to RGB8.
-    /// - Publishes full-frame snapshot into `framebuffer` every pass.
-    /// - Sets `framebuffer.finished = true` on final pass.
-    ///
-    /// Threading model:
-    /// - Pixel shading inside each pass runs in rayon parallel iterator.
-    /// - Publication step takes short write lock only during buffer swap.
-    ///
-    /// Note: current implementation is full-frame progressive.
-    /// Tile-based publication can reduce copy cost and lock contention.
-    pub fn render_progressive(
-        &mut self,
-        world: &impl Hittable,
-        lights: &dyn Hittable,
-        framebuffer: SharedFramebuffer,
-    ) {
-        let _span = tracing::info_span!(
-            "render_progressive",
-            width = self.image_width,
-            height = self.image_height,
-            spp = self.samples_per_pixel,
-            max_depth = self.max_depth,
-        )
-        .entered();
-
-        info!("camera progressive render started");
-
         let width = self.image_width as usize;
         let height = self.image_height as usize;
         let total_pixels = width * height;
-
         let total_samples = self.samples_per_pixel;
+        let render_start = std::time::Instant::now();
 
-        info!(
-            width,
-            height,
-            spp = self.samples_per_pixel,
-            "progressive render dimensions"
-        );
-        // TODO(opt-preview): reuse scratch buffers (`sample_colors`, `rgb`) across passes.
-        // Current implementation reallocates each pass and increases allocator pressure.
         let mut accum = vec![Color3::from(0.0, 0.0, 0.0); total_pixels];
 
-        // Initialize per-pixel Sobol states with fixed random digital shifts.
+        // Pre-allocate per-pixel Sobol states with fixed random digital shifts.
         // States persist across passes so the Sobol sequence progresses through
         // samples 0, 1, 2, ... — each pass advances every pixel by one Sobol point.
         let mut sobol_states: Vec<[u32; 5]> = (0..total_pixels)
@@ -361,65 +263,120 @@ impl Camera {
             })
             .collect();
 
-        // Using for-loops instead of iterators for better optimization
         for sample_idx in 0..total_samples {
+            let pass_start = std::time::Instant::now();
             let _sample_span =
-                tracing::info_span!("progressive_pass", sample = sample_idx + 1).entered();
-            profiling::scope!("progressive_pass");
+                tracing::info_span!("render_pass", sample = sample_idx + 1).entered();
+            profiling::scope!("render_pass");
 
             // Advance Sobol sequence by one sample per pixel, accumulate results.
-            sobol_states
+            accum
                 .par_iter_mut()
-                .zip(accum.par_iter_mut())
+                .zip(sobol_states.par_iter_mut())
                 .enumerate()
-                .for_each(|(idx, (state, accum_color))| {
+                .for_each(|(idx, (accum_color, state))| {
                     let mut rng = rand::rng();
                     let i = (idx % width) as f64;
                     let j = (idx / width) as f64;
 
                     let ray = self.get_ray_sobol(i, j, &mut rng, state);
-                    let sample = self.ray_color(&ray, self.max_depth, &*world, &*lights, &mut rng);
+                    let sample = self.ray_color(&ray, self.max_depth, world, lights, &mut rng);
 
                     if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
                         *accum_color += sample;
                     }
                 });
 
-            let scale = 1.0 / (sample_idx + 1) as f64;
-            profiling::scope!("progressive_tonemap");
-            let mut rgb = vec![0u8; total_pixels * 3];
-            for (idx, color) in accum.iter().enumerate() {
-                post_process(*color * scale, self.exposure, self.tone_map)
-                    .iter()
-                    .enumerate()
-                    .for_each(|(c, out)| rgb[idx * 3 + c] = *out);
+            // Stratified random sampling (non-Sobol) for simplicity and to avoid Sobol state
+            // management in this reference implementation. GPU path-tracer will use Sobol.
+            //
+            // Requires these variables before the sample loop:
+            //   let sqrt_spp = self.samples_per_pixel.isqrt().max(1);
+            //   let recip_sqrt_spp = 1.0 / sqrt_spp as f64;
+            //   let total_samples = sqrt_spp * sqrt_spp;
+            // And inside the loop:
+            //   let si = sample_idx / sqrt_spp;
+            //   let sj = sample_idx % sqrt_spp;
+            //
+            // accum
+            //     .par_iter_mut()
+            //     .enumerate()
+            //     .for_each(|(idx, accum_color)| {
+            //         let mut rng = rand::rng();
+            //         let i = (idx % width) as f64;
+            //         let j = (idx / width) as f64;
+            //
+            //         let ray = self.get_ray(i, j, si, sj, &mut rng, recip_sqrt_spp);
+            //         let sample = self.ray_color(&ray, self.max_depth, world, lights, &mut rng);
+            //
+            //         if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
+            //             *accum_color += sample;
+            //         }
+            //     });
+
+            // Progressive mode: tonemap and publish intermediate frame.
+            if let Some(ref fb) = framebuffer {
+                let scale = 1.0 / (sample_idx + 1) as f64;
+                profiling::scope!("progressive_tonemap");
+                // TODO(opt-preview): reuse scratch buffer (`rgb`) across passes instead of
+                // re-allocating each pass — reduces allocator pressure during long renders.
+                let mut rgb = vec![0u8; total_pixels * 3];
+                for (idx, color) in accum.iter().enumerate() {
+                    post_process(*color * scale, self.exposure, self.tone_map)
+                        .iter()
+                        .enumerate()
+                        .for_each(|(c, out)| rgb[idx * 3 + c] = *out);
+                }
+
+                // TODO(opt-preview): publish every N passes (adaptive cadence) to reduce lock contention.
+                // Keep frequent updates early, slower cadence late for better throughput.
+                profiling::scope!("progressive_publish");
+                if let Ok(mut guard) = fb.write() {
+                    guard.width = self.image_width as u32;
+                    guard.height = self.image_height as u32;
+                    guard.rgb = rgb;
+                    guard.finished = sample_idx + 1 == total_samples;
+                }
             }
 
-            profiling::scope!("progressive_publish");
-            if let Ok(mut fb) = framebuffer.write() {
-                fb.width = self.image_width as u32;
-                fb.height = self.image_height as u32;
-                fb.rgb = rgb;
-                fb.finished = sample_idx + 1 == total_samples;
-            }
-            // TODO(opt-preview): publish every N passes (adaptive cadence) to reduce lock contention.
-            // Keep frequent updates early, slower cadence late for better throughput.
-
+            // Log pass timing every 8 passes and on the final pass.
             if (sample_idx + 1) % 8 == 0 || sample_idx + 1 == total_samples {
+                let elapsed = pass_start.elapsed();
+                let avg_sec = render_start.elapsed().as_secs_f64() / (sample_idx + 1) as f64;
                 info!(
                     sample = sample_idx + 1,
                     total = total_samples,
-                    "progressive pass complete"
+                    pass_sec = format!("{:.4}", elapsed.as_secs_f64()),
+                    avg_sec = format!("{:.4}", avg_sec),
+                    eta_sec = format!("{:.1}", avg_sec * (total_samples - sample_idx - 1) as f64),
+                    "render pass complete"
                 );
             }
-            info!(
-                sample_idx,
-                total = total_samples,
-                "single render pass complete",
-            );
         }
 
-        info!("camera progressive render finished");
+        // Convert accumulated linear radiance to RGB8 output.
+        profiling::scope!("final_tonemap");
+        let mut output = vec![0u8; total_pixels * 3];
+        for (idx, color) in accum.iter().enumerate() {
+            post_process(
+                *color * self.pixel_samples_scale,
+                self.exposure,
+                self.tone_map,
+            )
+            .iter()
+            .enumerate()
+            .for_each(|(c, out)| output[idx * 3 + c] = *out);
+        }
+
+        info!(
+            elapsed = format!("{:.4}", render_start.elapsed().as_secs_f64()),
+            samples_per_sec = format!(
+                "{:.0}",
+                total_samples as f64 / render_start.elapsed().as_secs_f64()
+            ),
+            "camera render finished"
+        );
+        (self.image_width as u32, self.image_height as u32, output)
     }
 
     /// Returns a random jitter offset inside the pixel cell.
