@@ -6,6 +6,7 @@ use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
+use crate::sampler::Sampler;
 use crate::vec3::{Point3, Vec3};
 
 mod annulus;
@@ -145,7 +146,7 @@ pub trait Region2D: Send + Sync {
     /// Uniformly samples a point `(a, b)` within the region.
     ///
     /// Used by [`PlanarPatch::random`] for light importance sampling.
-    fn sample(&self, rng: &mut dyn rand::Rng) -> (f64, f64);
+    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64);
 }
 
 impl<R: Region2D> Hittable for PlanarPatch<R> {
@@ -188,8 +189,8 @@ impl<R: Region2D> Hittable for PlanarPatch<R> {
         }
     }
 
-    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
-        let (a, b) = self.region.sample(rng);
+    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
+        let (a, b) = self.region.sample(sampler);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
         random_point - origin
     }

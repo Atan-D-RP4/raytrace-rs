@@ -10,9 +10,13 @@ pub trait Sampler: Send {
 
     /// Fork independent samplers. Parent state is preserved.
     fn split(&mut self, num: usize) -> Vec<Box<dyn Sampler>>;
+
+    /// Reset to a specific sample index (no-op for random samplers).
+    fn set_sample_index(&mut self, _index: u32) {}
 }
 
 /// Pure random sampling. O(1/√N) convergence.
+#[derive(Debug, Clone)]
 pub struct NaiveRandomSampler {
     rng: SmallRng,
 }
@@ -55,6 +59,7 @@ impl Sampler for NaiveRandomSampler {
 
 /// Jittered grid sampling: one random sample per cell in a `sqrt_spp × sqrt_spp` grid.
 /// Lower variance than naive at the same O(1/√N) convergence rate.
+#[derive(Debug, Clone)]
 pub struct StratifiedRandomSampler {
     rng: SmallRng,
     sample_idx: usize,
@@ -110,22 +115,27 @@ impl Sampler for StratifiedRandomSampler {
             })
             .collect()
     }
+
+    fn set_sample_index(&mut self, index: u32) {
+        self.sample_idx = index as usize;
+    }
 }
 
 /// Sobol quasi-random sequence with random digital shift.
 /// O((log N)²/N) convergence — typically 2-4× fewer samples than stratified.
 ///
-/// 1D and 2D paths use independent index counters, so they can be mixed freely.
+/// Uses a single index for both 1D and 2D queries so the sequence is
+/// deterministic regardless of interleaving — essential for progressive rendering.
+#[derive(Debug, Clone)]
 pub struct SobolSeqSampler {
-    index_2d: u32,
-    x_2d: u32,
-    y_2d: u32,
-    shift_x_2d: u32,
-    shift_y_2d: u32,
-
-    index_1d: u32,
-    x_1d: u32,
-    shift_x_1d: u32,
+    /// Current sample index; each get_next call advances by one.
+    sample_index: u32,
+    /// Gray code accumulators for dimensions 0 and 1.
+    x: u32,
+    y: u32,
+    /// Random digital shifts for dimensions 0 and 1.
+    shift_x: u32,
+    shift_y: u32,
 }
 
 impl SobolSeqSampler {
@@ -151,28 +161,22 @@ impl SobolSeqSampler {
     pub fn new() -> Self {
         let mut rng = SmallRng::from_rng(&mut rand::rng());
         Self {
-            index_2d: 0,
-            x_2d: 0,
-            y_2d: 0,
-            shift_x_2d: rng.random(),
-            shift_y_2d: rng.random(),
-            index_1d: 0,
-            x_1d: 0,
-            shift_x_1d: rng.random(),
+            sample_index: 0,
+            x: 0,
+            y: 0,
+            shift_x: rng.random(),
+            shift_y: rng.random(),
         }
     }
 
     pub fn with_seed(seed: u64) -> Self {
         let mut rng = SmallRng::seed_from_u64(seed);
         Self {
-            index_2d: 0,
-            x_2d: 0,
-            y_2d: 0,
-            shift_x_2d: rng.random(),
-            shift_y_2d: rng.random(),
-            index_1d: 0,
-            x_1d: 0,
-            shift_x_1d: rng.random(),
+            sample_index: 0,
+            x: 0,
+            y: 0,
+            shift_x: rng.random(),
+            shift_y: rng.random(),
         }
     }
 
@@ -180,33 +184,24 @@ impl SobolSeqSampler {
     pub fn for_pixel(pixel_x: i32, pixel_y: i32) -> Self {
         let mut rng = SmallRng::seed_from_u64(pixel_x as u64 * 7919 + pixel_y as u64 * 104729);
         Self {
-            index_2d: 0,
-            x_2d: 0,
-            y_2d: 0,
-            shift_x_2d: rng.random(),
-            shift_y_2d: rng.random(),
-            index_1d: 0,
-            x_1d: 0,
-            shift_x_1d: rng.random(),
+            sample_index: 0,
+            x: 0,
+            y: 0,
+            shift_x: rng.random(),
+            shift_y: rng.random(),
         }
     }
 
-    /// Gray code incremental: XOR the direction number for the flipped bit.
-    fn advance_2d(&mut self) {
-        if self.index_2d > 0 {
-            let c = self.index_2d.trailing_zeros() as usize;
-            self.x_2d ^= Self::SOBOL_DIRS[0][c];
-            self.y_2d ^= Self::SOBOL_DIRS[1][c];
+    /// Advance the Gray code accumulators for both dimensions.
+    fn advance(&mut self) {
+        if self.sample_index > 0 {
+            let c = self.sample_index.trailing_zeros() as usize;
+            if c < 32 {
+                self.x ^= Self::SOBOL_DIRS[0][c];
+                self.y ^= Self::SOBOL_DIRS[1][c];
+            }
         }
-        self.index_2d += 1;
-    }
-
-    fn advance_1d(&mut self) {
-        if self.index_1d > 0 {
-            let c = self.index_1d.trailing_zeros() as usize;
-            self.x_1d ^= Self::SOBOL_DIRS[0][c];
-        }
-        self.index_1d += 1;
+        self.sample_index += 1;
     }
 }
 
@@ -218,28 +213,47 @@ impl Default for SobolSeqSampler {
 
 impl Sampler for SobolSeqSampler {
     fn get_next_1d(&mut self) -> f64 {
-        self.advance_1d();
-        let sx = self.x_1d ^ self.shift_x_1d;
+        self.advance();
+        let sx = self.x ^ self.shift_x;
         let inv = 1.0 / (1u64 << 32) as f64;
         sx as f64 * inv
     }
 
     fn get_next_2d(&mut self) -> [f64; 2] {
-        self.advance_2d();
-        let sx = self.x_2d ^ self.shift_x_2d;
-        let sy = self.y_2d ^ self.shift_y_2d;
+        self.advance();
+        let sx = self.x ^ self.shift_x;
+        let sy = self.y ^ self.shift_y;
         let inv = 1.0 / (1u64 << 32) as f64;
         [sx as f64 * inv, sy as f64 * inv]
     }
 
     fn split(&mut self, num: usize) -> Vec<Box<dyn Sampler>> {
+        let base = self.sample_index as u64 * 31337 + self.x as u64;
         (0..num)
-            .map(|_| {
+            .map(|i| {
                 Box::new(SobolSeqSampler::with_seed(
-                    self.index_2d as u64 * 31337 + self.index_1d as u64 * 7919 + self.x_2d as u64,
+                    base.wrapping_add(i as u64 * 104729),
                 )) as Box<dyn Sampler>
             })
             .collect()
+    }
+
+    fn set_sample_index(&mut self, index: u32) {
+        // Replay Gray code from 0 to rebuild accumulator state.
+        self.x = 0;
+        self.y = 0;
+        self.sample_index = 0;
+
+        for _ in 0..index {
+            if self.sample_index > 0 {
+                let c = self.sample_index.trailing_zeros() as usize;
+                if c < 32 {
+                    self.x ^= Self::SOBOL_DIRS[0][c];
+                    self.y ^= Self::SOBOL_DIRS[1][c];
+                }
+            }
+            self.sample_index += 1;
+        }
     }
 }
 
@@ -317,14 +331,11 @@ mod tests {
         let shift_y: u32 = rng.random();
 
         let mut s = SobolSeqSampler {
-            index_2d: 0,
-            x_2d: 0,
-            y_2d: 0,
-            shift_x_2d: shift_x,
-            shift_y_2d: shift_y,
-            index_1d: 0,
-            x_1d: 0,
-            shift_x_1d: 0,
+            sample_index: 0,
+            x: 0,
+            y: 0,
+            shift_x,
+            shift_y,
         };
 
         let [x, y] = s.get_next_2d();

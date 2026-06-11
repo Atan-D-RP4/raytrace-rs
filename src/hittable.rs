@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use rand::RngExt;
-
 use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
+use crate::sampler::Sampler;
 use crate::texture::TextureCoords;
 use crate::vec3::Vec3;
 
@@ -112,8 +111,8 @@ pub trait Hittable: Send + Sync {
 
     /// Samples a random direction toward this hittable from a given origin.
     /// Default returns (1, 0, 0) as a placeholder.
-    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
-        let _ = (origin, rng);
+    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
+        let _ = (origin, sampler);
         Vec3::from(1., 0., 0.)
     }
 }
@@ -145,12 +144,13 @@ impl<T: Hittable> Hittable for Vec<T> {
             .fold(0.0, |acc, val| acc + val)
     }
 
-    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
         if self.is_empty() {
             return Vec3::ZERO;
         }
-        let index = rng.random_range(0..self.len());
-        self[index].random(origin, rng)
+        let len = self.len();
+        let index = (sampler.get_next_1d() * len as f64).min(len as f64 - 1e-15) as usize;
+        self[index].random(origin, sampler)
     }
 }
 
@@ -169,7 +169,7 @@ impl<T: Hittable + ?Sized> Hittable for Arc<T> {
         (**self).pdf_value(origin, direction)
     }
 
-    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
-        (**self).random(origin, rng)
+    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
+        (**self).random(origin, sampler)
     }
 }

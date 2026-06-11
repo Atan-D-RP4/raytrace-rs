@@ -40,7 +40,7 @@
 //! struct MyCustomBrdf { ... }
 //!
 //! impl Bsdf for MyCustomBrdf {
-//!     fn sample(&self, wo: Vec3, hit: &HitRecord, rng: &mut dyn rand::Rng) -> Option<BsdfSample> { ... }
+//!     fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample> { ... }
 //!     fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 { ... }
 //!     fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 { ... }
 //! }
@@ -80,6 +80,7 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
+use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -147,7 +148,7 @@ pub trait Bsdf: Send + Sync {
     /// Returns `None` for materials that don't scatter (e.g., pure emitters).
     /// The returned [`BsdfSample`] contains the direction, BSDF × cosine,
     /// and PDF — all from the same internal sample.
-    fn sample(&self, wo: Vec3, hit: &HitRecord, rng: &mut dyn rand::Rng) -> Option<BsdfSample>;
+    fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample>;
 
     /// Evaluate the BSDF for an outgoing→incoming direction pair.
     ///
@@ -283,33 +284,32 @@ impl Material {
         &self,
         wo: Vec3,
         record: &HitRecord,
-        rng: &mut dyn rand::Rng,
+        sampler: &mut dyn Sampler,
     ) -> Option<BsdfSample> {
-        use rand::RngExt;
         match self {
-            Material::Lambertian(inner) => inner.sample(wo, record, rng),
-            Material::Metal(inner) => inner.sample(wo, record, rng),
-            Material::Dielectric(inner) => inner.sample(wo, record, rng),
-            Material::DiffuseLight(inner) => inner.sample(wo, record, rng),
-            Material::Isotropic(inner) => inner.sample(wo, record, rng),
-            Material::Glossy(inner) => inner.sample(wo, record, rng),
-            Material::Custom(inner) => inner.sample(wo, record, rng),
+            Material::Lambertian(inner) => inner.sample(wo, record, sampler),
+            Material::Metal(inner) => inner.sample(wo, record, sampler),
+            Material::Dielectric(inner) => inner.sample(wo, record, sampler),
+            Material::DiffuseLight(inner) => inner.sample(wo, record, sampler),
+            Material::Isotropic(inner) => inner.sample(wo, record, sampler),
+            Material::Glossy(inner) => inner.sample(wo, record, sampler),
+            Material::Custom(inner) => inner.sample(wo, record, sampler),
             Material::Mix { a, b, weight } => {
-                let chosen: &dyn Bsdf = if rng.random::<f64>() < *weight {
+                let chosen: &dyn Bsdf = if sampler.get_next_1d() < *weight {
                     b.as_ref()
                 } else {
                     a.as_ref()
                 };
-                chosen.sample(wo, record, rng)
+                chosen.sample(wo, record, sampler)
             }
             Material::Coated { substrate, coating } => {
                 let cos_o = wo.dot(&record.normal).abs();
                 let coat_ior = 1.5;
                 let f = fresnel_schlick(cos_o, coat_ior);
-                if rng.random::<f64>() < f {
-                    coating.sample(wo, record, rng)
+                if sampler.get_next_1d() < f {
+                    coating.sample(wo, record, sampler)
                 } else {
-                    substrate.sample(wo, record, rng)
+                    substrate.sample(wo, record, sampler)
                 }
             }
         }
@@ -416,8 +416,8 @@ impl Material {
 }
 
 impl Bsdf for Material {
-    fn sample(&self, wo: Vec3, hit: &HitRecord, rng: &mut dyn rand::Rng) -> Option<BsdfSample> {
-        self.sample(wo, hit, rng)
+    fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample> {
+        self.sample(wo, hit, sampler)
     }
 
     fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 {
@@ -763,7 +763,7 @@ mod tests {
                 &self,
                 _wo: Vec3,
                 _hit: &HitRecord,
-                _rng: &mut dyn rand::Rng,
+                _sampler: &mut dyn Sampler,
             ) -> Option<BsdfSample> {
                 None
             }

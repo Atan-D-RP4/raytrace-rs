@@ -15,6 +15,7 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
+use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -36,7 +37,7 @@ impl Bsdf for LambertianMaterial {
     /// Returns `Vec3::ZERO` as a direction placeholder. The integrator samples
     /// the actual direction from the cosine-weighted hemisphere PDF indicated by
     /// `pdf_kind`. The `f_cos` field carries the albedo (texture or solid color).
-    fn sample(&self, _wo: Vec3, hit: &HitRecord, _rng: &mut dyn rand::Rng) -> Option<BsdfSample> {
+    fn sample(&self, _wo: Vec3, hit: &HitRecord, _sampler: &mut dyn Sampler) -> Option<BsdfSample> {
         let attenuation = self
             .tex
             .as_ref()

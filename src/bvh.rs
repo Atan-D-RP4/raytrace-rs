@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use rand::RngExt;
-
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::ray::Ray;
+use crate::sampler::Sampler;
 use crate::vec3::{Point3, Vec3};
 use tracing::{info, trace};
 
@@ -224,18 +223,18 @@ impl Hittable for BvhNode {
         }
     }
 
-    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
         match self {
             Self::Empty => Vec3::from(1., 0., 0.),
-            Self::Leaf { object, .. } => object.random(origin, rng),
+            Self::Leaf { object, .. } => object.random(origin, sampler),
             Self::Interior { left, right, .. } => {
                 let left_count = left.leaf_count() as f64;
                 let right_count = right.leaf_count() as f64;
                 let total = left_count + right_count;
-                if rng.random::<f64>() < left_count / total {
-                    left.random(origin, rng)
+                if sampler.get_next_1d() < left_count / total {
+                    left.random(origin, sampler)
                 } else {
-                    right.random(origin, rng)
+                    right.random(origin, sampler)
                 }
             }
         }

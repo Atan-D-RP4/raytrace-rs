@@ -2,6 +2,8 @@ use rand::RngExt;
 
 use std::ops::{Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Neg, Sub};
 
+use crate::sampler::Sampler;
+
 #[derive(Default, Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Vec3 {
     pub x: f64,
@@ -329,6 +331,22 @@ pub fn random_cosine_direction2<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     let (mut u, mut v) = (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0));
     while u * u + v * v >= 1.0 {
         (u, v) = (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0));
+    }
+
+    Vec3::from(u, v, (1.0 - u.powi(2) - v.powi(2)).sqrt())
+}
+
+#[inline(always)]
+pub fn sampler_cosine_direction(sampler: &mut dyn Sampler) -> Vec3 {
+    let (mut u, mut v) = (
+        sampler.get_next_1d() * 2.0 - 1.0,
+        sampler.get_next_1d() * 2.0 - 1.0,
+    );
+    while u * u + v * v >= 1.0 {
+        (u, v) = (
+            sampler.get_next_1d() * 2.0 - 1.0,
+            sampler.get_next_1d() * 2.0 - 1.0,
+        );
     }
 
     Vec3::from(u, v, (1.0 - u.powi(2) - v.powi(2)).sqrt())

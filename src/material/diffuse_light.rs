@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
+use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -29,7 +30,12 @@ pub struct DiffuseLightMaterial {
 
 impl Bsdf for DiffuseLightMaterial {
     /// Pure emitter — no scattering, always returns `None`.
-    fn sample(&self, _wo: Vec3, _hit: &HitRecord, _rng: &mut dyn rand::Rng) -> Option<BsdfSample> {
+    fn sample(
+        &self,
+        _wo: Vec3,
+        _hit: &HitRecord,
+        _sampler: &mut dyn Sampler,
+    ) -> Option<BsdfSample> {
         None
     }
 

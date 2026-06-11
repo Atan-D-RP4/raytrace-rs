@@ -24,10 +24,9 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use rand::RngExt;
-
 use crate::hittable::HitRecord;
 use crate::onb::Onb;
+use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
@@ -54,7 +53,7 @@ impl Bsdf for MetalMaterial {
     /// Importance-sample the GGX NDF: draw a half-vector H from the distribution,
     /// then reflect `wo` about H to get `wi`. Returns `None` if the reflected
     /// direction ends up below the surface.
-    fn sample(&self, wo: Vec3, hit: &HitRecord, rng: &mut dyn rand::Rng) -> Option<BsdfSample> {
+    fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample> {
         let albedo = self
             .tex
             .as_ref()
@@ -62,8 +61,8 @@ impl Bsdf for MetalMaterial {
             .unwrap_or(self.albedo);
         let alpha = (self.fuzz * self.fuzz).clamp(0.001, 1.0);
         // Sample H from GGX NDF.
-        let u1: f64 = rng.random();
-        let u2: f64 = rng.random();
+        let u1 = sampler.get_next_1d();
+        let u2 = sampler.get_next_1d();
         let cos_theta = ((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2))
             .clamp(0.0, 1.0)
             .sqrt();

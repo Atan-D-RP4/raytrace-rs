@@ -1,7 +1,7 @@
 use crate::interval::Interval;
 
 use crate::planar::Region2D;
-use rand::RngExt;
+use crate::sampler::Sampler;
 
 /// Region type for a full parallelogram (unit square in (a,b) space).
 #[derive(Clone)]
@@ -17,7 +17,7 @@ impl Region2D for QuadRegion {
         1.0
     }
 
-    fn sample(&self, rng: &mut dyn rand::Rng) -> (f64, f64) {
-        (rng.random::<f64>(), rng.random::<f64>())
+    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
+        (sampler.get_next_1d(), sampler.get_next_1d())
     }
 }

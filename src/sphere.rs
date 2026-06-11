@@ -1,14 +1,13 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use rand::RngExt;
-
 use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::onb::Onb;
 use crate::ray::Ray;
+use crate::sampler::Sampler;
 use crate::vec3::{Point3, Vec3};
 
 /// Sphere primitive (static or linearly moving over ray time).
@@ -68,9 +67,9 @@ impl Sphere {
         (u, v)
     }
 
-    fn random_to_sphere(&self, distance_squared: f64, rng: &mut dyn rand::Rng) -> Vec3 {
-        let r1 = rng.random::<f64>();
-        let r2 = rng.random::<f64>();
+    fn random_to_sphere(&self, distance_squared: f64, sampler: &mut dyn Sampler) -> Vec3 {
+        let r1 = sampler.get_next_1d();
+        let r2 = sampler.get_next_1d();
 
         let z = 1. + r2 * ((1. - (self.radius * self.radius) / distance_squared).sqrt() - 1.);
 
@@ -143,11 +142,11 @@ impl Hittable for Sphere {
         }
     }
 
-    fn random(&self, origin: Vec3, rng: &mut dyn rand::Rng) -> Vec3 {
+    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
         let direction_to_center = self.center.at(0.0) - origin;
         let distance_squared = direction_to_center.length_squared();
         let uvw = Onb::build_from_normal(direction_to_center);
 
-        uvw.local_to_world(self.random_to_sphere(distance_squared, rng))
+        uvw.local_to_world(self.random_to_sphere(distance_squared, sampler))
     }
 }

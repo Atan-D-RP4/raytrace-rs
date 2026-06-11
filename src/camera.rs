@@ -20,7 +20,7 @@ use crate::interval::Interval;
 use crate::material::PdfKind;
 use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
-use crate::sampler::{Sampler, SobolSeqSampler, StratifiedRandomSampler};
+use crate::sampler::{NaiveRandomSampler, Sampler, SobolSeqSampler};
 use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
@@ -251,16 +251,21 @@ impl Camera {
 
         let mut accum = vec![Color3::from(0.0, 0.0, 0.0); total_pixels];
 
-        // Per-pixel Sobol sampler — persists across passes so sample k
-        // of pixel (x, y) is always the k-th Sobol point for that pixel.
+        // Per-pixel Sobol for subpixel jitter. ray_color uses its own
+        // NaiveRandomSampler streams — variable path lengths would scramble
+        // the Sobol index space.
         let mut samplers: Vec<_> = (0..total_pixels)
             .map(|idx| {
                 SobolSeqSampler::for_pixel(idx as i32 % width as i32, idx as i32 / width as i32)
-                // StratifiedRandomSampler::new(self.samples_per_pixel as usize, rand::rng().random())
             })
             .collect();
 
         for sample_idx in 0..total_samples {
+            // Reset per-pixel samplers to the correct sequence position for this pass.
+            samplers
+                .iter_mut()
+                .for_each(|s| s.set_sample_index(sample_idx as u32));
+
             let pass_start = std::time::Instant::now();
             let _sample_span =
                 tracing::info_span!("render_pass", sample = sample_idx + 1).entered();
@@ -348,8 +353,7 @@ impl Camera {
         (self.image_width as u32, self.image_height as u32, output)
     }
 
-    // Constructs a time-sampled camera ray through a jittered pixel sample, using the provided
-    // sampler for subpixel sampling.
+    /// Constructs a time-sampled camera ray through a jittered pixel sample.
     fn get_ray_with_sampler<R: rand::Rng + ?Sized>(
         &self,
         u: f64,
@@ -396,6 +400,10 @@ impl Camera {
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
         let mut accumulated_color = Color3::from(0., 0., 0.);
 
+        // Independent streams for light and material sampling.
+        let mut light_sampler = NaiveRandomSampler::new();
+        let mut material_sampler = NaiveRandomSampler::new();
+
         for bounce in 0..depth {
             if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
                 let emission = record.material.emitted(&record);
@@ -417,7 +425,7 @@ impl Camera {
                     // non-absorbing volumes with albedo ≈ 1) survive at
                     // probability 1 — no artificial inflation from compensation.
                     // The 0.05 floor bounds variance from low-throughput paths.
-                    let survival = max_attenuation.max(0.05);
+                    let survival = max_attenuation.clamp(0.05, 1.0);
                     if rng.random::<f64>() > survival {
                         return accumulated_color;
                     }
@@ -426,7 +434,7 @@ impl Camera {
                 // Outgoing direction (away from surface).
                 let wo = -ray.direction.unit_vector();
 
-                if let Some(sample) = record.material.sample(wo, &record, rng) {
+                if let Some(sample) = record.material.sample(wo, &record, &mut material_sampler) {
                     if record.material.is_delta() {
                         // Delta distribution (perfect specular): use sampled
                         // direction directly — no MIS weighting needed.
@@ -452,7 +460,7 @@ impl Camera {
                         let pdfs: &[&dyn PDF] = &[&light_pdf, surface_pdf, surface_pdf];
                         let sampling_pdf = MixturePDF::new(pdfs);
 
-                        let direction = sampling_pdf.generate(rng);
+                        let direction = sampling_pdf.generate(&mut light_sampler);
                         // Unitize direction for BRDF evaluation — PlanarPatch::random() returns a
                         // non-unit vector (distance to light), and BRDFs expect unit-length
                         // incident directions.

@@ -1,8 +1,7 @@
 use std::f64::consts::PI;
 
-use rand::RngExt;
-
 use crate::planar::Region2D;
+use crate::sampler::Sampler;
 
 /// Region type for a rounded rectangle in `[-1, 1] × [-1, 1]` (a, b) parametric space.
 ///
@@ -33,11 +32,11 @@ impl Region2D for RoundedRectRegion {
         4.0 - (4.0 - PI) * self.radius * self.radius
     }
 
-    fn sample(&self, rng: &mut dyn rand::Rng) -> (f64, f64) {
+    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
         // Rejection in the [-1, 1] × [-1, 1] bbox — efficient for all radii.
         loop {
-            let a = rng.random_range(-1.0..1.0);
-            let b = rng.random_range(-1.0..1.0);
+            let a = sampler.get_next_1d() * 2.0 - 1.0;
+            let b = sampler.get_next_1d() * 2.0 - 1.0;
             if self.contains(a, b) {
                 return (a, b);
             }

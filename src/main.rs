@@ -257,8 +257,9 @@ impl ApplicationHandler for App {
 ///
 /// This function is intended for post-render output. It exits early
 /// unless `framebuffer.finished` is true.
-fn save_framebuffer_png(framebuffer: &SharedFramebuffer, filename: &str) {
-    let _span = tracing::info_span!("save_framebuffer_png", %filename).entered();
+fn save_framebuffer(framebuffer: &SharedFramebuffer, filename: &str) {
+    let _span = tracing::info_span!("save_framebuffer", %filename).entered();
+    let filename = format!("{}.png", filename);
 
     let Ok(fb) = framebuffer.read() else {
         error!("failed to lock framebuffer for saving");
@@ -278,7 +279,7 @@ fn save_framebuffer_png(framebuffer: &SharedFramebuffer, filename: &str) {
 
     info!(%filename, "saving image");
     profiling::scope!("image_save");
-    if let Err(error) = img.save(filename) {
+    if let Err(error) = img.save(&filename) {
         error!(%filename, ?error, "failed to save image");
     } else {
         info!(%filename, "image saved");
@@ -433,7 +434,7 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
         profiling::scope!("render");
         camera.render(&world, &*lights, Some(framebuffer.clone()));
 
-        save_framebuffer_png(&framebuffer, &scene_name);
+        save_framebuffer(&framebuffer, &scene_name);
         info!("render thread complete");
     });
 

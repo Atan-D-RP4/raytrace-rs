@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use rand::RngExt;
+use crate::sampler::Sampler;
 
 use super::Region2D;
 
@@ -24,11 +24,11 @@ impl Region2D for AnnulusRegion {
         PI * (1.0 - self.inner * self.inner)
     }
 
-    fn sample(&self, rng: &mut dyn rand::Rng) -> (f64, f64) {
+    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
         // Uniform sampling in the annulus via polar coordinates.
-        let r = (self.inner * self.inner + rng.random::<f64>() * (1.0 - self.inner * self.inner))
+        let r = (self.inner * self.inner + sampler.get_next_1d() * (1.0 - self.inner * self.inner))
             .sqrt();
-        let theta = rng.random::<f64>() * 2.0 * PI;
+        let theta = sampler.get_next_1d() * 2.0 * PI;
         (r * theta.cos(), r * theta.sin())
     }
 }

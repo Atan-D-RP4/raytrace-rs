@@ -1,8 +1,7 @@
 use std::f64::consts::PI;
 
-use rand::RngExt;
-
 use crate::planar::Region2D;
+use crate::sampler::Sampler;
 
 /// Region type for a superellipse `|a|^n + |b|^n ≤ 1`.
 ///
@@ -30,12 +29,12 @@ impl Region2D for SuperellipseRegion {
         4.0 * gamma(1.0 + 1.0 / self.n).powi(2) / gamma(1.0 + 2.0 / self.n)
     }
 
-    fn sample(&self, rng: &mut dyn rand::Rng) -> (f64, f64) {
+    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
         // Rejection in the [-1, 1] × [-1, 1] bbox. For n ≥ 2 the bbox
         // occupancy is ≥ π/4 ≈ 0.785, so rejection is efficient.
         loop {
-            let a = rng.random_range(-1.0..1.0);
-            let b = rng.random_range(-1.0..1.0);
+            let a = sampler.get_next_1d() * 2.0 - 1.0;
+            let b = sampler.get_next_1d() * 2.0 - 1.0;
             if self.contains(a, b) {
                 return (a, b);
             }

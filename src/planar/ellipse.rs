@@ -1,8 +1,7 @@
 use std::f64::consts::PI;
 
-use rand::RngExt;
-
 use crate::planar::Region2D;
+use crate::sampler::Sampler;
 
 /// Region type for a unit-disk ellipse in (a,b) space.
 #[derive(Clone)]
@@ -21,10 +20,10 @@ impl Region2D for EllipseRegion {
         PI
     }
 
-    fn sample(&self, rng: &mut dyn rand::Rng) -> (f64, f64) {
+    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
         // Uniform sampling in the unit disk via polar coordinates.
-        let r = rng.random::<f64>().sqrt();
-        let theta = rng.random::<f64>() * 2.0 * PI;
+        let r = sampler.get_next_1d().sqrt();
+        let theta = sampler.get_next_1d() * 2.0 * PI;
         (r * theta.cos(), r * theta.sin())
     }
 }

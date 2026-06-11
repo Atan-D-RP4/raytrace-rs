@@ -3,46 +3,45 @@ use std::f64::consts::PI;
 use crate::hittable::Hittable;
 use crate::material::ggx_d;
 use crate::onb::Onb;
+use crate::sampler::Sampler;
 use crate::vec3::reflect;
-use crate::vec3::{Point3, Vec3, random_cosine_direction};
-
-use rand::RngExt;
+use crate::vec3::{Point3, Vec3, sampler_cosine_direction};
 
 pub trait PDF {
     /// Evaluates the PDF value for a given direction.
     fn value(&self, direction: Vec3) -> f64;
 
     /// Generates a random direction according to the PDF.
-    fn generate(&self, rng: &mut dyn rand::Rng) -> Vec3;
+    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3;
 }
 
 pub struct UniformSpherePDF;
+
+#[allow(clippy::new_without_default)]
+impl UniformSpherePDF {
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl PDF for UniformSpherePDF {
     fn value(&self, _direction: Vec3) -> f64 {
         1.0 / (4.0 * std::f64::consts::PI)
     }
 
-    fn generate(&self, rng: &mut dyn rand::Rng) -> Vec3 {
+    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
         // Rejection sampling to generate a random unit vector uniformly distributed on the surface of the unit sphere.
         loop {
             let point = Vec3::from(
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
-                rng.random_range(-1.0..1.0),
+                sampler.get_next_1d() * 2.0 - 1.0,
+                sampler.get_next_1d() * 2.0 - 1.0,
+                sampler.get_next_1d() * 2.0 - 1.0,
             );
             let len_squared = point.length_squared();
             if 1e-160 < len_squared && len_squared <= 1.0 {
                 return point / len_squared.sqrt();
             }
         }
-    }
-}
-
-#[allow(clippy::new_without_default)]
-impl UniformSpherePDF {
-    pub const fn new() -> Self {
-        Self
     }
 }
 
@@ -65,8 +64,8 @@ impl PDF for CosinePDF {
         (cos_theta / PI).max(0.)
     }
 
-    fn generate(&self, rng: &mut dyn rand::Rng) -> Vec3 {
-        self.uvw.local_to_world(random_cosine_direction(rng))
+    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
+        self.uvw.local_to_world(sampler_cosine_direction(sampler))
     }
 }
 
@@ -86,8 +85,8 @@ impl<'a> PDF for HittablePDF<'a> {
         self.objects.pdf_value(self.origin, direction)
     }
 
-    fn generate(&self, rng: &mut dyn rand::Rng) -> Vec3 {
-        self.objects.random(self.origin, rng)
+    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
+        self.objects.random(self.origin, sampler)
     }
 }
 
@@ -108,7 +107,7 @@ impl PDF for DiracPDF {
         1.0
     }
 
-    fn generate(&self, _rng: &mut dyn rand::Rng) -> Vec3 {
+    fn generate(&self, _sampler: &mut dyn Sampler) -> Vec3 {
         self.direction
     }
 }
@@ -153,17 +152,17 @@ impl<'a> PDF for MixturePDF<'a> {
             .sum()
     }
 
-    fn generate(&self, rng: &mut dyn rand::Rng) -> Vec3 {
-        let r = rng.random::<f64>();
+    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
+        let r = sampler.get_next_1d();
         let mut cumulative = 0.0;
         for (pdf, &w) in self.pdfs.iter().zip(&self.weights) {
             cumulative += w;
             if r < cumulative {
-                return pdf.generate(rng);
+                return pdf.generate(sampler);
             }
         }
         // Fallback for floating-point edge case.
-        self.pdfs.last().unwrap().generate(rng)
+        self.pdfs.last().unwrap().generate(sampler)
     }
 }
 
@@ -221,11 +220,11 @@ impl PDF for GgxSamplePDF {
         d * cos_h_n / (4.0 * cos_h)
     }
 
-    fn generate(&self, rng: &mut dyn rand::Rng) -> Vec3 {
+    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
         // Sample H from the GGX distribution. In the local frame where the surface normal is +z,
         // this gives a half-vector distributed as D(H).
-        let u1: f64 = rng.random();
-        let u2: f64 = rng.random();
+        let u1: f64 = sampler.get_next_1d();
+        let u2: f64 = sampler.get_next_1d();
 
         let a = self.alpha;
         let cos_theta = ((1.0 - u2) / (1.0 + (a * a - 1.0) * u2))

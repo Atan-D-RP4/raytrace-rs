@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rand::RngExt;
 
 use crate::planar::Region2D;
+use crate::sampler::Sampler;
 
 /// Region type defined by an arbitrary `(a, b) -> bool` predicate (a math
 /// inequality, a set of inequalities, or any other condition).
@@ -69,12 +70,12 @@ impl Region2D for FunctionRegion {
         self.area
     }
 
-    fn sample(&self, rng: &mut dyn rand::Rng) -> (f64, f64) {
+    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
         // Rejection in the provided bbox.
         let (a_min, a_max, b_min, b_max) = self.bbox;
         loop {
-            let a = rng.random_range(a_min..a_max);
-            let b = rng.random_range(b_min..b_max);
+            let a = sampler.get_next_1d() * (a_max - a_min) + a_min;
+            let b = sampler.get_next_1d() * (b_max - b_min) + b_min;
             if (self.contains_fn)(a, b) {
                 return (a, b);
             }
