@@ -6,7 +6,7 @@ use crate::hittable::Hittable;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::sampler::Sampler;
+use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 
 mod annulus;
@@ -200,11 +200,10 @@ impl<R: Region2D> Hittable for PlanarPatch<R> {
         origin: Vec3,
         sampler: &dyn Sampler,
         sample_index: u32,
-        dim_offset: &mut u32,
+        dim_offset: &mut DimCursor,
     ) -> Vec3 {
-        let u = sampler.sample(sample_index, *dim_offset);
-        let v = sampler.sample(sample_index, *dim_offset + 1);
-        *dim_offset += 2;
+        let u = sampler.sample(sample_index, dim_offset.next_dim());
+        let v = sampler.sample(sample_index, dim_offset.next_dim());
         let (a, b) = self.region.sample(u, v);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
         random_point - origin

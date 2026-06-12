@@ -284,81 +284,38 @@ impl Sampler for StratifiedRandomSampler {
     }
 }
 
-/// Sequential adapter: `&dyn Sampler` + cursor for get_next_{1,2}d() API.
-pub struct SequentialSampler<'a> {
-    sampler: &'a dyn Sampler,
-    sample_index: u32,
-    cursor: u32,
+/// Auto-advancing dimension cursor for sequential sample access.
+///
+/// Replaces `&mut u32` with a safe wrapper that advances on each access,
+/// preventing dimension aliasing when callers forget to increment.
+///
+/// Use with `Sampler::sample(n, cursor.next())` to consume dimensions sequentially:
+///
+/// ```ignore
+/// let mut dims = DimCursor::new(4);
+/// let u = sampler.sample(n, dims.next());
+/// let v = sampler.sample(n, dims.next());
+/// // dims is now at offset 2; next caller starts at dim 6
+/// ```
+#[derive(Clone, Debug)]
+pub struct DimCursor {
+    base: u32,
+    offset: u32,
 }
 
-impl<'a> SequentialSampler<'a> {
-    pub fn new(sampler: &'a dyn Sampler, sample_index: u32) -> Self {
-        Self {
-            sampler,
-            sample_index,
-            cursor: 0,
-        }
+impl DimCursor {
+    /// Creates a cursor starting at dimension `base`.
+    #[inline(always)]
+    pub const fn new(base: u32) -> Self {
+        Self { base, offset: 0 }
     }
 
-    pub fn get_next_1d(&mut self) -> f64 {
-        let val = self.sampler.sample(self.sample_index, self.cursor);
-        self.cursor += 1;
-        val
-    }
-
-    pub fn get_next_2d(&mut self) -> [f64; 2] {
-        let x = self.sampler.sample(self.sample_index, self.cursor);
-        let y = self.sampler.sample(self.sample_index, self.cursor + 1);
-        self.cursor += 2;
-        [x, y]
-    }
-
-    pub fn set_sample_index(&mut self, sample_index: u32) {
-        self.sample_index = sample_index;
-        self.cursor = 0;
-    }
-
-    pub fn reset(&mut self) {
-        self.cursor = 0;
-    }
-}
-
-/// Borrowed sequential adapter (no lifetime issues for recursive code).
-pub struct SequentialSamplerMut<'a> {
-    sampler: &'a dyn Sampler,
-    sample_index: u32,
-    cursor: u32,
-}
-
-impl<'a> SequentialSamplerMut<'a> {
-    pub fn new(sampler: &'a dyn Sampler, sample_index: u32) -> Self {
-        Self {
-            sampler,
-            sample_index,
-            cursor: 0,
-        }
-    }
-
-    pub fn get_next_1d(&mut self) -> f64 {
-        let val = self.sampler.sample(self.sample_index, self.cursor);
-        self.cursor += 1;
-        val
-    }
-
-    pub fn get_next_2d(&mut self) -> [f64; 2] {
-        let x = self.sampler.sample(self.sample_index, self.cursor);
-        let y = self.sampler.sample(self.sample_index, self.cursor + 1);
-        self.cursor += 2;
-        [x, y]
-    }
-
-    pub fn set_sample_index(&mut self, sample_index: u32) {
-        self.sample_index = sample_index;
-        self.cursor = 0;
-    }
-
-    pub fn cursor(&self) -> u32 {
-        self.cursor
+    /// Returns the current dimension and advances by one.
+    #[inline(always)]
+    pub fn next_dim(&mut self) -> u32 {
+        let v = self.base + self.offset;
+        self.offset += 1;
+        v
     }
 }
 

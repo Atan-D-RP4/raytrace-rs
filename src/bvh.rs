@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::sampler::Sampler;
+use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 use tracing::{info, trace};
 
@@ -228,7 +228,7 @@ impl Hittable for BvhNode {
         origin: Vec3,
         sampler: &dyn Sampler,
         sample_index: u32,
-        dim_offset: &mut u32,
+        dim_offset: &mut DimCursor,
     ) -> Vec3 {
         match self {
             Self::Empty => Vec3::from(1., 0., 0.),
@@ -237,8 +237,7 @@ impl Hittable for BvhNode {
                 let left_count = left.leaf_count() as f64;
                 let right_count = right.leaf_count() as f64;
                 let total = left_count + right_count;
-                let u = sampler.sample(sample_index, *dim_offset);
-                *dim_offset += 1;
+                let u = sampler.sample(sample_index, dim_offset.next_dim());
                 if u < left_count / total {
                     left.random(origin, sampler, sample_index, dim_offset)
                 } else {

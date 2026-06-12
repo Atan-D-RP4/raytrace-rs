@@ -19,7 +19,7 @@ use crate::interval::Interval;
 use crate::material::PdfKind;
 use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
-use crate::sampler::{Sampler, SobolQmcSampler};
+use crate::sampler::{DimCursor, Sampler, SobolQmcSampler};
 use crate::vec3::{Color3, Point3, Vec3};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
@@ -250,13 +250,6 @@ impl Camera {
 
         let mut accum = vec![Color3::from(0.0, 0.0, 0.0); total_pixels];
 
-        // Per-pixel SobolQmcSampler — these are Sync, so we can use par_iter()
-        let samplers: Vec<_> = (0..total_pixels)
-            .map(|idx| {
-                SobolQmcSampler::for_pixel(idx as i32 % width as i32, idx as i32 / width as i32)
-            })
-            .collect();
-
         for sample_idx in 0..total_samples {
             let pass_start = std::time::Instant::now();
             let _sample_span =
@@ -265,19 +258,23 @@ impl Camera {
 
             accum
                 .par_iter_mut()
-                .zip(samplers.par_iter())
                 .enumerate()
-                .for_each(|(idx, (accum_color, sampler))| {
+                .for_each(|(idx, accum_color)| {
                     let i = (idx % width) as f64;
                     let j = (idx / width) as f64;
 
-                    let ray = self.get_ray(i, j, sampler, sample_idx as u32);
+                    // Deterministic per-pixel seed from pixel coordinates.
+                    let sampler = SobolQmcSampler::for_pixel(
+                        idx as i32 % width as i32,
+                        idx as i32 / width as i32,
+                    );
+                    let ray = self.get_ray(i, j, &sampler, sample_idx as u32);
                     let sample = self.ray_color(
                         &ray,
                         self.max_depth,
                         world,
                         lights,
-                        sampler,
+                        &sampler,
                         sample_idx as u32,
                     );
 
@@ -382,8 +379,8 @@ impl Camera {
     /// Iteratively traces/scatters up to `depth` bounces and multiplies
     /// attenuation along the path.
     ///
-    /// Per-bounce dims: +0 RR, +1-4 material, +5.. PDF (mixture + sub-PDF).
-    /// Ray setup uses dims 0-3.
+    /// Dimension usage: dims 0-3 in `get_ray` (AA jitter + defocus).
+    /// The `DimCursor` starts at 4, advancing per bounce for RR, material, and MIS samples.
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
@@ -400,6 +397,8 @@ impl Camera {
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
         let mut accumulated_color = Color3::from(0., 0., 0.);
 
+        let mut dims = DimCursor::new(4); // after ray setup dims (0-3 for AA + defocus)
+
         for bounce in 0..depth {
             if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
                 let emission = record.material.emitted(&record);
@@ -414,14 +413,11 @@ impl Camera {
                     return accumulated_color;
                 }
 
-                let dim_base = bounce as u32 * 8 + 4;
-
-                let rr = sampler.sample(sample_index, dim_base);
-                let u_mat = sampler.sample(sample_index, dim_base + 1);
-                let v_mat = sampler.sample(sample_index, dim_base + 2);
-                let w_mat = sampler.sample(sample_index, dim_base + 3);
-                let x_mat = sampler.sample(sample_index, dim_base + 4);
-                let mut pdf_dim = dim_base + 5;
+                let rr = sampler.sample(sample_index, dims.next_dim());
+                let u_mat = sampler.sample(sample_index, dims.next_dim());
+                let v_mat = sampler.sample(sample_index, dims.next_dim());
+                let w_mat = sampler.sample(sample_index, dims.next_dim());
+                let x_mat = sampler.sample(sample_index, dims.next_dim());
 
                 // Russian Roulette: survival probability proportional to current
                 // path throughput.  The 0.05 floor bounds variance from low-throughput paths.
@@ -440,8 +436,9 @@ impl Camera {
                     .material
                     .sample(wo, &record, u_mat, v_mat, w_mat, x_mat)
                 {
-                    // Delta material: use sampled direction directly — no MIS weighting needed.
-                    if record.material.is_delta() {
+                    // Per-sample delta routing: composed materials (Coated/Mix)
+                    // decide via pdf_kind, not a fixed material property.
+                    if matches!(sample.pdf_kind, PdfKind::Delta) {
                         accumulated_attenuation = accumulated_attenuation * sample.f_cos;
                         ray = Ray::new_with_time(record.point, sample.wi, ray.time);
                     } else {
@@ -456,7 +453,7 @@ impl Camera {
                                 alpha,
                             } => &GgxSamplePDF::new(ggx_wo, normal, alpha),
                             PdfKind::UniformSphere => &UniformSpherePDF::new(),
-                            // Delta materials are handled by the is_delta() branch above.
+                            // Delta is handled by the outer match on pdf_kind.
                             PdfKind::Delta => unreachable!(),
                         };
 
@@ -464,7 +461,7 @@ impl Camera {
                         let pdfs: &[&dyn PDF] = &[&light_pdf, surface_pdf, surface_pdf];
                         let sampling_pdf = MixturePDF::new(pdfs);
 
-                        let direction = sampling_pdf.generate(sampler, sample_index, &mut pdf_dim);
+                        let direction = sampling_pdf.generate(sampler, sample_index, &mut dims);
                         // Unitize for BRDF evaluation — PlanarPatch::random() returns a
                         // non-unit vector (distance to light), and BRDFs expect unit length.
                         let direction_unit = direction.unit_vector();

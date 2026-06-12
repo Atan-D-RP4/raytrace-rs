@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::sampler::Sampler;
+use crate::sampler::{DimCursor, Sampler};
 use crate::texture::TextureCoords;
 use crate::vec3::Vec3;
 
@@ -116,7 +116,7 @@ pub trait Hittable: Send + Sync {
         origin: Vec3,
         sampler: &dyn Sampler,
         sample_index: u32,
-        dim_offset: &mut u32,
+        dim_offset: &mut DimCursor,
     ) -> Vec3 {
         let _ = (origin, sampler, sample_index, dim_offset);
         Vec3::from(1., 0., 0.)
@@ -155,14 +155,13 @@ impl<T: Hittable> Hittable for Vec<T> {
         origin: Vec3,
         sampler: &dyn Sampler,
         sample_index: u32,
-        dim_offset: &mut u32,
+        dim_offset: &mut DimCursor,
     ) -> Vec3 {
         if self.is_empty() {
             return Vec3::ZERO;
         }
         let len = self.len();
-        let u = sampler.sample(sample_index, *dim_offset);
-        *dim_offset += 1;
+        let u = sampler.sample(sample_index, dim_offset.next_dim());
         let index = (u * len as f64).min(len as f64 - 1e-15) as usize;
         self[index].random(origin, sampler, sample_index, dim_offset)
     }
@@ -188,7 +187,7 @@ impl<T: Hittable + ?Sized> Hittable for Arc<T> {
         origin: Vec3,
         sampler: &dyn Sampler,
         sample_index: u32,
-        dim_offset: &mut u32,
+        dim_offset: &mut DimCursor,
     ) -> Vec3 {
         (**self).random(origin, sampler, sample_index, dim_offset)
     }

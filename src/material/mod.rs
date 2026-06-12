@@ -81,7 +81,7 @@ use std::sync::Arc;
 
 use crate::hittable::HitRecord;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect};
 
 /// Result of material sampling for a single bounce.
 ///
@@ -302,14 +302,33 @@ impl Material {
                 let chosen: &dyn Bsdf = if u < *weight { b.as_ref() } else { a.as_ref() };
                 chosen.sample(wo, record, v, w, x, 0.0)
             }
-            Material::Coated { substrate, coating } => {
+            Material::Coated {
+                substrate,
+                coating: _,
+            } => {
                 let cos_o = wo.dot(&record.normal).abs();
-                let coat_ior = 1.5;
-                let f = fresnel_schlick(cos_o, coat_ior);
+                let f = fresnel_schlick(cos_o, 1.5);
                 if u < f {
-                    coating.sample(wo, record, v, w, x, 0.0)
+                    // Compute coating reflection directly — delegating to the
+                    // dielectric's sample() would apply a second Fresnel check
+                    // (on dimension v) causing double-counting or selecting
+                    // refraction when the outer branch already chose reflection.
+                    //
+                    // MC weight: Fresnel f is both branch probability and delta
+                    // BSDF value (lossless dielectric), so f/f = 1.
+                    let wi = reflect(&-wo, &record.normal);
+                    Some(BsdfSample {
+                        wi,
+                        f_cos: Color3::from(1., 1., 1.),
+                        pdf: 1.0,
+                        pdf_kind: PdfKind::Delta,
+                    })
                 } else {
-                    substrate.sample(wo, record, v, w, x, 0.0)
+                    // Transmit through coating; importance-sample substrate with
+                    // transmission probability (1-f) weight.
+                    let mut bsdf = substrate.sample(wo, record, v, w, x, 0.0)?;
+                    bsdf.f_cos /= 1.0 - f;
+                    Some(bsdf)
                 }
             }
         }
@@ -404,12 +423,14 @@ impl Material {
     /// evaluated at arbitrary directions — the integrator must use the
     /// sampled direction directly without MIS weighting.
     ///
-    /// Recursively checks composition variants.
+    /// For composition variants ([`Mix`], [`Coated`]), this always returns
+    /// `false` because delta-ness is per-sample — the integrator checks
+    /// [`BsdfSample::pdf_kind`] after sampling to decide the path.
     pub fn is_delta(&self) -> bool {
         match self {
             Material::Dielectric(_) => true,
-            Material::Mix { a, b, .. } => a.is_delta() || b.is_delta(),
-            Material::Coated { substrate, coating } => substrate.is_delta() || coating.is_delta(),
+            // Compositions route delta per-sample via pdf_kind.
+            Material::Mix { .. } | Material::Coated { .. } => false,
             _ => false,
         }
     }

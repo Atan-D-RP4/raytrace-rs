@@ -2,7 +2,7 @@ use crate::aabb::Aabb;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::sampler::Sampler;
+use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 
 /// A geometric transform that can map rays, hit records, and bounds.
@@ -83,7 +83,7 @@ where
         origin: Vec3,
         sampler: &dyn Sampler,
         sample_index: u32,
-        dim_offset: &mut u32,
+        dim_offset: &mut DimCursor,
     ) -> Vec3 {
         // Transform origin to object space via a dummy ray.
         let to_obj = self

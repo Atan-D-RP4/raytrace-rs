@@ -7,7 +7,7 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::onb::Onb;
 use crate::ray::Ray;
-use crate::sampler::Sampler;
+use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 
 /// Sphere primitive (static or linearly moving over ray time).
@@ -144,14 +144,13 @@ impl Hittable for Sphere {
         origin: Vec3,
         sampler: &dyn Sampler,
         sample_index: u32,
-        dim_offset: &mut u32,
+        dim_offset: &mut DimCursor,
     ) -> Vec3 {
         let direction_to_center = self.center.at(0.0) - origin;
         let distance_squared = direction_to_center.length_squared();
         let uvw = Onb::build_from_normal(direction_to_center);
-        let r1 = sampler.sample(sample_index, *dim_offset);
-        let r2 = sampler.sample(sample_index, *dim_offset + 1);
-        *dim_offset += 2;
+        let r1 = sampler.sample(sample_index, dim_offset.next_dim());
+        let r2 = sampler.sample(sample_index, dim_offset.next_dim());
         uvw.local_to_world(self.random_to_sphere(distance_squared, r1, r2))
     }
 }

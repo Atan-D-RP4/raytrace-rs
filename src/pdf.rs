@@ -3,7 +3,7 @@ use std::f64::consts::PI;
 use crate::hittable::Hittable;
 use crate::material::ggx_d;
 use crate::onb::Onb;
-use crate::sampler::Sampler;
+use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::cosine_hemisphere_direction;
 use crate::vec3::reflect;
 use crate::vec3::{Point3, Vec3};
@@ -13,7 +13,12 @@ pub trait PDF {
     fn value(&self, direction: Vec3) -> f64;
 
     /// Generates a random direction according to the PDF.
-    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3;
+    fn generate(
+        &self,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut DimCursor,
+    ) -> Vec3;
 }
 
 pub struct UniformSpherePDF;
@@ -30,10 +35,14 @@ impl PDF for UniformSpherePDF {
         1.0 / (4.0 * std::f64::consts::PI)
     }
 
-    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
-        let u = sampler.sample(sample_index, *dim_offset);
-        let v = sampler.sample(sample_index, *dim_offset + 1);
-        *dim_offset += 2;
+    fn generate(
+        &self,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut DimCursor,
+    ) -> Vec3 {
+        let u = sampler.sample(sample_index, dim_offset.next_dim());
+        let v = sampler.sample(sample_index, dim_offset.next_dim());
         let phi = 2.0 * std::f64::consts::PI * u;
         let z = 1.0 - 2.0 * v;
         let r = (1.0 - z * z).max(0.0).sqrt();
@@ -60,10 +69,14 @@ impl PDF for CosinePDF {
         (cos_theta / PI).max(0.)
     }
 
-    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
-        let u = sampler.sample(sample_index, *dim_offset);
-        let v = sampler.sample(sample_index, *dim_offset + 1);
-        *dim_offset += 2;
+    fn generate(
+        &self,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut DimCursor,
+    ) -> Vec3 {
+        let u = sampler.sample(sample_index, dim_offset.next_dim());
+        let v = sampler.sample(sample_index, dim_offset.next_dim());
         self.uvw.local_to_world(cosine_hemisphere_direction(u, v))
     }
 }
@@ -84,7 +97,12 @@ impl<'a> PDF for HittablePDF<'a> {
         self.objects.pdf_value(self.origin, direction)
     }
 
-    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
+    fn generate(
+        &self,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut DimCursor,
+    ) -> Vec3 {
         self.objects
             .random(self.origin, sampler, sample_index, dim_offset)
     }
@@ -107,7 +125,12 @@ impl PDF for DiracPDF {
         1.0
     }
 
-    fn generate(&self, _sampler: &dyn Sampler, _sample_index: u32, _dim_offset: &mut u32) -> Vec3 {
+    fn generate(
+        &self,
+        _sampler: &dyn Sampler,
+        _sample_index: u32,
+        _dim_offset: &mut DimCursor,
+    ) -> Vec3 {
         self.direction
     }
 }
@@ -152,9 +175,13 @@ impl<'a> PDF for MixturePDF<'a> {
             .sum()
     }
 
-    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
-        let u = sampler.sample(sample_index, *dim_offset);
-        *dim_offset += 1;
+    fn generate(
+        &self,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut DimCursor,
+    ) -> Vec3 {
+        let u = sampler.sample(sample_index, dim_offset.next_dim());
         let mut cumulative = 0.0;
         for (pdf, &weight) in self.pdfs.iter().zip(&self.weights) {
             cumulative += weight;
@@ -223,12 +250,14 @@ impl PDF for GgxSamplePDF {
         d * cos_h_n / (4.0 * cos_h)
     }
 
-    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
-        let u = sampler.sample(sample_index, *dim_offset);
-        let v = sampler.sample(sample_index, *dim_offset + 1);
-        *dim_offset += 2;
-        let u1 = u;
-        let u2 = v;
+    fn generate(
+        &self,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut DimCursor,
+    ) -> Vec3 {
+        let u1 = sampler.sample(sample_index, dim_offset.next_dim());
+        let u2 = sampler.sample(sample_index, dim_offset.next_dim());
 
         let a = self.alpha;
         let cos_theta = ((1.0 - u2) / (1.0 + (a * a - 1.0) * u2))
