@@ -1,3 +1,7 @@
 /target
 *.png
 *.ppm
+*.jpeg
+*.jpg
+*.bmp
+*.tiff
