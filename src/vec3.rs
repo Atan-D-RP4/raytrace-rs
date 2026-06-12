@@ -2,8 +2,6 @@ use rand::RngExt;
 
 use std::ops::{Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Neg, Sub};
 
-use crate::sampler::Sampler;
-
 #[derive(Default, Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Vec3 {
     pub x: f64,
@@ -336,20 +334,44 @@ pub fn random_cosine_direction2<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     Vec3::from(u, v, (1.0 - u.powi(2) - v.powi(2)).sqrt())
 }
 
+/// Cosine-weighted hemisphere direction via concentric disk mapping.
+///
+/// Takes two uniform random values `(u, v)` in `[0, 1)` and returns a direction
+/// on the unit hemisphere with PDF `cos(θ) / π`. The concentric disk mapping
+/// avoids the rejection sampling of `sampler_cosine_direction`.
+///
+/// Reference: Shirley & Chiu, "A Low Distortion Map Between Disk and Square", 1997.
 #[inline(always)]
-pub fn sampler_cosine_direction(sampler: &mut dyn Sampler) -> Vec3 {
-    let (mut u, mut v) = (
-        sampler.get_next_1d() * 2.0 - 1.0,
-        sampler.get_next_1d() * 2.0 - 1.0,
-    );
-    while u * u + v * v >= 1.0 {
-        (u, v) = (
-            sampler.get_next_1d() * 2.0 - 1.0,
-            sampler.get_next_1d() * 2.0 - 1.0,
-        );
+pub fn cosine_hemisphere_direction(u: f64, v: f64) -> Vec3 {
+    // Concentric disk mapping: map (u,v) in [0,1)^2 to (x,y) on the unit disk.
+    let (x, y) = concentric_disk(u, v);
+    Vec3::from(x, y, (1.0 - x * x - y * y).max(0.0).sqrt())
+}
+
+/// Shirley concentric disk mapping: maps `(u, v)` in `[0, 1)²` to a point on the
+/// unit disk. Zero rejection, minimal distortion.
+#[inline(always)]
+fn concentric_disk(u: f64, v: f64) -> (f64, f64) {
+    // Map to [-1, 1]²
+    let sx = 2.0 * u - 1.0;
+    let sy = 2.0 * v - 1.0;
+
+    // Handle degenerate case at origin
+    if sx == 0.0 && sy == 0.0 {
+        return (0.0, 0.0);
     }
 
-    Vec3::from(u, v, (1.0 - u.powi(2) - v.powi(2)).sqrt())
+    let (x, y) = if sx.abs() > sy.abs() {
+        let r = sx;
+        let phi = std::f64::consts::FRAC_PI_4 * (sy / sx);
+        (r * phi.cos(), r * phi.sin())
+    } else {
+        let r = sy;
+        let phi = std::f64::consts::FRAC_PI_4 * (sx / sy);
+        (r * phi.cos(), r * phi.sin())
+    };
+
+    (x, y)
 }
 
 #[inline(always)]

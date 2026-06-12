@@ -223,18 +223,26 @@ impl Hittable for BvhNode {
         }
     }
 
-    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
+    fn random(
+        &self,
+        origin: Vec3,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut u32,
+    ) -> Vec3 {
         match self {
             Self::Empty => Vec3::from(1., 0., 0.),
-            Self::Leaf { object, .. } => object.random(origin, sampler),
+            Self::Leaf { object, .. } => object.random(origin, sampler, sample_index, dim_offset),
             Self::Interior { left, right, .. } => {
                 let left_count = left.leaf_count() as f64;
                 let right_count = right.leaf_count() as f64;
                 let total = left_count + right_count;
-                if sampler.get_next_1d() < left_count / total {
-                    left.random(origin, sampler)
+                let u = sampler.sample(sample_index, *dim_offset);
+                *dim_offset += 1;
+                if u < left_count / total {
+                    left.random(origin, sampler, sample_index, dim_offset)
                 } else {
-                    right.random(origin, sampler)
+                    right.random(origin, sampler, sample_index, dim_offset)
                 }
             }
         }

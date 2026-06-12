@@ -11,7 +11,6 @@
 
 use std::sync::{Arc, RwLock};
 
-use rand::RngExt;
 use rayon::prelude::*;
 use tracing::info;
 
@@ -20,8 +19,8 @@ use crate::interval::Interval;
 use crate::material::PdfKind;
 use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
-use crate::sampler::{NaiveRandomSampler, Sampler, SobolSeqSampler};
-use crate::vec3::{Color3, Point3, Vec3, random_in_unit_disk_with_rng};
+use crate::sampler::{Sampler, SobolQmcSampler};
+use crate::vec3::{Color3, Point3, Vec3};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
 ///
@@ -251,21 +250,14 @@ impl Camera {
 
         let mut accum = vec![Color3::from(0.0, 0.0, 0.0); total_pixels];
 
-        // Per-pixel Sobol for subpixel jitter. ray_color uses its own
-        // NaiveRandomSampler streams — variable path lengths would scramble
-        // the Sobol index space.
-        let mut samplers: Vec<_> = (0..total_pixels)
+        // Per-pixel SobolQmcSampler — these are Sync, so we can use par_iter()
+        let samplers: Vec<_> = (0..total_pixels)
             .map(|idx| {
-                SobolSeqSampler::for_pixel(idx as i32 % width as i32, idx as i32 / width as i32)
+                SobolQmcSampler::for_pixel(idx as i32 % width as i32, idx as i32 / width as i32)
             })
             .collect();
 
         for sample_idx in 0..total_samples {
-            // Reset per-pixel samplers to the correct sequence position for this pass.
-            samplers
-                .iter_mut()
-                .for_each(|s| s.set_sample_index(sample_idx as u32));
-
             let pass_start = std::time::Instant::now();
             let _sample_span =
                 tracing::info_span!("render_pass", sample = sample_idx + 1).entered();
@@ -273,15 +265,21 @@ impl Camera {
 
             accum
                 .par_iter_mut()
-                .zip(samplers.par_iter_mut())
+                .zip(samplers.par_iter())
                 .enumerate()
                 .for_each(|(idx, (accum_color, sampler))| {
-                    let mut rng = rand::rng();
                     let i = (idx % width) as f64;
                     let j = (idx / width) as f64;
 
-                    let ray = self.get_ray_with_sampler(i, j, &mut rng, sampler);
-                    let sample = self.ray_color(&ray, self.max_depth, world, lights, &mut rng);
+                    let ray = self.get_ray(i, j, sampler, sample_idx as u32);
+                    let sample = self.ray_color(
+                        &ray,
+                        self.max_depth,
+                        world,
+                        lights,
+                        sampler,
+                        sample_idx as u32,
+                    );
 
                     if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
                         *accum_color += sample;
@@ -292,8 +290,8 @@ impl Camera {
             if let Some(ref fb) = framebuffer {
                 let scale = 1.0 / (sample_idx + 1) as f64;
                 profiling::scope!("progressive_tonemap");
-                // TODO(opt-preview): reuse scratch buffer (`rgb`) across passes instead of
-                // re-allocating each pass — reduces allocator pressure during long renders.
+                // TODO(opt-preview): reuse scratch buffer across passes to reduce
+                // allocator pressure during long renders.
                 let mut rgb = vec![0u8; total_pixels * 3];
                 for (idx, color) in accum.iter().enumerate() {
                     post_process(*color * scale, self.exposure, self.tone_map)
@@ -302,8 +300,8 @@ impl Camera {
                         .for_each(|(c, out)| rgb[idx * 3 + c] = *out);
                 }
 
-                // TODO(opt-preview): publish every N passes (adaptive cadence) to reduce lock contention.
-                // Keep frequent updates early, slower cadence late for better throughput.
+                // TODO(opt-preview): publish every N passes (adaptive cadence) to reduce
+                // lock contention.  Keep frequent updates early, slower cadence late.
                 profiling::scope!("progressive_publish");
                 if let Ok(mut guard) = fb.write() {
                     guard.width = self.image_width as u32;
@@ -353,56 +351,54 @@ impl Camera {
         (self.image_width as u32, self.image_height as u32, output)
     }
 
-    /// Constructs a time-sampled camera ray through a jittered pixel sample.
-    fn get_ray_with_sampler<R: rand::Rng + ?Sized>(
-        &self,
-        u: f64,
-        v: f64,
-        rng: &mut R,
-        sampler: &mut dyn Sampler,
-    ) -> Ray {
-        // Construct a camera ray originating from the defocus disk and directed at a randomly
-        // sampled point around the pixel location i, j.
-        let offset = sampler.get_next_2d();
+    /// Camera ray through pixel (i, j). Dims 0-1 = AA jitter, 2-3 = defocus.
+    fn get_ray(&self, i: f64, j: f64, sampler: &dyn Sampler, sample_index: u32) -> Ray {
+        let offset_u = sampler.sample(sample_index, 0);
+        let offset_v = sampler.sample(sample_index, 1);
+
         let pixel_sample = self.pixel00_loc
-            + ((u + offset[0]) * self.pixel_delta_u)
-            + ((v + offset[1]) * self.pixel_delta_v);
+            + ((i + offset_u) * self.pixel_delta_u)
+            + ((j + offset_v) * self.pixel_delta_v);
 
         let ray_origin = if self.defocus_angle <= 0. {
             self.look_from
         } else {
-            self.defocus_disk_sample(rng)
+            // Sample a point on the defocus disk for depth-of-field ray origins.
+            let r = sampler.sample(sample_index, 2).sqrt();
+            let theta = sampler.sample(sample_index, 3) * 2.0 * std::f64::consts::PI;
+            let px = r * theta.cos();
+            let py = r * theta.sin();
+            self.look_from + (px * self.defocus_disk_u) + (py * self.defocus_disk_v)
         };
-        let ray_direction = pixel_sample - ray_origin;
 
+        let ray_direction = pixel_sample - ray_origin;
         // The center of the camera is the ray origin, and the ray direction is the vector from the
         // camera center to the pixel sample location.
-        Ray::new_with_time(ray_origin, ray_direction, rng.random::<f64>())
+        Ray::new_with_time(ray_origin, ray_direction, 0.0)
     }
 
     /// Reference CPU Monte-Carlo path-tracing integrator.
     ///
     /// Iteratively traces/scatters up to `depth` bounces and multiplies
-    /// attenuation along the path. Returns sky/background gradient on miss.
+    /// attenuation along the path.
+    ///
+    /// Per-bounce dims: +0 RR, +1-4 material, +5.. PDF (mixture + sub-PDF).
+    /// Ray setup uses dims 0-3.
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
-    fn ray_color<R: rand::Rng>(
+    fn ray_color(
         &self,
         initial_ray: &Ray,
         depth: i32,
         world: &dyn Hittable,
         lights: &dyn Hittable,
-        rng: &mut R,
+        sampler: &dyn Sampler,
+        sample_index: u32,
     ) -> Color3 {
-        // TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
         let mut accumulated_color = Color3::from(0., 0., 0.);
-
-        // Independent streams for light and material sampling.
-        let mut light_sampler = NaiveRandomSampler::new();
-        let mut material_sampler = NaiveRandomSampler::new();
 
         for bounce in 0..depth {
             if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
@@ -418,15 +414,20 @@ impl Camera {
                     return accumulated_color;
                 }
 
-                // If we've exceeded the ray bounce limit, no more light is gathered.
+                let dim_base = bounce as u32 * 8 + 4;
+
+                let rr = sampler.sample(sample_index, dim_base);
+                let u_mat = sampler.sample(sample_index, dim_base + 1);
+                let v_mat = sampler.sample(sample_index, dim_base + 2);
+                let w_mat = sampler.sample(sample_index, dim_base + 3);
+                let x_mat = sampler.sample(sample_index, dim_base + 4);
+                let mut pdf_dim = dim_base + 5;
+
+                // Russian Roulette: survival probability proportional to current
+                // path throughput.  The 0.05 floor bounds variance from low-throughput paths.
                 if bounce >= 5 {
-                    // Russian Roulette: survival probability proportional to
-                    // current path throughput. High-throughput paths (e.g.,
-                    // non-absorbing volumes with albedo ≈ 1) survive at
-                    // probability 1 — no artificial inflation from compensation.
-                    // The 0.05 floor bounds variance from low-throughput paths.
                     let survival = max_attenuation.clamp(0.05, 1.0);
-                    if rng.random::<f64>() > survival {
+                    if rr > survival {
                         return accumulated_color;
                     }
                     accumulated_attenuation /= survival;
@@ -434,10 +435,13 @@ impl Camera {
                 // Outgoing direction (away from surface).
                 let wo = -ray.direction.unit_vector();
 
-                if let Some(sample) = record.material.sample(wo, &record, &mut material_sampler) {
+                // TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
+                if let Some(sample) = record
+                    .material
+                    .sample(wo, &record, u_mat, v_mat, w_mat, x_mat)
+                {
+                    // Delta material: use sampled direction directly — no MIS weighting needed.
                     if record.material.is_delta() {
-                        // Delta distribution (perfect specular): use sampled
-                        // direction directly — no MIS weighting needed.
                         accumulated_attenuation = accumulated_attenuation * sample.f_cos;
                         ray = Ray::new_with_time(record.point, sample.wi, ray.time);
                     } else {
@@ -460,10 +464,9 @@ impl Camera {
                         let pdfs: &[&dyn PDF] = &[&light_pdf, surface_pdf, surface_pdf];
                         let sampling_pdf = MixturePDF::new(pdfs);
 
-                        let direction = sampling_pdf.generate(&mut light_sampler);
-                        // Unitize direction for BRDF evaluation — PlanarPatch::random() returns a
-                        // non-unit vector (distance to light), and BRDFs expect unit-length
-                        // incident directions.
+                        let direction = sampling_pdf.generate(sampler, sample_index, &mut pdf_dim);
+                        // Unitize for BRDF evaluation — PlanarPatch::random() returns a
+                        // non-unit vector (distance to light), and BRDFs expect unit length.
                         let direction_unit = direction.unit_vector();
                         let scattered = Ray::new_with_time(record.point, direction, ray.time);
                         let pdf_val = sampling_pdf.value(direction_unit);
@@ -492,12 +495,6 @@ impl Camera {
         }
 
         accumulated_color
-    }
-
-    /// Samples a point on the defocus disk for depth-of-field ray origins.
-    fn defocus_disk_sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> Vec3 {
-        let point = random_in_unit_disk_with_rng(rng);
-        self.look_from + (point.x * self.defocus_disk_u) + (point.y * self.defocus_disk_v)
     }
 }
 

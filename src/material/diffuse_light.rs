@@ -12,7 +12,6 @@
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
-use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -34,7 +33,10 @@ impl Bsdf for DiffuseLightMaterial {
         &self,
         _wo: Vec3,
         _hit: &HitRecord,
-        _sampler: &mut dyn Sampler,
+        _u: f64,
+        _v: f64,
+        _w: f64,
+        _x: f64,
     ) -> Option<BsdfSample> {
         None
     }

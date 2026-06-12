@@ -14,7 +14,6 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
-use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -34,7 +33,15 @@ impl Bsdf for IsotropicMaterial {
     /// Returns the attenuation color (texture or solid albedo) with `Vec3::ZERO`
     /// as a placeholder direction. The integrator generates the actual scattered
     /// direction.
-    fn sample(&self, _wo: Vec3, hit: &HitRecord, _sampler: &mut dyn Sampler) -> Option<BsdfSample> {
+    fn sample(
+        &self,
+        _wo: Vec3,
+        hit: &HitRecord,
+        _u: f64,
+        _v: f64,
+        _w: f64,
+        _x: f64,
+    ) -> Option<BsdfSample> {
         let attenuation = self
             .tex
             .as_ref()

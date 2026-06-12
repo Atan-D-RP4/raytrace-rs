@@ -1,7 +1,6 @@
 use std::f64::consts::PI;
 
 use crate::planar::Region2D;
-use crate::sampler::Sampler;
 
 /// Region type for a superellipse `|a|^n + |b|^n ≤ 1`.
 ///
@@ -29,16 +28,16 @@ impl Region2D for SuperellipseRegion {
         4.0 * gamma(1.0 + 1.0 / self.n).powi(2) / gamma(1.0 + 2.0 / self.n)
     }
 
-    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
-        // Rejection in the [-1, 1] × [-1, 1] bbox. For n ≥ 2 the bbox
-        // occupancy is ≥ π/4 ≈ 0.785, so rejection is efficient.
-        loop {
-            let a = sampler.get_next_1d() * 2.0 - 1.0;
-            let b = sampler.get_next_1d() * 2.0 - 1.0;
-            if self.contains(a, b) {
-                return (a, b);
-            }
-        }
+    fn bounding_box_area(&self) -> f64 {
+        4.0 // uniform over [-1,1]²
+    }
+
+    fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+        // Sample uniformly in the bounding square [-1, 1]²; pdf_value uses
+        // bounding_box_area so the MIS weight is unbiased regardless.
+        let a = u * 2.0 - 1.0;
+        let b = v * 2.0 - 1.0;
+        (a, b)
     }
 }
 

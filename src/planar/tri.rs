@@ -1,5 +1,4 @@
 use crate::planar::Region2D;
-use crate::sampler::Sampler;
 
 /// Region type for a triangle (a ≥ 0, b ≥ 0, a+b ≤ 1).
 #[derive(Clone)]
@@ -14,13 +13,10 @@ impl Region2D for TriRegion {
         0.5
     }
 
-    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
-        // Barycentric sampling for uniform triangle distribution.
-        let r1: f64 = sampler.get_next_1d();
-        let r2: f64 = sampler.get_next_1d();
-        let sqrt_r1 = r1.sqrt();
-        let a = 1.0 - sqrt_r1;
-        let b = r2 * sqrt_r1;
+    fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+        let sqrt_u = u.sqrt();
+        let a = 1.0 - sqrt_u;
+        let b = v * sqrt_u;
         (a, b)
     }
 }

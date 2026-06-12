@@ -40,7 +40,7 @@
 //! struct MyCustomBrdf { ... }
 //!
 //! impl Bsdf for MyCustomBrdf {
-//!     fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample> { ... }
+//!     fn sample(&self, wo: Vec3, hit: &HitRecord, _u: f64, _v: f64, _w: f64, _x: f64) -> Option<BsdfSample> { ... }
 //!     fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 { ... }
 //!     fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 { ... }
 //! }
@@ -80,7 +80,6 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::HitRecord;
-use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -132,23 +131,25 @@ pub enum PdfKind {
     Delta,
 }
 
-/// Trait for BSDF implementations.
+/// BSDF sampling interface.
 ///
-/// This trait is **public** so library consumers can implement custom
-/// materials. The methods correspond to the standard BSDF interface:
-///
-/// - `sample()` — generate a direction sample from the material's distribution
-/// - `eval()` — evaluate the BSDF at an externally-chosen direction (for MIS)
-/// - `pdf()` — evaluate the material's sampling PDF at a direction
-/// - `emitted()` — emission contribution (only for light sources)
-/// - `gpu_node()` — optional GPU serialization (returns `None` for custom materials)
+/// Public so library consumers can implement custom materials.
+/// See [`Material`] for how built-in materials implement this trait.
 pub trait Bsdf: Send + Sync {
     /// Sample an outgoing direction for the given outgoing direction and hit.
     ///
     /// Returns `None` for materials that don't scatter (e.g., pure emitters).
     /// The returned [`BsdfSample`] contains the direction, BSDF × cosine,
     /// and PDF — all from the same internal sample.
-    fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample>;
+    fn sample(
+        &self,
+        wo: Vec3,
+        hit: &HitRecord,
+        u: f64,
+        v: f64,
+        w: f64,
+        x: f64,
+    ) -> Option<BsdfSample>;
 
     /// Evaluate the BSDF for an outgoing→incoming direction pair.
     ///
@@ -284,32 +285,31 @@ impl Material {
         &self,
         wo: Vec3,
         record: &HitRecord,
-        sampler: &mut dyn Sampler,
+        u: f64,
+        v: f64,
+        w: f64,
+        x: f64,
     ) -> Option<BsdfSample> {
         match self {
-            Material::Lambertian(inner) => inner.sample(wo, record, sampler),
-            Material::Metal(inner) => inner.sample(wo, record, sampler),
-            Material::Dielectric(inner) => inner.sample(wo, record, sampler),
-            Material::DiffuseLight(inner) => inner.sample(wo, record, sampler),
-            Material::Isotropic(inner) => inner.sample(wo, record, sampler),
-            Material::Glossy(inner) => inner.sample(wo, record, sampler),
-            Material::Custom(inner) => inner.sample(wo, record, sampler),
+            Material::Lambertian(inner) => inner.sample(wo, record, u, v, w, x),
+            Material::Metal(inner) => inner.sample(wo, record, u, v, w, x),
+            Material::Dielectric(inner) => inner.sample(wo, record, u, v, w, x),
+            Material::DiffuseLight(inner) => inner.sample(wo, record, u, v, w, x),
+            Material::Isotropic(inner) => inner.sample(wo, record, u, v, w, x),
+            Material::Glossy(inner) => inner.sample(wo, record, u, v, w, x),
+            Material::Custom(inner) => inner.sample(wo, record, u, v, w, x),
             Material::Mix { a, b, weight } => {
-                let chosen: &dyn Bsdf = if sampler.get_next_1d() < *weight {
-                    b.as_ref()
-                } else {
-                    a.as_ref()
-                };
-                chosen.sample(wo, record, sampler)
+                let chosen: &dyn Bsdf = if u < *weight { b.as_ref() } else { a.as_ref() };
+                chosen.sample(wo, record, v, w, x, 0.0)
             }
             Material::Coated { substrate, coating } => {
                 let cos_o = wo.dot(&record.normal).abs();
                 let coat_ior = 1.5;
                 let f = fresnel_schlick(cos_o, coat_ior);
-                if sampler.get_next_1d() < f {
-                    coating.sample(wo, record, sampler)
+                if u < f {
+                    coating.sample(wo, record, v, w, x, 0.0)
                 } else {
-                    substrate.sample(wo, record, sampler)
+                    substrate.sample(wo, record, v, w, x, 0.0)
                 }
             }
         }
@@ -416,8 +416,16 @@ impl Material {
 }
 
 impl Bsdf for Material {
-    fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample> {
-        self.sample(wo, hit, sampler)
+    fn sample(
+        &self,
+        wo: Vec3,
+        hit: &HitRecord,
+        u: f64,
+        v: f64,
+        w: f64,
+        x: f64,
+    ) -> Option<BsdfSample> {
+        self.sample(wo, hit, u, v, w, x)
     }
 
     fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 {
@@ -763,7 +771,10 @@ mod tests {
                 &self,
                 _wo: Vec3,
                 _hit: &HitRecord,
-                _sampler: &mut dyn Sampler,
+                _u: f64,
+                _v: f64,
+                _w: f64,
+                _x: f64,
             ) -> Option<BsdfSample> {
                 None
             }

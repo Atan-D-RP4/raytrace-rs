@@ -111,8 +111,14 @@ pub trait Hittable: Send + Sync {
 
     /// Samples a random direction toward this hittable from a given origin.
     /// Default returns (1, 0, 0) as a placeholder.
-    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
-        let _ = (origin, sampler);
+    fn random(
+        &self,
+        origin: Vec3,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut u32,
+    ) -> Vec3 {
+        let _ = (origin, sampler, sample_index, dim_offset);
         Vec3::from(1., 0., 0.)
     }
 }
@@ -144,13 +150,21 @@ impl<T: Hittable> Hittable for Vec<T> {
             .fold(0.0, |acc, val| acc + val)
     }
 
-    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
+    fn random(
+        &self,
+        origin: Vec3,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut u32,
+    ) -> Vec3 {
         if self.is_empty() {
             return Vec3::ZERO;
         }
         let len = self.len();
-        let index = (sampler.get_next_1d() * len as f64).min(len as f64 - 1e-15) as usize;
-        self[index].random(origin, sampler)
+        let u = sampler.sample(sample_index, *dim_offset);
+        *dim_offset += 1;
+        let index = (u * len as f64).min(len as f64 - 1e-15) as usize;
+        self[index].random(origin, sampler, sample_index, dim_offset)
     }
 }
 
@@ -169,7 +183,13 @@ impl<T: Hittable + ?Sized> Hittable for Arc<T> {
         (**self).pdf_value(origin, direction)
     }
 
-    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
-        (**self).random(origin, sampler)
+    fn random(
+        &self,
+        origin: Vec3,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut u32,
+    ) -> Vec3 {
+        (**self).random(origin, sampler, sample_index, dim_offset)
     }
 }

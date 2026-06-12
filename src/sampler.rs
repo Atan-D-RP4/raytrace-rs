@@ -1,37 +1,242 @@
-use rand::RngExt;
-use rand::SeedableRng;
-use rand::rngs::SmallRng;
+//! Dimension-indexed QMC & hash-based samplers.
+//!
+//! Every sample is `sample(n, d)` — determined by `(pass, dimension)` alone.
+//! This makes samplers deterministic, `Sync`, and immune to state corruption
+//! from variable-length paths.
 
-/// Produces [0, 1) samples for Monte Carlo integration.
-/// Must be `Send` for rayon parallel iterators.
-pub trait Sampler: Send {
-    fn get_next_1d(&mut self) -> f64;
-    fn get_next_2d(&mut self) -> [f64; 2];
+use std::cell::Cell;
+use std::sync::LazyLock;
 
-    /// Fork independent samplers. Parent state is preserved.
-    fn split(&mut self, num: usize) -> Vec<Box<dyn Sampler>>;
-
-    /// Reset to a specific sample index (no-op for random samplers).
-    fn set_sample_index(&mut self, _index: u32) {}
+/// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
+///
+/// Same `(n, d)` always returns the same value — deterministic across threads.
+pub trait Sampler: Send + Sync {
+    fn sample(&self, n: u32, d: u32) -> f64;
 }
 
-/// Pure random sampling. O(1/√N) convergence.
-#[derive(Debug, Clone)]
-pub struct NaiveRandomSampler {
-    rng: SmallRng,
+const MAX_DIMS: usize = 512;
+
+/// Joe & Kuo 2008 direction numbers, left-aligned u32, lazy-initialized.
+static DIRS: LazyLock<[[u32; 32]; MAX_DIMS]> = LazyLock::new(compute_dirs);
+
+/// Parse Joe & Kuo direction numbers from the bundled dataset.
+///
+/// File format: `d s a m_1 ... m_s` (dimension, degree, primitive poly, values).
+fn compute_dirs() -> [[u32; 32]; MAX_DIMS] {
+    let file = include_str!("../new-joe-kuo-6.21201");
+    let mut dirs = [[0u32; 32]; MAX_DIMS];
+
+    // Van der Corput (dim 0): V[j] = 1 << (31 - j)
+    for d in 0..32 {
+        dirs[0][d] = 1u32 << (31 - d);
+    }
+
+    let mut dim_idx = 2usize; // file starts at dimension 2
+    for line in file.lines().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() < 4 {
+            continue;
+        }
+        let d_val: usize = tokens[0].parse().unwrap_or(0);
+        let s: usize = tokens[1].parse().unwrap_or(0);
+        let a: u32 = tokens[2].parse().unwrap_or(0);
+        if !(1..=32).contains(&s) {
+            continue;
+        }
+
+        let mut m = [0u32; 32];
+        for i in 0..s {
+            if i + 3 < tokens.len() {
+                m[i] = tokens[i + 3].parse().unwrap_or(0);
+            }
+        }
+
+        let mut v = [0u32; 32];
+        for k in 0..s {
+            v[k] = m[k] << (32 - s);
+        }
+        for k in s..32 {
+            let mut val = v[k - s] ^ (v[k - s] >> s);
+            for i in 1..s {
+                if ((a >> (s - i - 1)) & 1) != 0 {
+                    val ^= v[k - i];
+                }
+            }
+            v[k] = val;
+        }
+
+        if d_val >= 2 {
+            let sob_dim = d_val - 1;
+            if sob_dim < MAX_DIMS {
+                dirs[sob_dim] = v;
+            }
+        }
+        dim_idx += 1;
+        if dim_idx > MAX_DIMS + 1 {
+            break;
+        }
+    }
+    dirs
 }
 
-impl NaiveRandomSampler {
+/// Conversion from u32 to [0,1).
+const INV_U32: f64 = 1.0 / (1u64 << 32) as f64;
+
+/// Conversion from u64 upper bits to [0,1).
+const INV_53: f64 = 1.0 / (1u64 << 53) as f64;
+
+/// SplitMix64 — fast deterministic hash.
+fn splitmix64(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    x ^ (x >> 31)
+}
+
+/// Per-dimension digital shift from `(seed, d)`.
+fn splitmix_shift(seed: u64, d: u32) -> u32 {
+    splitmix64(seed.wrapping_add(d as u64).wrapping_mul(0x9E3779B97F4A7C15)) as u32
+}
+
+/// Hash `(n, d, seed)` into [0, 1).
+fn hash_sample(n: u32, d: u32, seed: u64) -> f64 {
+    let h = splitmix64(
+        seed ^ (n as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(d as u64),
+    );
+    ((h >> 11) as f64) * INV_53
+}
+
+// Gray-code Sobol recurrence: x_{k+1}[d] = x_k[d] ⊕ V[d][tzcnt(k+1)].
+// Since V[d][c] only depends on c = tzcnt(k), ALL dimensions share step c.
+//
+// xs[d] stores raw_accum ⊕ shift(seed, d) so the hot path is cache lookup +
+// multiply — no per-sample splitmix.  When the pixel seed changes the cache
+// rebases all 512 dims (amortised across 50+ bounces × ~8 dims).
+
+thread_local! {
+    static GRAY_CACHE: GrayCodeCache = const { GrayCodeCache {
+        last_n: Cell::new(0),
+        last_seed: Cell::new(0),
+        // Cell<u32> is !Copy, const { ... } initialises each element independently.
+        xs: [const { Cell::new(0) }; MAX_DIMS],
+    } };
+}
+
+/// Per-thread Sobol cache — folds the digital shift into xs[d] so sample()
+/// is just a load + multiply.  Rebases all 512 dims when the pixel seed changes.
+struct GrayCodeCache {
+    last_n: Cell<u32>,
+    last_seed: Cell<u64>,
+    xs: [Cell<u32>; MAX_DIMS],
+}
+
+impl GrayCodeCache {
+    /// Ensure cache is current for `(n, seed)`, return `xs[d]`.
+    #[inline(always)]
+    fn get(&self, d: usize, n: u32, seed: u64) -> u32 {
+        let last_seed = self.last_seed.get();
+        if last_seed != seed {
+            // Rebase: XOR out old shift, XOR in new shift for all 512 dims.
+            for dim in 0..MAX_DIMS {
+                let cur = self.xs[dim].get();
+                let old_sh = splitmix_shift(last_seed, dim as u32);
+                let new_sh = splitmix_shift(seed, dim as u32);
+                self.xs[dim].set(cur ^ old_sh ^ new_sh);
+            }
+            self.last_seed.set(seed);
+        }
+
+        let last_n = self.last_n.get();
+        if n > last_n {
+            for k in (last_n + 1)..=n {
+                let c = k.trailing_zeros() as usize;
+                for dim in 0..MAX_DIMS {
+                    let cur = self.xs[dim].get();
+                    self.xs[dim].set(cur ^ DIRS[dim][c]);
+                }
+            }
+            self.last_n.set(n);
+        } else if n < last_n {
+            // Full reset: initialise with shift(seed), then accumulate to n.
+            for dim in 0..MAX_DIMS {
+                self.xs[dim].set(splitmix_shift(seed, dim as u32));
+            }
+            for k in 1..=n {
+                let c = k.trailing_zeros() as usize;
+                for dim in 0..MAX_DIMS {
+                    let cur = self.xs[dim].get();
+                    self.xs[dim].set(cur ^ DIRS[dim][c]);
+                }
+            }
+            self.last_n.set(n);
+        }
+
+        self.xs[d].get()
+    }
+}
+
+/// Sobol' quasi-random sampler — uses a thread-local Gray-code cache
+/// so `sample()` is a single cache lookup + multiply.
+pub struct SobolQmcSampler {
+    seed: u64,
+}
+
+impl SobolQmcSampler {
     pub fn new() -> Self {
+        use rand::RngExt;
         Self {
-            rng: SmallRng::from_rng(&mut rand::rng()),
+            seed: rand::rng().random(),
         }
     }
 
     pub fn with_seed(seed: u64) -> Self {
+        Self { seed }
+    }
+
+    /// Deterministic seed from pixel coordinates.
+    pub fn for_pixel(pixel_x: i32, pixel_y: i32) -> Self {
+        let seed = splitmix64(pixel_x as u64 ^ 0x9E3779B97F4A7C15)
+            .wrapping_mul(0xBF58476D1CE4E5B9)
+            .wrapping_add(pixel_y as u64 ^ 0xE5B9A97F4A7C15F0);
+        Self { seed }
+    }
+}
+
+impl Default for SobolQmcSampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sampler for SobolQmcSampler {
+    #[inline(always)]
+    fn sample(&self, n: u32, d: u32) -> f64 {
+        GRAY_CACHE.with(|cache| {
+            let d_idx = (d as usize).min(MAX_DIMS - 1);
+            // xs[d] has the digital shift folded in — no per-sample hash.
+            cache.get(d_idx, n, self.seed) as f64 * INV_U32
+        })
+    }
+}
+
+/// Hash-based random sampler — SplitMix of (n, d, seed).
+pub struct NaiveRandomSampler {
+    seed: u64,
+}
+
+impl NaiveRandomSampler {
+    pub fn new() -> Self {
+        use rand::RngExt;
         Self {
-            rng: SmallRng::seed_from_u64(seed),
+            seed: rand::rng().random(),
         }
+    }
+    pub fn with_seed(seed: u64) -> Self {
+        Self { seed }
     }
 }
 
@@ -42,218 +247,118 @@ impl Default for NaiveRandomSampler {
 }
 
 impl Sampler for NaiveRandomSampler {
-    fn get_next_1d(&mut self) -> f64 {
-        self.rng.random()
-    }
-
-    fn get_next_2d(&mut self) -> [f64; 2] {
-        [self.rng.random(), self.rng.random()]
-    }
-
-    fn split(&mut self, num: usize) -> Vec<Box<dyn Sampler>> {
-        (0..num)
-            .map(|_| Box::new(NaiveRandomSampler::with_seed(self.rng.random())) as Box<dyn Sampler>)
-            .collect()
+    #[inline(always)]
+    fn sample(&self, n: u32, d: u32) -> f64 {
+        hash_sample(n, d, self.seed)
     }
 }
 
-/// Jittered grid sampling: one random sample per cell in a `sqrt_spp × sqrt_spp` grid.
-/// Lower variance than naive at the same O(1/√N) convergence rate.
-#[derive(Debug, Clone)]
+/// Stratified (jittered) grid for dims 0-1, SplitMix fallback for rest.
 pub struct StratifiedRandomSampler {
-    rng: SmallRng,
-    sample_idx: usize,
-    sqrt_spp: usize,
-    sqrt_spp_inv: f64,
+    seed: u64,
+    sqrt_spp: u32,
 }
 
 impl StratifiedRandomSampler {
-    pub fn new(sqrt_spp: usize, seed: u64) -> Self {
+    pub fn new(sqrt_spp: u32, seed: u64) -> Self {
         Self {
-            rng: SmallRng::seed_from_u64(seed),
-            sample_idx: 0,
-            sqrt_spp,
-            sqrt_spp_inv: 1.0 / sqrt_spp as f64,
-        }
-    }
-
-    /// Start at a given sample index — useful for progressive rendering.
-    pub fn at_sample(sqrt_spp: usize, sample_idx: usize, seed: u64) -> Self {
-        Self {
-            rng: SmallRng::seed_from_u64(seed),
-            sample_idx,
-            sqrt_spp,
-            sqrt_spp_inv: 1.0 / sqrt_spp as f64,
+            seed,
+            sqrt_spp: sqrt_spp.max(1),
         }
     }
 }
 
 impl Sampler for StratifiedRandomSampler {
-    fn get_next_1d(&mut self) -> f64 {
-        let cell = self.sample_idx;
-        self.sample_idx += 1;
-        (cell as f64 + self.rng.random::<f64>()) * self.sqrt_spp_inv
-    }
-
-    fn get_next_2d(&mut self) -> [f64; 2] {
-        let si = self.sample_idx / self.sqrt_spp;
-        let sj = self.sample_idx % self.sqrt_spp;
-        self.sample_idx += 1;
-
-        let px = (si as f64 + self.rng.random::<f64>()) * self.sqrt_spp_inv;
-        let py = (sj as f64 + self.rng.random::<f64>()) * self.sqrt_spp_inv;
-        [px, py]
-    }
-
-    fn split(&mut self, num: usize) -> Vec<Box<dyn Sampler>> {
-        (0..num)
-            .map(|_| {
-                Box::new(StratifiedRandomSampler::new(
-                    self.sqrt_spp,
-                    self.rng.random(),
-                )) as Box<dyn Sampler>
-            })
-            .collect()
-    }
-
-    fn set_sample_index(&mut self, index: u32) {
-        self.sample_idx = index as usize;
+    #[inline(always)]
+    fn sample(&self, n: u32, d: u32) -> f64 {
+        if d < 2 {
+            let cell = n % (self.sqrt_spp * self.sqrt_spp);
+            let si = cell / self.sqrt_spp;
+            let sj = cell % self.sqrt_spp;
+            let jitter = hash_sample(n, d, self.seed);
+            let cell_offset = if d == 0 { si } else { sj };
+            ((cell_offset as f64) + jitter) * (1.0 / self.sqrt_spp as f64)
+        } else {
+            hash_sample(n, d, self.seed)
+        }
     }
 }
 
-/// Sobol quasi-random sequence with random digital shift.
-/// O((log N)²/N) convergence — typically 2-4× fewer samples than stratified.
-///
-/// Uses a single index for both 1D and 2D queries so the sequence is
-/// deterministic regardless of interleaving — essential for progressive rendering.
-#[derive(Debug, Clone)]
-pub struct SobolSeqSampler {
-    /// Current sample index; each get_next call advances by one.
+/// Sequential adapter: `&dyn Sampler` + cursor for get_next_{1,2}d() API.
+pub struct SequentialSampler<'a> {
+    sampler: &'a dyn Sampler,
     sample_index: u32,
-    /// Gray code accumulators for dimensions 0 and 1.
-    x: u32,
-    y: u32,
-    /// Random digital shifts for dimensions 0 and 1.
-    shift_x: u32,
-    shift_y: u32,
+    cursor: u32,
 }
 
-impl SobolSeqSampler {
-    /// Direction numbers as left-aligned u32 fixed-point (denominator 2³²).
-    /// Dim 0: Van der Corput. Dim 1: primitive polynomial x³ + x + 1.
-    const SOBOL_DIRS: [[u32; 32]; 2] = [
-        [
-            0x80000000, 0x40000000, 0x20000000, 0x10000000, 0x08000000, 0x04000000, 0x02000000,
-            0x01000000, 0x00800000, 0x00400000, 0x00200000, 0x00100000, 0x00080000, 0x00040000,
-            0x00020000, 0x00010000, 0x00008000, 0x00004000, 0x00002000, 0x00001000, 0x00000800,
-            0x00000400, 0x00000200, 0x00000100, 0x00000080, 0x00000040, 0x00000020, 0x00000010,
-            0x00000008, 0x00000004, 0x00000002, 0x00000001,
-        ],
-        [
-            0x80000000, 0xc0000000, 0xa0000000, 0xf0000000, 0x88000000, 0xcc000000, 0xaa000000,
-            0xff000000, 0x88800000, 0xccc00000, 0xaaa00000, 0xfff00000, 0x88880000, 0xcccc0000,
-            0xaaaa0000, 0xffff0000, 0x88888000, 0xccccc000, 0xaaaaa000, 0xfffff000, 0x88888800,
-            0xcccccc00, 0xaaaaaa00, 0xffffff00, 0x88888880, 0xccccccc0, 0xaaaaaaa0, 0xfffffff0,
-            0x88888888, 0xcccccccc, 0xaaaaaaaa, 0xffffffff,
-        ],
-    ];
-
-    pub fn new() -> Self {
-        let mut rng = SmallRng::from_rng(&mut rand::rng());
+impl<'a> SequentialSampler<'a> {
+    pub fn new(sampler: &'a dyn Sampler, sample_index: u32) -> Self {
         Self {
-            sample_index: 0,
-            x: 0,
-            y: 0,
-            shift_x: rng.random(),
-            shift_y: rng.random(),
+            sampler,
+            sample_index,
+            cursor: 0,
         }
     }
 
-    pub fn with_seed(seed: u64) -> Self {
-        let mut rng = SmallRng::seed_from_u64(seed);
-        Self {
-            sample_index: 0,
-            x: 0,
-            y: 0,
-            shift_x: rng.random(),
-            shift_y: rng.random(),
-        }
+    pub fn get_next_1d(&mut self) -> f64 {
+        let val = self.sampler.sample(self.sample_index, self.cursor);
+        self.cursor += 1;
+        val
     }
 
-    /// Deterministic shifts from pixel coordinates.
-    pub fn for_pixel(pixel_x: i32, pixel_y: i32) -> Self {
-        let mut rng = SmallRng::seed_from_u64(pixel_x as u64 * 7919 + pixel_y as u64 * 104729);
-        Self {
-            sample_index: 0,
-            x: 0,
-            y: 0,
-            shift_x: rng.random(),
-            shift_y: rng.random(),
-        }
+    pub fn get_next_2d(&mut self) -> [f64; 2] {
+        let x = self.sampler.sample(self.sample_index, self.cursor);
+        let y = self.sampler.sample(self.sample_index, self.cursor + 1);
+        self.cursor += 2;
+        [x, y]
     }
 
-    /// Advance the Gray code accumulators for both dimensions.
-    fn advance(&mut self) {
-        if self.sample_index > 0 {
-            let c = self.sample_index.trailing_zeros() as usize;
-            if c < 32 {
-                self.x ^= Self::SOBOL_DIRS[0][c];
-                self.y ^= Self::SOBOL_DIRS[1][c];
-            }
-        }
-        self.sample_index += 1;
+    pub fn set_sample_index(&mut self, sample_index: u32) {
+        self.sample_index = sample_index;
+        self.cursor = 0;
+    }
+
+    pub fn reset(&mut self) {
+        self.cursor = 0;
     }
 }
 
-impl Default for SobolSeqSampler {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Borrowed sequential adapter (no lifetime issues for recursive code).
+pub struct SequentialSamplerMut<'a> {
+    sampler: &'a dyn Sampler,
+    sample_index: u32,
+    cursor: u32,
 }
 
-impl Sampler for SobolSeqSampler {
-    fn get_next_1d(&mut self) -> f64 {
-        self.advance();
-        let sx = self.x ^ self.shift_x;
-        let inv = 1.0 / (1u64 << 32) as f64;
-        sx as f64 * inv
-    }
-
-    fn get_next_2d(&mut self) -> [f64; 2] {
-        self.advance();
-        let sx = self.x ^ self.shift_x;
-        let sy = self.y ^ self.shift_y;
-        let inv = 1.0 / (1u64 << 32) as f64;
-        [sx as f64 * inv, sy as f64 * inv]
-    }
-
-    fn split(&mut self, num: usize) -> Vec<Box<dyn Sampler>> {
-        let base = self.sample_index as u64 * 31337 + self.x as u64;
-        (0..num)
-            .map(|i| {
-                Box::new(SobolSeqSampler::with_seed(
-                    base.wrapping_add(i as u64 * 104729),
-                )) as Box<dyn Sampler>
-            })
-            .collect()
-    }
-
-    fn set_sample_index(&mut self, index: u32) {
-        // Replay Gray code from 0 to rebuild accumulator state.
-        self.x = 0;
-        self.y = 0;
-        self.sample_index = 0;
-
-        for _ in 0..index {
-            if self.sample_index > 0 {
-                let c = self.sample_index.trailing_zeros() as usize;
-                if c < 32 {
-                    self.x ^= Self::SOBOL_DIRS[0][c];
-                    self.y ^= Self::SOBOL_DIRS[1][c];
-                }
-            }
-            self.sample_index += 1;
+impl<'a> SequentialSamplerMut<'a> {
+    pub fn new(sampler: &'a dyn Sampler, sample_index: u32) -> Self {
+        Self {
+            sampler,
+            sample_index,
+            cursor: 0,
         }
+    }
+
+    pub fn get_next_1d(&mut self) -> f64 {
+        let val = self.sampler.sample(self.sample_index, self.cursor);
+        self.cursor += 1;
+        val
+    }
+
+    pub fn get_next_2d(&mut self) -> [f64; 2] {
+        let x = self.sampler.sample(self.sample_index, self.cursor);
+        let y = self.sampler.sample(self.sample_index, self.cursor + 1);
+        self.cursor += 2;
+        [x, y]
+    }
+
+    pub fn set_sample_index(&mut self, sample_index: u32) {
+        self.sample_index = sample_index;
+        self.cursor = 0;
+    }
+
+    pub fn cursor(&self) -> u32 {
+        self.cursor
     }
 }
 
@@ -262,33 +367,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn direction_numbers_are_valid() {
+        let dirs = &DIRS;
+        assert_eq!(dirs[0][0], 0x80000000);
+        assert_eq!(dirs[0][1], 0x40000000);
+        assert_eq!(dirs[0][2], 0x20000000);
+        assert_ne!(
+            dirs[1][0], 0,
+            "Dim 1 should have non-zero direction numbers"
+        );
+        assert_ne!(
+            dirs[1][1], 0,
+            "Dim 1 should have non-zero direction numbers"
+        );
+    }
+
+    #[test]
+    fn sobol_produces_values_in_unit_interval() {
+        let s = SobolQmcSampler::with_seed(42);
+        for n in 0..256u32 {
+            for d in 0..8u32 {
+                let v = s.sample(n, d);
+                assert!(
+                    (0.0..1.0).contains(&v),
+                    "Sobol sample out of range: n={n}, d={d}, v={v}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sobol_van_der_corput_first_few() {
+        let s = SobolQmcSampler { seed: 0 };
+        let tol = 1.0 / (1u64 << 32) as f64;
+        assert!((s.sample(0, 0) - 0.0).abs() < tol);
+        assert!((s.sample(1, 0) - 0.5).abs() < tol);
+        assert!((s.sample(2, 0) - 0.75).abs() < tol);
+        assert!((s.sample(3, 0) - 0.25).abs() < tol);
+        assert!((s.sample(4, 0) - 0.375).abs() < tol);
+        assert!((s.sample(5, 0) - 0.875).abs() < tol);
+        assert!((s.sample(6, 0) - 0.625).abs() < tol);
+        assert!((s.sample(7, 0) - 0.125).abs() < tol);
+    }
+
+    #[test]
     fn naive_produces_values_in_unit_interval() {
-        let mut s = NaiveRandomSampler::new();
-        for _ in 0..1000 {
-            let v = s.get_next_1d();
-            assert!((0.0..1.0).contains(&v), "1d out of range: {v}");
-            let [x, y] = s.get_next_2d();
-            assert!((0.0..1.0).contains(&x), "2d x out of range: {x}");
-            assert!((0.0..1.0).contains(&y), "2d y out of range: {y}");
+        let s = NaiveRandomSampler::with_seed(42);
+        for n in 0..1000 {
+            for d in 0..4 {
+                let v = s.sample(n, d);
+                assert!((0.0..1.0).contains(&v));
+            }
         }
     }
 
     #[test]
     fn stratified_produces_values_in_unit_interval() {
-        let mut s = StratifiedRandomSampler::new(16, 42);
-        for _ in 0..256 {
-            let [x, y] = s.get_next_2d();
-            assert!((0.0..1.0).contains(&x), "2d x out of range: {x}");
-            assert!((0.0..1.0).contains(&y), "2d y out of range: {y}");
+        let s = StratifiedRandomSampler::new(4, 42);
+        for n in 0..256 {
+            for d in 0..4 {
+                let v = s.sample(n, d);
+                assert!((0.0..1.0).contains(&v));
+            }
         }
     }
 
     #[test]
-    fn stratified_covers_all_cells() {
-        let mut s = StratifiedRandomSampler::new(4, 42);
+    fn stratified_covers_all_cells_d0() {
+        let s = StratifiedRandomSampler::new(4, 42);
         let mut cells = [[false; 4]; 4];
-        for _ in 0..16 {
-            let [x, y] = s.get_next_2d();
+        for n in 0..16 {
+            let x = s.sample(n, 0);
+            let y = s.sample(n, 1);
             let ci = (x * 4.0) as usize;
             let cj = (y * 4.0) as usize;
             cells[ci][cj] = true;
@@ -297,90 +447,43 @@ mod tests {
     }
 
     #[test]
-    fn sobol_2d_produces_values_in_unit_interval() {
-        let mut s = SobolSeqSampler::new();
-        for _ in 0..256 {
-            let [x, y] = s.get_next_2d();
-            assert!((0.0..1.0).contains(&x), "2d x out of range: {x}");
-            assert!((0.0..1.0).contains(&y), "2d y out of range: {y}");
-        }
-    }
-
-    #[test]
-    fn sobol_1d_produces_values_in_unit_interval() {
-        let mut s = SobolSeqSampler::new();
-        for _ in 0..256 {
-            let v = s.get_next_1d();
-            assert!((0.0..1.0).contains(&v), "1d out of range: {v}");
-        }
-    }
-
-    #[test]
-    fn sobol_1d_and_2d_are_independent() {
-        let mut s = SobolSeqSampler::new();
-        let d2_samples: Vec<_> = (0..10).map(|_| s.get_next_2d()).collect();
-        let d1_samples: Vec<_> = (0..10).map(|_| s.get_next_1d()).collect();
-        let d2_x: Vec<f64> = d2_samples.iter().map(|[x, _]| *x).collect();
-        assert_ne!(d1_samples, d2_x);
-    }
-
-    #[test]
-    fn sobol_first_sample_is_shift() {
-        let mut rng = SmallRng::seed_from_u64(42);
-        let shift_x: u32 = rng.random();
-        let shift_y: u32 = rng.random();
-
-        let mut s = SobolSeqSampler {
-            sample_index: 0,
-            x: 0,
-            y: 0,
-            shift_x,
-            shift_y,
-        };
-
-        let [x, y] = s.get_next_2d();
-        let inv = 1.0 / (1u64 << 32) as f64;
-        assert!((x - shift_x as f64 * inv).abs() < 1e-15);
-        assert!((y - shift_y as f64 * inv).abs() < 1e-15);
-    }
-
-    #[test]
-    fn sobol_split_produces_independent_samplers() {
-        let mut s = SobolSeqSampler::new();
-        let children = s.split(3);
-        assert_eq!(children.len(), 3);
-        let parent_sample = s.get_next_2d();
-        assert!((0.0..1.0).contains(&parent_sample[0]));
-        for mut child in children {
-            let child_sample = child.get_next_2d();
-            assert!((0.0..1.0).contains(&child_sample[0]));
-        }
-    }
-
-    #[test]
-    fn naive_split_produces_independent_samplers() {
-        let mut s = NaiveRandomSampler::new();
-        let children = s.split(3);
-        assert_eq!(children.len(), 3);
-        let parent_sample = s.get_next_1d();
-        assert!((0.0..1.0).contains(&parent_sample));
-        for mut child in children {
-            let child_sample = child.get_next_1d();
-            assert!((0.0..1.0).contains(&child_sample));
-        }
-    }
-
-    #[test]
-    fn stratified_split_preserves_sqrt_spp() {
-        let mut s = StratifiedRandomSampler::new(16, 42);
-        let mut children = s.split(2);
-        assert_eq!(children.len(), 2);
-        for child in &mut children {
-            for _ in 0..256 {
-                let [x, y] = child.get_next_2d();
-                assert!((0.0..1.0).contains(&x));
-                assert!((0.0..1.0).contains(&y));
+    fn deterministic_results() {
+        let s1 = SobolQmcSampler::with_seed(12345);
+        let s2 = SobolQmcSampler::with_seed(12345);
+        for n in 0..64 {
+            for d in 0..16 {
+                assert_eq!(s1.sample(n, d), s2.sample(n, d));
             }
         }
+    }
+
+    #[test]
+    fn different_seeds_different_results() {
+        let s1 = SobolQmcSampler::with_seed(12345);
+        let s2 = SobolQmcSampler::with_seed(54321);
+        let mut same = 0;
+        for n in 0..64 {
+            for d in 0..8 {
+                if s1.sample(n, d) == s2.sample(n, d) {
+                    same += 1;
+                }
+            }
+        }
+        assert!(
+            same < 16,
+            "Different seeds should produce different samples"
+        );
+    }
+
+    #[test]
+    fn sobol_is_sync_and_send() {
+        fn assert_sync<T: Sync>() {}
+        fn assert_send<T: Send>() {}
+        assert_sync::<SobolQmcSampler>();
+        assert_send::<SobolQmcSampler>();
+        assert_sync::<NaiveRandomSampler>();
+        assert_send::<NaiveRandomSampler>();
+        assert_sync::<StratifiedRandomSampler>();
+        assert_send::<StratifiedRandomSampler>();
     }
 }

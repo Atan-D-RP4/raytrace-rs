@@ -78,13 +78,21 @@ where
             .pdf_value(transformed.origin, transformed.direction)
     }
 
-    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
+    fn random(
+        &self,
+        origin: Vec3,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut u32,
+    ) -> Vec3 {
         // Transform origin to object space via a dummy ray.
         let to_obj = self
             .transform
             .ray(&Ray::new_with_time(origin, Vec3::ZERO, 0.0));
         // Sample a direction in object space.
-        let dir = self.object.random(to_obj.origin, sampler);
+        let dir = self
+            .object
+            .random(to_obj.origin, sampler, sample_index, dim_offset);
         // Transform direction back to world space using the inverse rotation.
         self.transform.object_to_world_direction(dir)
     }

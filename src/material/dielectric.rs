@@ -17,7 +17,6 @@
 //! sampled direction directly.
 
 use crate::hittable::HitRecord;
-use crate::sampler::Sampler;
 use crate::vec3::{Color3, Vec3, reflect, refract};
 
 use super::GPU_NONE;
@@ -35,7 +34,15 @@ impl Bsdf for DielectricMaterial {
     /// Compute refraction ratio from the two media, then use Fresnel to decide
     /// between reflection and refraction. Returns the chosen direction with
     /// unit attenuation (delta material — all energy goes one way).
-    fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample> {
+    fn sample(
+        &self,
+        wo: Vec3,
+        hit: &HitRecord,
+        u: f64,
+        _v: f64,
+        _w: f64,
+        _x: f64,
+    ) -> Option<BsdfSample> {
         let ri = if hit.front_face {
             1.0 / self.refractive_idx
         } else {
@@ -43,13 +50,12 @@ impl Bsdf for DielectricMaterial {
         };
         let cos_theta = wo.dot(&hit.normal).min(1.0);
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-        let direction = if ri * sin_theta > 1.0
-            || fresnel_schlick(cos_theta, self.refractive_idx) > sampler.get_next_1d()
-        {
-            reflect(&-wo, &hit.normal)
-        } else {
-            refract(&-wo, &hit.normal, ri)
-        };
+        let direction =
+            if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.refractive_idx) > u {
+                reflect(&-wo, &hit.normal)
+            } else {
+                refract(&-wo, &hit.normal, ri)
+            };
         Some(BsdfSample {
             wi: direction,
             f_cos: Color3::from(1., 1., 1.),

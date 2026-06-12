@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use crate::hittable::HitRecord;
 use crate::onb::Onb;
-use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
@@ -45,7 +44,15 @@ pub struct GlossyMaterial {
 impl Bsdf for GlossyMaterial {
     /// Importance-sample the GGX NDF: draw half-vector H, reflect `wo` about it.
     /// Returns `None` if the reflected direction is below the surface.
-    fn sample(&self, wo: Vec3, hit: &HitRecord, sampler: &mut dyn Sampler) -> Option<BsdfSample> {
+    fn sample(
+        &self,
+        wo: Vec3,
+        hit: &HitRecord,
+        u: f64,
+        v: f64,
+        _w: f64,
+        _x: f64,
+    ) -> Option<BsdfSample> {
         let albedo = self
             .tex
             .as_ref()
@@ -53,8 +60,8 @@ impl Bsdf for GlossyMaterial {
             .unwrap_or(self.albedo);
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         // Sample H from GGX NDF.
-        let u1 = sampler.get_next_1d();
-        let u2 = sampler.get_next_1d();
+        let u1 = u;
+        let u2 = v;
         let cos_theta = ((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2))
             .clamp(0.0, 1.0)
             .sqrt();

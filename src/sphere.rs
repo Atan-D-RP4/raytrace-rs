@@ -67,10 +67,7 @@ impl Sphere {
         (u, v)
     }
 
-    fn random_to_sphere(&self, distance_squared: f64, sampler: &mut dyn Sampler) -> Vec3 {
-        let r1 = sampler.get_next_1d();
-        let r2 = sampler.get_next_1d();
-
+    fn random_to_sphere(&self, distance_squared: f64, r1: f64, r2: f64) -> Vec3 {
         let z = 1. + r2 * ((1. - (self.radius * self.radius) / distance_squared).sqrt() - 1.);
 
         let phi = 2. * PI * r1;
@@ -142,11 +139,19 @@ impl Hittable for Sphere {
         }
     }
 
-    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
+    fn random(
+        &self,
+        origin: Vec3,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut u32,
+    ) -> Vec3 {
         let direction_to_center = self.center.at(0.0) - origin;
         let distance_squared = direction_to_center.length_squared();
         let uvw = Onb::build_from_normal(direction_to_center);
-
-        uvw.local_to_world(self.random_to_sphere(distance_squared, sampler))
+        let r1 = sampler.sample(sample_index, *dim_offset);
+        let r2 = sampler.sample(sample_index, *dim_offset + 1);
+        *dim_offset += 2;
+        uvw.local_to_world(self.random_to_sphere(distance_squared, r1, r2))
     }
 }

@@ -143,10 +143,16 @@ pub trait Region2D: Send + Sync {
     /// for correct PDF computation in light importance sampling.
     fn area(&self) -> f64;
 
-    /// Uniformly samples a point `(a, b)` within the region.
+    /// Area of the bounding-box that `sample()` draws from.
     ///
-    /// Used by [`PlanarPatch::random`] for light importance sampling.
-    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64);
+    /// For bbox-based samplers (superellipse, rounded rect, etc.) this is larger
+    /// than `area()` — the PDF uses this to stay unbiased.  Default: `area()`.
+    fn bounding_box_area(&self) -> f64 {
+        self.area()
+    }
+
+    /// Samples `(a, b)` within the region from `(u, v)` ∈ [0,1]².
+    fn sample(&self, u: f64, v: f64) -> (f64, f64);
 }
 
 impl<R: Region2D> Hittable for PlanarPatch<R> {
@@ -181,7 +187,7 @@ impl<R: Region2D> Hittable for PlanarPatch<R> {
             // After set_face_normal, hit.normal always faces the incoming ray (negative dot).
             // .abs() gives the Jacobian factor for the area-to-solid-angle measure conversion.
             let cosine = hit.normal.dot(&direction.unit_vector()).abs();
-            let world_area = self.area * self.region.area();
+            let world_area = self.area * self.region.bounding_box_area();
 
             distance_squared / (cosine * world_area)
         } else {
@@ -189,8 +195,17 @@ impl<R: Region2D> Hittable for PlanarPatch<R> {
         }
     }
 
-    fn random(&self, origin: Vec3, sampler: &mut dyn Sampler) -> Vec3 {
-        let (a, b) = self.region.sample(sampler);
+    fn random(
+        &self,
+        origin: Vec3,
+        sampler: &dyn Sampler,
+        sample_index: u32,
+        dim_offset: &mut u32,
+    ) -> Vec3 {
+        let u = sampler.sample(sample_index, *dim_offset);
+        let v = sampler.sample(sample_index, *dim_offset + 1);
+        *dim_offset += 2;
+        let (a, b) = self.region.sample(u, v);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
         random_point - origin
     }

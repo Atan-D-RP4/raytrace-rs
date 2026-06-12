@@ -4,15 +4,16 @@ use crate::hittable::Hittable;
 use crate::material::ggx_d;
 use crate::onb::Onb;
 use crate::sampler::Sampler;
+use crate::vec3::cosine_hemisphere_direction;
 use crate::vec3::reflect;
-use crate::vec3::{Point3, Vec3, sampler_cosine_direction};
+use crate::vec3::{Point3, Vec3};
 
 pub trait PDF {
     /// Evaluates the PDF value for a given direction.
     fn value(&self, direction: Vec3) -> f64;
 
     /// Generates a random direction according to the PDF.
-    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3;
+    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3;
 }
 
 pub struct UniformSpherePDF;
@@ -29,19 +30,14 @@ impl PDF for UniformSpherePDF {
         1.0 / (4.0 * std::f64::consts::PI)
     }
 
-    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
-        // Rejection sampling to generate a random unit vector uniformly distributed on the surface of the unit sphere.
-        loop {
-            let point = Vec3::from(
-                sampler.get_next_1d() * 2.0 - 1.0,
-                sampler.get_next_1d() * 2.0 - 1.0,
-                sampler.get_next_1d() * 2.0 - 1.0,
-            );
-            let len_squared = point.length_squared();
-            if 1e-160 < len_squared && len_squared <= 1.0 {
-                return point / len_squared.sqrt();
-            }
-        }
+    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
+        let u = sampler.sample(sample_index, *dim_offset);
+        let v = sampler.sample(sample_index, *dim_offset + 1);
+        *dim_offset += 2;
+        let phi = 2.0 * std::f64::consts::PI * u;
+        let z = 1.0 - 2.0 * v;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        Vec3::from(r * phi.cos(), r * phi.sin(), z)
     }
 }
 
@@ -64,8 +60,11 @@ impl PDF for CosinePDF {
         (cos_theta / PI).max(0.)
     }
 
-    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
-        self.uvw.local_to_world(sampler_cosine_direction(sampler))
+    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
+        let u = sampler.sample(sample_index, *dim_offset);
+        let v = sampler.sample(sample_index, *dim_offset + 1);
+        *dim_offset += 2;
+        self.uvw.local_to_world(cosine_hemisphere_direction(u, v))
     }
 }
 
@@ -85,8 +84,9 @@ impl<'a> PDF for HittablePDF<'a> {
         self.objects.pdf_value(self.origin, direction)
     }
 
-    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
-        self.objects.random(self.origin, sampler)
+    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
+        self.objects
+            .random(self.origin, sampler, sample_index, dim_offset)
     }
 }
 
@@ -107,7 +107,7 @@ impl PDF for DiracPDF {
         1.0
     }
 
-    fn generate(&self, _sampler: &mut dyn Sampler) -> Vec3 {
+    fn generate(&self, _sampler: &dyn Sampler, _sample_index: u32, _dim_offset: &mut u32) -> Vec3 {
         self.direction
     }
 }
@@ -152,17 +152,20 @@ impl<'a> PDF for MixturePDF<'a> {
             .sum()
     }
 
-    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
-        let r = sampler.get_next_1d();
+    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
+        let u = sampler.sample(sample_index, *dim_offset);
+        *dim_offset += 1;
         let mut cumulative = 0.0;
-        for (pdf, &w) in self.pdfs.iter().zip(&self.weights) {
-            cumulative += w;
-            if r < cumulative {
-                return pdf.generate(sampler);
+        for (pdf, &weight) in self.pdfs.iter().zip(&self.weights) {
+            cumulative += weight;
+            if u < cumulative {
+                return pdf.generate(sampler, sample_index, dim_offset);
             }
         }
-        // Fallback for floating-point edge case.
-        self.pdfs.last().unwrap().generate(sampler)
+        self.pdfs
+            .last()
+            .unwrap()
+            .generate(sampler, sample_index, dim_offset)
     }
 }
 
@@ -220,11 +223,12 @@ impl PDF for GgxSamplePDF {
         d * cos_h_n / (4.0 * cos_h)
     }
 
-    fn generate(&self, sampler: &mut dyn Sampler) -> Vec3 {
-        // Sample H from the GGX distribution. In the local frame where the surface normal is +z,
-        // this gives a half-vector distributed as D(H).
-        let u1: f64 = sampler.get_next_1d();
-        let u2: f64 = sampler.get_next_1d();
+    fn generate(&self, sampler: &dyn Sampler, sample_index: u32, dim_offset: &mut u32) -> Vec3 {
+        let u = sampler.sample(sample_index, *dim_offset);
+        let v = sampler.sample(sample_index, *dim_offset + 1);
+        *dim_offset += 2;
+        let u1 = u;
+        let u2 = v;
 
         let a = self.alpha;
         let cos_theta = ((1.0 - u2) / (1.0 + (a * a - 1.0) * u2))

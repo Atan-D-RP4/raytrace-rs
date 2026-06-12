@@ -1,5 +1,4 @@
 use crate::planar::Region2D;
-use crate::sampler::Sampler;
 
 /// Region type for an arbitrary convex or simple polygon defined by vertices
 /// in (a, b) parametric space.
@@ -79,15 +78,15 @@ impl Region2D for PolygonRegion {
         0.5 * sum.abs()
     }
 
-    fn sample(&self, sampler: &mut dyn Sampler) -> (f64, f64) {
-        // Rejection in the polygon's bbox.
+    fn bounding_box_area(&self) -> f64 {
         let (a_min, a_max, b_min, b_max) = self.bbox;
-        loop {
-            let a = sampler.get_next_1d() * (a_max - a_min) + a_min;
-            let b = sampler.get_next_1d() * (b_max - b_min) + b_min;
-            if self.contains(a, b) {
-                return (a, b);
-            }
-        }
+        (a_max - a_min) * (b_max - b_min)
+    }
+
+    fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+        let (a_min, a_max, b_min, b_max) = self.bbox;
+        let a = u * (a_max - a_min) + a_min;
+        let b = v * (b_max - b_min) + b_min;
+        (a, b)
     }
 }
