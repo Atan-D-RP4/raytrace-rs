@@ -18,6 +18,7 @@ use raytrace_rs::bvh::BvhNode;
 use raytrace_rs::camera::{Camera, Framebuffer, SharedFramebuffer};
 use raytrace_rs::flat_bvh::FlatBvh;
 use raytrace_rs::hittable::Hittable;
+use raytrace_rs::sampler::SobolQmcSampler;
 use raytrace_rs::scene::Scene;
 
 const WIDTH: u32 = 800;
@@ -370,7 +371,10 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 }
 
 #[profiling::function]
-fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::EventLoopError> {
+fn live_render(
+    scene: Scene<SobolQmcSampler>,
+    scene_name: &str,
+) -> Result<(), winit::error::EventLoopError> {
     // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
     profiling::scope!("scene_build");
 
@@ -422,17 +426,24 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
         profiling::scope!("root_bvh_build");
         let world_bvh = BvhNode::new(&mut objects);
         let world = FlatBvh::from_bvh(world_bvh);
-        let lights: Arc<dyn Hittable> = if light_len > 0 {
-            Arc::new(BvhNode::new(&mut light_objects))
+        let lights: Arc<dyn Hittable<SobolQmcSampler>> = if light_len > 0 {
+            Arc::new(BvhNode::<SobolQmcSampler>::new(&mut light_objects))
         } else {
-            Arc::new(BvhNode::new(&mut []))
+            Arc::new(BvhNode::<SobolQmcSampler>::new(&mut Vec::<
+                Arc<dyn Hittable<SobolQmcSampler>>,
+            >::new()))
         };
 
         let mut camera = Camera::from_config(&config);
         // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
         // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
         profiling::scope!("render");
-        camera.render(&world, &*lights, Some(framebuffer.clone()));
+        camera.render(
+            &world,
+            &*lights,
+            SobolQmcSampler::for_pixel,
+            Some(framebuffer.clone()),
+        );
 
         save_framebuffer(&framebuffer, &scene_name);
         info!("render thread complete");
@@ -443,7 +454,7 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
 }
 
 #[profiling::function]
-fn headless_render(scene: Scene, scene_name: &str) {
+fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
     // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
     profiling::scope!("scene_build");
 
@@ -488,7 +499,8 @@ fn headless_render(scene: Scene, scene_name: &str) {
 
     let start = std::time::Instant::now();
     profiling::scope!("render_cpu");
-    let (width, height, rgb_data) = camera.render(&world, &light_objects, None);
+    let (width, height, rgb_data) =
+        camera.render(&world, &light_objects, SobolQmcSampler::for_pixel, None);
     let end = std::time::Instant::now();
     info!(elapsed = ?(end - start), width, height, "render complete");
 

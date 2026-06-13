@@ -8,17 +8,12 @@ use crate::vec3::cosine_hemisphere_direction;
 use crate::vec3::reflect;
 use crate::vec3::{Point3, Vec3};
 
-pub trait PDF {
+pub trait PDF<S: Sampler> {
     /// Evaluates the PDF value for a given direction.
     fn value(&self, direction: Vec3) -> f64;
 
     /// Generates a random direction according to the PDF.
-    fn generate(
-        &self,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3;
+    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3;
 }
 
 pub struct UniformSpherePDF;
@@ -30,19 +25,15 @@ impl UniformSpherePDF {
     }
 }
 
-impl PDF for UniformSpherePDF {
+impl<S: Sampler> PDF<S> for UniformSpherePDF {
     fn value(&self, _direction: Vec3) -> f64 {
         1.0 / (4.0 * std::f64::consts::PI)
     }
 
-    fn generate(
-        &self,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
-        let u = sampler.sample(sample_index, dim_offset.next_dim());
-        let v = sampler.sample(sample_index, dim_offset.next_dim());
+    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        let u = dim_offset.next_sample();
+        let v = dim_offset.next_sample();
+
         let phi = 2.0 * std::f64::consts::PI * u;
         let z = 1.0 - 2.0 * v;
         let r = (1.0 - z * z).max(0.0).sqrt();
@@ -63,48 +54,38 @@ impl CosinePDF {
     }
 }
 
-impl PDF for CosinePDF {
+impl<S: Sampler> PDF<S> for CosinePDF {
     fn value(&self, direction: Vec3) -> f64 {
         let cos_theta = direction.unit_vector().dot(&self.uvw.w);
         (cos_theta / PI).max(0.)
     }
 
-    fn generate(
-        &self,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
-        let u = sampler.sample(sample_index, dim_offset.next_dim());
-        let v = sampler.sample(sample_index, dim_offset.next_dim());
+    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        let u = dim_offset.next_sample();
+        let v = dim_offset.next_sample();
+
         self.uvw.local_to_world(cosine_hemisphere_direction(u, v))
     }
 }
 
-pub struct HittablePDF<'a> {
-    objects: &'a dyn Hittable,
+pub struct HittablePDF<'a, S: Sampler> {
+    objects: &'a dyn Hittable<S>,
     origin: Point3,
 }
 
-impl<'a> HittablePDF<'a> {
-    pub fn new(objects: &'a dyn Hittable, origin: Point3) -> Self {
+impl<'a, S: Sampler> HittablePDF<'a, S> {
+    pub fn new(objects: &'a dyn Hittable<S>, origin: Point3) -> Self {
         HittablePDF { objects, origin }
     }
 }
 
-impl<'a> PDF for HittablePDF<'a> {
+impl<'a, S: Sampler> PDF<S> for HittablePDF<'a, S> {
     fn value(&self, direction: Vec3) -> f64 {
         self.objects.pdf_value(self.origin, direction)
     }
 
-    fn generate(
-        &self,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
-        self.objects
-            .random(self.origin, sampler, sample_index, dim_offset)
+    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        self.objects.random(self.origin, dim_offset)
     }
 }
 
@@ -118,44 +99,39 @@ impl DiracPDF {
     }
 }
 
-impl PDF for DiracPDF {
+impl<S: Sampler> PDF<S> for DiracPDF {
     fn value(&self, _direction: Vec3) -> f64 {
         // Dirac delta: the sampling PDF matches the material's delta distribution.
         // In the MC estimator, both deltas cancel, leaving just the reflectance.
         1.0
     }
 
-    fn generate(
-        &self,
-        _sampler: &dyn Sampler,
-        _sample_index: u32,
-        _dim_offset: &mut DimCursor,
-    ) -> Vec3 {
+    fn generate(&self, _dim_offset: &mut DimCursor<S>) -> Vec3 {
         self.direction
     }
 }
 
-pub struct MixturePDF<'a> {
-    pdfs: &'a [&'a dyn PDF],
+pub struct MixturePDF<'a, S: Sampler> {
+    pdfs: &'a [&'a dyn PDF<S>],
     weights: Vec<f64>,
 }
 
-impl<'a> MixturePDF<'a> {
+impl<'a, S: Sampler> MixturePDF<'a, S> {
     /// Creates a mixture PDF with weights inferred from pointer identity.
     ///
     /// If a PDF appears multiple times in the slice, its weight is proportional
     /// to its count. For example, `[light_pdf, surface_pdf, surface_pdf]`
     /// yields weights `[1/3, 2/3]` — the surface PDF gets double weight.
-    pub fn new(pdfs: &'a [&'a dyn PDF]) -> Self {
+    pub fn new(pdfs: &'a [&'a dyn PDF<S>]) -> Self {
         let n = pdfs.len() as f64;
         let weights: Vec<f64> = pdfs
             .iter()
             .map(|pdf| {
-                let ptr: *const (dyn PDF + 'a) = *pdf;
+                let ptr: *const (dyn PDF<S> + 'a) = *pdf;
                 let count = pdfs
                     .iter()
                     .filter(|p| {
-                        let other: *const (dyn PDF + 'a) = **p;
+                        let other: *const (dyn PDF<S> + 'a) = **p;
                         std::ptr::eq(other, ptr)
                     })
                     .count();
@@ -166,7 +142,7 @@ impl<'a> MixturePDF<'a> {
     }
 }
 
-impl<'a> PDF for MixturePDF<'a> {
+impl<'a, S: Sampler> PDF<S> for MixturePDF<'a, S> {
     fn value(&self, direction: Vec3) -> f64 {
         self.pdfs
             .iter()
@@ -175,24 +151,17 @@ impl<'a> PDF for MixturePDF<'a> {
             .sum()
     }
 
-    fn generate(
-        &self,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
-        let u = sampler.sample(sample_index, dim_offset.next_dim());
+    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        let u = dim_offset.next_sample();
         let mut cumulative = 0.0;
         for (pdf, &weight) in self.pdfs.iter().zip(&self.weights) {
             cumulative += weight;
             if u < cumulative {
-                return pdf.generate(sampler, sample_index, dim_offset);
+                return pdf.generate(dim_offset);
             }
         }
-        self.pdfs
-            .last()
-            .unwrap()
-            .generate(sampler, sample_index, dim_offset)
+
+        self.pdfs.last().unwrap().generate(dim_offset)
     }
 }
 
@@ -233,7 +202,7 @@ impl GgxSamplePDF {
     }
 }
 
-impl PDF for GgxSamplePDF {
+impl<S: Sampler> PDF<S> for GgxSamplePDF {
     fn value(&self, direction: Vec3) -> f64 {
         let wi = direction.unit_vector();
         let h = (self.wo + wi).unit_vector();
@@ -250,22 +219,17 @@ impl PDF for GgxSamplePDF {
         d * cos_h_n / (4.0 * cos_h)
     }
 
-    fn generate(
-        &self,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
-        let u1 = sampler.sample(sample_index, dim_offset.next_dim());
-        let u2 = sampler.sample(sample_index, dim_offset.next_dim());
+    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        let u = dim_offset.next_sample();
+        let v = dim_offset.next_sample();
 
         let a = self.alpha;
-        let cos_theta = ((1.0 - u2) / (1.0 + (a * a - 1.0) * u2))
+        let cos_theta = ((1.0 - v) / (1.0 + (a * a - 1.0) * v))
             .clamp(0.0, 1.0)
             .sqrt();
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 
-        let phi = 2.0 * PI * u1;
+        let phi = 2.0 * PI * u;
 
         // Local frame: x=bitangent, y=tangent, z=normal (matches ONB convention). Put cos_theta on
         // the normal axis (z).

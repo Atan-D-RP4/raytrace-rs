@@ -23,6 +23,7 @@ use crate::bvh::BvhNode;
 use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::ray::Ray;
+use crate::sampler::Sampler;
 
 /// Maximum traversal stack depth. 64 handles BVHs with up to 2^64 primitives.
 const MAX_STACK: usize = 64;
@@ -148,21 +149,21 @@ impl FlatBvhNode {
 }
 
 /// Flat BVH container: array-of-nodes + flat primitive list.
-pub struct FlatBvh {
+pub struct FlatBvh<S: Sampler> {
     /// Contiguous array of flat BVH nodes in DFS (pre-order) layout.
     nodes: Vec<FlatBvhNode>,
     /// Scene primitives in the order they appear in the flat leaf nodes.
-    primitives: Vec<Arc<dyn Hittable>>,
+    primitives: Vec<Arc<dyn Hittable<S>>>,
 }
 
-impl FlatBvh {
+impl<S: Sampler> FlatBvh<S> {
     /// Builds a flat BVH from a tree BVH.
     ///
     /// Traverses the tree in depth-first pre-order, collecting leaf
     /// primitives and emitting flat nodes. Interior children are stored
     /// by index; the DFS ordering guarantees children are emitted
     /// immediately after their parent.
-    pub fn from_bvh(bvh: BvhNode) -> Self {
+    pub fn from_bvh(bvh: BvhNode<S>) -> Self {
         let mut flat_nodes = Vec::new();
         let mut primitives = Vec::new();
 
@@ -181,9 +182,9 @@ impl FlatBvh {
     ///
     /// Returns the index of the emitted node.
     fn flatten_node(
-        node: BvhNode,
+        node: BvhNode<S>,
         flat_nodes: &mut Vec<FlatBvhNode>,
-        primitives: &mut Vec<Arc<dyn Hittable>>,
+        primitives: &mut Vec<Arc<dyn Hittable<S>>>,
     ) -> u32 {
         match node {
             BvhNode::Empty => {
@@ -270,7 +271,7 @@ impl FlatBvh {
     }
 }
 
-impl Hittable for FlatBvh {
+impl<S: Sampler> Hittable<S> for FlatBvh<S> {
     fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
         if self.nodes.is_empty() {
             return None;
@@ -361,6 +362,7 @@ impl Hittable for FlatBvh {
 mod tests {
     use super::*;
     use crate::material::Material;
+    use crate::sampler::SobolQmcSampler;
     use crate::sphere::Sphere;
     use crate::vec3::Vec3;
 
@@ -374,7 +376,7 @@ mod tests {
 
     #[test]
     fn flat_bvh_empty() {
-        let bvh = BvhNode::Empty;
+        let bvh = BvhNode::<SobolQmcSampler>::Empty;
         let flat = FlatBvh::from_bvh(bvh);
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(0., 0., -1.), 0.0);
         assert!(
@@ -385,7 +387,7 @@ mod tests {
 
     #[test]
     fn flat_bvh_single_sphere() {
-        let sphere: Arc<dyn Hittable> = Arc::new(Sphere::new(
+        let sphere: Arc<dyn Hittable<SobolQmcSampler>> = Arc::new(Sphere::new(
             &Vec3::from(0., 0., -2.),
             0.5,
             Material::lambertian_color(0.8, 0.2, 0.2),
@@ -416,12 +418,12 @@ mod tests {
 
     #[test]
     fn flat_bvh_two_spheres() {
-        let s1: Arc<dyn Hittable> = Arc::new(Sphere::new(
+        let s1: Arc<dyn Hittable<SobolQmcSampler>> = Arc::new(Sphere::new(
             &Vec3::from(-1., 0., -2.),
             0.5,
             Material::lambertian_color(1.0, 0.0, 0.0),
         ));
-        let s2: Arc<dyn Hittable> = Arc::new(Sphere::new(
+        let s2: Arc<dyn Hittable<SobolQmcSampler>> = Arc::new(Sphere::new(
             &Vec3::from(1., 0., -2.),
             0.5,
             Material::lambertian_color(0.0, 1.0, 0.0),

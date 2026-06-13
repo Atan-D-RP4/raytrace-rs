@@ -155,7 +155,7 @@ pub trait Region2D: Send + Sync {
     fn sample(&self, u: f64, v: f64) -> (f64, f64);
 }
 
-impl<R: Region2D> Hittable for PlanarPatch<R> {
+impl<R: Region2D, S: Sampler> Hittable<S> for PlanarPatch<R> {
     fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
         let hit = self.hit_plane(ray, ray_t)?;
         if !self.region.contains(hit.a, hit.b) {
@@ -179,7 +179,8 @@ impl<R: Region2D> Hittable for PlanarPatch<R> {
             return 0.0;
         }
 
-        if let Some(hit) = self.hit(
+        if let Some(hit) = <Self as Hittable<S>>::hit(
+            self,
             &Ray::new(origin, direction),
             Interval::from(0.001, f64::INFINITY),
         ) {
@@ -195,15 +196,10 @@ impl<R: Region2D> Hittable for PlanarPatch<R> {
         }
     }
 
-    fn random(
-        &self,
-        origin: Vec3,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
-        let u = sampler.sample(sample_index, dim_offset.next_dim());
-        let v = sampler.sample(sample_index, dim_offset.next_dim());
+    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        let u = dim_offset.next_sample();
+        let v = dim_offset.next_sample();
+
         let (a, b) = self.region.sample(u, v);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
         random_point - origin

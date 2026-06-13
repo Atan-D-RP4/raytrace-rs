@@ -78,7 +78,7 @@ impl Sphere {
     }
 }
 
-impl Hittable for Sphere {
+impl<S: Sampler> Hittable<S> for Sphere {
     /// Intersects a ray with the sphere and returns the nearest valid hit.
     ///
     /// Uses the quadratic root form optimized with `h = dot(d, oc)` and checks
@@ -123,12 +123,12 @@ impl Hittable for Sphere {
     }
 
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        if self
-            .hit(
-                &Ray::new(origin, direction),
-                Interval::from(0.001, f64::INFINITY),
-            )
-            .is_some()
+        if <Sphere as Hittable<S>>::hit(
+            self,
+            &Ray::new(origin, direction),
+            Interval::from(0.001, f64::INFINITY),
+        )
+        .is_some()
         {
             let distance_squared = (self.center.at(0.) - origin).length_squared();
             let cos_theta_max = (1. - (self.radius * self.radius) / distance_squared).sqrt();
@@ -139,18 +139,13 @@ impl Hittable for Sphere {
         }
     }
 
-    fn random(
-        &self,
-        origin: Vec3,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
+    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
         let direction_to_center = self.center.at(0.0) - origin;
         let distance_squared = direction_to_center.length_squared();
         let uvw = Onb::build_from_normal(direction_to_center);
-        let r1 = sampler.sample(sample_index, dim_offset.next_dim());
-        let r2 = sampler.sample(sample_index, dim_offset.next_dim());
+
+        let r1 = dim_offset.next_sample();
+        let r2 = dim_offset.next_sample();
         uvw.local_to_world(self.random_to_sphere(distance_squared, r1, r2))
     }
 }

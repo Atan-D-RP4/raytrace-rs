@@ -8,6 +8,7 @@ use crate::const_medium::ConstantMedium;
 use crate::hittable::Hittable;
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
+use crate::sampler::Sampler;
 use crate::sphere::Sphere;
 use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Texture, TextureMapping,
@@ -23,15 +24,15 @@ fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
     ))
 }
 
-pub struct Scene {
+pub struct Scene<S: Sampler> {
     config: CameraConfig,
-    objects: Vec<Arc<dyn Hittable>>,
+    objects: Vec<Arc<dyn Hittable<S>>>,
     /// Geometry-only copies of emitting objects, used by the integrator
     /// for light importance sampling (HittablePDF).
-    light_objects: Vec<Arc<dyn Hittable>>,
+    light_objects: Vec<Arc<dyn Hittable<S>>>,
 }
 
-impl Scene {
+impl<S: Sampler + 'static> Scene<S> {
     pub fn new() -> Self {
         Self {
             config: CameraConfig::new(),
@@ -53,7 +54,7 @@ impl Scene {
     ///
     /// `light_objects` are geometry-only copies of emitting primitives,
     /// used by the integrator for importance sampling (HittablePDF).
-    pub fn into_objects(self) -> (Vec<Arc<dyn Hittable>>, Vec<Arc<dyn Hittable>>) {
+    pub fn into_objects(self) -> (Vec<Arc<dyn Hittable<S>>>, Vec<Arc<dyn Hittable<S>>>) {
         (self.objects, self.light_objects)
     }
 
@@ -108,7 +109,7 @@ impl Scene {
     }
 }
 
-impl Scene {
+impl<S: Sampler + 'static> Scene<S> {
     pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
         trace!(?center, radius, "add sphere");
         if matches!(material, Material::DiffuseLight { .. }) {
@@ -154,17 +155,17 @@ impl Scene {
         )));
     }
 
-    pub fn add_object(&mut self, object: Arc<dyn Hittable>) {
+    pub fn add_object(&mut self, object: Arc<dyn Hittable<S>>) {
         self.objects.push(object);
     }
 
-    pub fn add_light(&mut self, light: Arc<dyn Hittable>) {
+    pub fn add_light(&mut self, light: Arc<dyn Hittable<S>>) {
         self.objects.push(light.clone());
         self.light_objects.push(light);
     }
 }
 
-impl Scene {
+impl<S: Sampler + 'static> Scene<S> {
     pub fn complex_scene() -> Self {
         // TODO(gpu): split into scene graph build + accel flatten + resource staging phases.
         profiling::scope!("complex_scene_build");
@@ -174,7 +175,7 @@ impl Scene {
 
         let boxes_per_side = 20;
         // TODO(gpu): this dense grid is a prime candidate for GPU instance buffers.
-        let mut boxes1: Vec<Arc<dyn Hittable>> =
+        let mut boxes1: Vec<Arc<dyn Hittable<S>>> =
             Vec::with_capacity(boxes_per_side * boxes_per_side);
         for i in 0..boxes_per_side {
             for j in 0..boxes_per_side {
@@ -243,7 +244,7 @@ impl Scene {
         ));
         scene
             .objects
-            .push(Arc::clone(&boundary) as Arc<dyn Hittable>);
+            .push(Arc::clone(&boundary) as Arc<dyn Hittable<S>>);
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             boundary,
             0.2,
@@ -257,7 +258,7 @@ impl Scene {
         ));
         scene
             .objects
-            .push(Arc::clone(&boundary) as Arc<dyn Hittable>);
+            .push(Arc::clone(&boundary) as Arc<dyn Hittable<S>>);
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             boundary,
             0.0001,
@@ -285,7 +286,7 @@ impl Scene {
         );
 
         let white = Material::lambertian_color(0.73, 0.73, 0.73);
-        let mut boxes2: Vec<Arc<dyn Hittable>> = Vec::with_capacity(1000);
+        let mut boxes2: Vec<Arc<dyn Hittable<S>>> = Vec::with_capacity(1000);
         for _ in 0..1000 {
             boxes2.push(Arc::new(Sphere::new(
                 &Point3::random_range(0., 165.),
@@ -353,12 +354,13 @@ impl Scene {
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
                     Translate,
-                    TransformObject<RotateY, Vec<Arc<dyn Hittable>>>,
+                    TransformObject<RotateY, Vec<Arc<dyn Hittable<S>>>, S>,
+                    S,
                 > = TransformObject::new(Translate::new(*translate_vec), rotated);
                 let const_medium =
                     ConstantMedium::new(Arc::new(wrapped), 0.01, Arc::new(phase_fn.clone()));
 
-                Arc::new(const_medium) as Arc<dyn Hittable>
+                Arc::new(const_medium) as Arc<dyn Hittable<S>>
             });
 
         scene.objects.extend(boxes);
@@ -403,10 +405,11 @@ impl Scene {
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
                     Translate,
-                    TransformObject<RotateY, Vec<Arc<dyn Hittable>>>,
+                    TransformObject<RotateY, Vec<Arc<dyn Hittable<S>>>, S>,
+                    S,
                 > = TransformObject::new(Translate::new(*translate_vec), rotated);
 
-                Arc::new(wrapped) as Arc<dyn Hittable>
+                Arc::new(wrapped) as Arc<dyn Hittable<S>>
             });
 
         scene.objects.extend(boxes);
@@ -863,7 +866,7 @@ impl Scene {
     }
 }
 
-impl Default for Scene {
+impl<S: Sampler + 'static> Default for Scene<S> {
     fn default() -> Self {
         Self::new()
     }

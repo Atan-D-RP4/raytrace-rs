@@ -95,7 +95,7 @@ impl<'rec> HitRecord<'rec> {
 }
 
 /// Trait for ray-testable scene primitives with BVH-compatible bounds.
-pub trait Hittable: Send + Sync {
+pub trait Hittable<S: Sampler>: Send + Sync {
     /// Returns the closest hit inside `[ray_t.min, ray_t.max]`, if any.
     fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>>;
 
@@ -111,20 +111,14 @@ pub trait Hittable: Send + Sync {
 
     /// Samples a random direction toward this hittable from a given origin.
     /// Default returns (1, 0, 0) as a placeholder.
-    fn random(
-        &self,
-        origin: Vec3,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
-        let _ = (origin, sampler, sample_index, dim_offset);
+    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        let _ = (origin, dim_offset);
         Vec3::from(1., 0., 0.)
     }
 }
 
 /// Blanket impl: Vec of Hittable objects is itself Hittable.
-impl<T: Hittable> Hittable for Vec<T> {
+impl<S: Sampler, T: Hittable<S>> Hittable<S> for Vec<T> {
     fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
         let mut closest = ray_t.max;
         let mut result = None;
@@ -150,26 +144,20 @@ impl<T: Hittable> Hittable for Vec<T> {
             .fold(0.0, |acc, val| acc + val)
     }
 
-    fn random(
-        &self,
-        origin: Vec3,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
+    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
         if self.is_empty() {
             return Vec3::ZERO;
         }
         let len = self.len();
-        let u = sampler.sample(sample_index, dim_offset.next_dim());
+        let u = dim_offset.next_sample();
         let index = (u * len as f64).min(len as f64 - 1e-15) as usize;
-        self[index].random(origin, sampler, sample_index, dim_offset)
+        self[index].random(origin, dim_offset)
     }
 }
 
 /// Blanket impl: Arc<T> is Hittable if T is Hittable.
 /// Covers Arc<dyn Hittable>, Arc<Quad>, etc.
-impl<T: Hittable + ?Sized> Hittable for Arc<T> {
+impl<S: Sampler, T: Hittable<S> + ?Sized> Hittable<S> for Arc<T> {
     fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
         (**self).hit(ray, ray_t)
     }
@@ -182,13 +170,7 @@ impl<T: Hittable + ?Sized> Hittable for Arc<T> {
         (**self).pdf_value(origin, direction)
     }
 
-    fn random(
-        &self,
-        origin: Vec3,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
-        (**self).random(origin, sampler, sample_index, dim_offset)
+    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        (**self).random(origin, dim_offset)
     }
 }

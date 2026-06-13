@@ -7,20 +7,21 @@ use crate::hittable::{HitRecord, Hittable};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
+use crate::sampler::Sampler;
 use crate::texture::Texture;
 use crate::vec3::Vec3;
 
-pub struct ConstantMedium {
+pub struct ConstantMedium<S: Sampler + ?Sized> {
     /// The boundary defines the shape of the volume (e.g., a sphere or box).
-    boundary: Arc<dyn Hittable>,
+    boundary: Arc<dyn Hittable<S>>,
     /// The phase function determines how light scatters within the volume.
     phase_fn: Arc<Material>,
     /// The negative inverse of the density is precomputed for efficient sampling of scattering events.
     neg_inv_density: f64,
 }
 
-impl ConstantMedium {
-    pub fn new(boundary: Arc<dyn Hittable>, density: f64, phase_fn: Arc<Material>) -> Self {
+impl<S: Sampler> ConstantMedium<S> {
+    pub fn new(boundary: Arc<dyn Hittable<S>>, density: f64, phase_fn: Arc<Material>) -> Self {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
@@ -30,7 +31,11 @@ impl ConstantMedium {
 
     /// Construct a constant medium with a textured phase function (isotropic
     /// scattering — correct for volumes).
-    pub fn new_texture(boundary: Arc<dyn Hittable>, density: f64, tex: Arc<dyn Texture>) -> Self {
+    pub fn new_texture(
+        boundary: Arc<dyn Hittable<S>>,
+        density: f64,
+        tex: Arc<dyn Texture>,
+    ) -> Self {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
@@ -39,7 +44,7 @@ impl ConstantMedium {
     }
 
     /// Construct a constant medium with a uniform albedo (isotropic scattering) for pure uniform-sphere phase.
-    pub fn new_albedo(boundary: Arc<dyn Hittable>, density: f64, albedo: Vec3) -> Self {
+    pub fn new_albedo(boundary: Arc<dyn Hittable<S>>, density: f64, albedo: Vec3) -> Self {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
@@ -48,7 +53,7 @@ impl ConstantMedium {
     }
 }
 
-impl Hittable for ConstantMedium {
+impl<S: Sampler> Hittable<S> for ConstantMedium<S> {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
         let mut rec1 = self.boundary.hit(ray, Interval::UNIVERSE)?;
         let mut rec2 = self

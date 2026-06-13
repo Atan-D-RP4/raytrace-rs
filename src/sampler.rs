@@ -88,6 +88,15 @@ const INV_U32: f64 = 1.0 / (1u64 << 32) as f64;
 /// Conversion from u64 upper bits to [0,1).
 const INV_53: f64 = 1.0 / (1u64 << 53) as f64;
 
+/// Deterministic per-pixel seed used by the camera.
+/// Same hash as `SobolQmcSampler::for_pixel`.
+#[inline]
+pub fn pixel_seed(pixel_x: i32, pixel_y: i32) -> u64 {
+    splitmix64(pixel_x as u64 ^ 0x9E3779B97F4A7C15)
+        .wrapping_mul(0xBF58476D1CE4E5B9)
+        .wrapping_add(pixel_y as u64 ^ 0xE5B9A97F4A7C15F0)
+}
+
 /// SplitMix64 — fast deterministic hash.
 fn splitmix64(mut x: u64) -> u64 {
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
@@ -298,16 +307,23 @@ impl Sampler for StratifiedRandomSampler {
 /// // dims is now at offset 2; next caller starts at dim 6
 /// ```
 #[derive(Clone, Debug)]
-pub struct DimCursor {
+pub struct DimCursor<S: Sampler> {
     base: u32,
     offset: u32,
+    pub sample_idx: u32,
+    pub sampler: S,
 }
 
-impl DimCursor {
+impl<S: Sampler> DimCursor<S> {
     /// Creates a cursor starting at dimension `base`.
     #[inline(always)]
-    pub const fn new(base: u32) -> Self {
-        Self { base, offset: 0 }
+    pub fn new(base: u32, sampler: S) -> Self {
+        Self {
+            base,
+            offset: 0,
+            sample_idx: 0,
+            sampler,
+        }
     }
 
     /// Returns the current dimension and advances by one.
@@ -316,6 +332,14 @@ impl DimCursor {
         let v = self.base + self.offset;
         self.offset += 1;
         v
+    }
+
+    /// Returns next sample and advances dimension.
+    #[inline(always)]
+    pub fn next_sample(&mut self) -> f64 {
+        let d = self.base + self.offset;
+        self.offset += 1;
+        self.sampler.sample(self.sample_idx, d)
     }
 }
 

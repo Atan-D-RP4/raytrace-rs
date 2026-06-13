@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use crate::hittable::Hittable;
 use crate::material::Material;
+use crate::sampler::Sampler;
 use crate::vec3::{Point3, Vec3};
 
 use crate::planar::quad;
 
-pub fn box3d(a: Point3, b: Point3, material: Material) -> Vec<Arc<dyn Hittable>> {
-    let mut sides: Vec<Arc<dyn Hittable>> = Vec::with_capacity(6);
+pub fn box3d<S: Sampler>(a: Point3, b: Point3, material: Material) -> Vec<Arc<dyn Hittable<S>>> {
+    let mut sides: Vec<Arc<dyn Hittable<S>>> = Vec::with_capacity(6);
 
     let min = Point3::from(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
     let max = Point3::from(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));

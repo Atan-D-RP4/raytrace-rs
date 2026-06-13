@@ -8,34 +8,34 @@ use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 use tracing::{info, trace};
 
+const BVH_BIN_SIZE: usize = 32;
+
 /// A binary BVH node for accelerating ray-scene intersection queries.
-pub enum BvhNode {
+pub enum BvhNode<S: Sampler> {
     Empty,
     Interior {
-        left: Box<BvhNode>,
-        right: Box<BvhNode>,
+        left: Box<BvhNode<S>>,
+        right: Box<BvhNode<S>>,
         bbox: Aabb,
     },
     Leaf {
-        object: Arc<dyn Hittable>,
+        object: Arc<dyn Hittable<S>>,
         bbox: Aabb,
     },
 }
 
-impl BvhNode {
-    const BIN_SIZE: usize = 32;
-
+impl<S: Sampler> BvhNode<S> {
     /// Builds a BVH subtree from `objects` (a mutable slice).
     ///
     /// Strategy:
     /// - compute merged bounds for all objects,
     /// - bin centroids on each axis and evaluate SAH cost,
     /// - split at cheapest partition, recurse.
-    pub fn new(objects: &mut [Arc<dyn Hittable>]) -> Self {
+    pub fn new(objects: &mut [Arc<dyn Hittable<S>>]) -> Self {
         info!(object_count = objects.len(), "building bvh");
         let obj_span = objects.len();
 
-        let mut centroids: Vec<(Arc<dyn Hittable>, Point3)> = Vec::with_capacity(obj_span);
+        let mut centroids: Vec<(Arc<dyn Hittable<S>>, Point3)> = Vec::with_capacity(obj_span);
         let mut bbox = Aabb::new();
 
         for object in objects.iter() {
@@ -84,8 +84,8 @@ impl BvhNode {
                     );
 
                     // Create the Bins
-                    let mut bin_count = [0; Self::BIN_SIZE];
-                    let mut bin_bbox = [Aabb::new(); Self::BIN_SIZE];
+                    let mut bin_count = [0; BVH_BIN_SIZE];
+                    let mut bin_bbox = [Aabb::new(); BVH_BIN_SIZE];
 
                     let range = max_c - min_c;
                     if range < 1e-10 {
@@ -95,9 +95,9 @@ impl BvhNode {
                     // Bin the objects
                     for (object, centroid) in centroids.iter() {
                         let t = (centroid[axis] - min_c) / range;
-                        let b = (t * Self::BIN_SIZE as f64)
+                        let b = (t * BVH_BIN_SIZE as f64)
                             .floor()
-                            .clamp(0., Self::BIN_SIZE as f64 - 1.)
+                            .clamp(0., BVH_BIN_SIZE as f64 - 1.)
                             as usize;
                         bin_count[b] += 1;
                         bin_bbox[b] = bin_bbox[b].merge(object.bounding_box());
@@ -105,12 +105,12 @@ impl BvhNode {
 
                     // Precompute suffix AABBs and counts.
                     // suffix_bbox[b] = AABB of bins[b..B-1], suffix_count[b] = #objects in those bins.
-                    let mut suffix_bbox = [Aabb::new(); Self::BIN_SIZE];
-                    let mut suffix_count = [0usize; Self::BIN_SIZE];
+                    let mut suffix_bbox = [Aabb::new(); BVH_BIN_SIZE];
+                    let mut suffix_count = [0usize; BVH_BIN_SIZE];
                     {
                         let mut bbox = Aabb::new();
                         let mut count = 0;
-                        for b in (0..Self::BIN_SIZE).rev() {
+                        for b in (0..BVH_BIN_SIZE).rev() {
                             bbox = bbox.merge(bin_bbox[b]);
                             count += bin_count[b];
                             suffix_bbox[b] = bbox;
@@ -121,7 +121,7 @@ impl BvhNode {
                     // Sweep from left to right, using precomputed suffix for the right side.
                     let mut left_bbox = Aabb::new();
                     let mut left_count = 0;
-                    for b in 0..Self::BIN_SIZE - 1 {
+                    for b in 0..BVH_BIN_SIZE - 1 {
                         left_bbox = left_bbox.merge(bin_bbox[b]);
                         left_count += bin_count[b];
                         let right_bbox = suffix_bbox[b + 1];
@@ -183,7 +183,7 @@ impl BvhNode {
     }
 }
 
-impl Hittable for BvhNode {
+impl<S: Sampler> Hittable<S> for BvhNode<S> {
     fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
         match self {
             Self::Empty => None,
@@ -223,25 +223,19 @@ impl Hittable for BvhNode {
         }
     }
 
-    fn random(
-        &self,
-        origin: Vec3,
-        sampler: &dyn Sampler,
-        sample_index: u32,
-        dim_offset: &mut DimCursor,
-    ) -> Vec3 {
+    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
         match self {
             Self::Empty => Vec3::from(1., 0., 0.),
-            Self::Leaf { object, .. } => object.random(origin, sampler, sample_index, dim_offset),
+            Self::Leaf { object, .. } => object.random(origin, dim_offset),
             Self::Interior { left, right, .. } => {
                 let left_count = left.leaf_count() as f64;
                 let right_count = right.leaf_count() as f64;
                 let total = left_count + right_count;
-                let u = sampler.sample(sample_index, dim_offset.next_dim());
+                let u = dim_offset.next_sample();
                 if u < left_count / total {
-                    left.random(origin, sampler, sample_index, dim_offset)
+                    left.random(origin, dim_offset)
                 } else {
-                    right.random(origin, sampler, sample_index, dim_offset)
+                    right.random(origin, dim_offset)
                 }
             }
         }

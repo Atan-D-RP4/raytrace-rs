@@ -19,7 +19,7 @@ use crate::interval::Interval;
 use crate::material::PdfKind;
 use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
-use crate::sampler::{DimCursor, Sampler, SobolQmcSampler};
+use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Color3, Point3, Vec3};
 
 /// Thread-safe framebuffer shared between UI thread and render thread.
@@ -222,10 +222,11 @@ impl Camera {
     /// When `framebuffer` is `Some`, publishes progressive intermediate frames
     /// to the shared framebuffer during rendering (live preview mode).
     /// When `None`, renders all samples and returns the final image only.
-    pub fn render(
+    pub fn render<S: Sampler, W: Hittable<S>>(
         &mut self,
-        world: &dyn Hittable,
-        lights: &dyn Hittable,
+        world: &W,
+        lights: &dyn Hittable<S>,
+        make_sampler: impl Fn(i32, i32) -> S + Sync,
         framebuffer: Option<SharedFramebuffer>,
     ) -> (u32, u32, Vec<u8>) {
         let _span = tracing::info_span!(
@@ -263,20 +264,13 @@ impl Camera {
                     let i = (idx % width) as f64;
                     let j = (idx / width) as f64;
 
-                    // Deterministic per-pixel seed from pixel coordinates.
-                    let sampler = SobolQmcSampler::for_pixel(
-                        idx as i32 % width as i32,
-                        idx as i32 / width as i32,
-                    );
-                    let ray = self.get_ray(i, j, &sampler, sample_idx as u32);
-                    let sample = self.ray_color(
-                        &ray,
-                        self.max_depth,
-                        world,
-                        lights,
-                        &sampler,
-                        sample_idx as u32,
-                    );
+                    // Deterministic per-pixel sampler from pixel coordinates.
+                    let sampler =
+                        make_sampler(idx as i32 % width as i32, idx as i32 / width as i32);
+                    let mut dims = DimCursor::new(0, sampler);
+                    dims.sample_idx = sample_idx as u32;
+                    let ray = self.get_ray(i, j, &mut dims);
+                    let sample = self.ray_color(&ray, self.max_depth, world, lights, &mut dims);
 
                     if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite() {
                         *accum_color += sample;
@@ -349,9 +343,9 @@ impl Camera {
     }
 
     /// Camera ray through pixel (i, j). Dims 0-1 = AA jitter, 2-3 = defocus.
-    fn get_ray(&self, i: f64, j: f64, sampler: &dyn Sampler, sample_index: u32) -> Ray {
-        let offset_u = sampler.sample(sample_index, 0);
-        let offset_v = sampler.sample(sample_index, 1);
+    fn get_ray<S: Sampler>(&self, i: f64, j: f64, dims: &mut DimCursor<S>) -> Ray {
+        let offset_u = dims.next_sample();
+        let offset_v = dims.next_sample();
 
         let pixel_sample = self.pixel00_loc
             + ((i + offset_u) * self.pixel_delta_u)
@@ -361,8 +355,8 @@ impl Camera {
             self.look_from
         } else {
             // Sample a point on the defocus disk for depth-of-field ray origins.
-            let r = sampler.sample(sample_index, 2).sqrt();
-            let theta = sampler.sample(sample_index, 3) * 2.0 * std::f64::consts::PI;
+            let r = dims.next_sample().sqrt();
+            let theta = dims.next_sample() * 2.0 * std::f64::consts::PI;
             let px = r * theta.cos();
             let py = r * theta.sin();
             self.look_from + (px * self.defocus_disk_u) + (py * self.defocus_disk_v)
@@ -384,20 +378,17 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
-    fn ray_color(
+    fn ray_color<S: Sampler, W: Hittable<S>>(
         &self,
         initial_ray: &Ray,
         depth: i32,
-        world: &dyn Hittable,
-        lights: &dyn Hittable,
-        sampler: &dyn Sampler,
-        sample_index: u32,
+        world: &W,
+        lights: &dyn Hittable<S>,
+        dims: &mut DimCursor<S>,
     ) -> Color3 {
         let mut ray = *initial_ray;
         let mut accumulated_attenuation = Color3::from(1., 1., 1.);
         let mut accumulated_color = Color3::from(0., 0., 0.);
-
-        let mut dims = DimCursor::new(4); // after ray setup dims (0-3 for AA + defocus)
 
         for bounce in 0..depth {
             if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
@@ -413,11 +404,11 @@ impl Camera {
                     return accumulated_color;
                 }
 
-                let rr = sampler.sample(sample_index, dims.next_dim());
-                let u_mat = sampler.sample(sample_index, dims.next_dim());
-                let v_mat = sampler.sample(sample_index, dims.next_dim());
-                let w_mat = sampler.sample(sample_index, dims.next_dim());
-                let x_mat = sampler.sample(sample_index, dims.next_dim());
+                let rr = dims.next_sample();
+                let u_mat = dims.next_sample();
+                let v_mat = dims.next_sample();
+                let w_mat = dims.next_sample();
+                let x_mat = dims.next_sample();
 
                 // Russian Roulette: survival probability proportional to current
                 // path throughput.  The 0.05 floor bounds variance from low-throughput paths.
@@ -445,7 +436,7 @@ impl Camera {
                         // Non-delta material: mixture PDF of light + surface sampling.
                         // Weighted 1/3 light, 2/3 surface — surface PDF is usually the better match
                         // for glossy/Lambertian BRDFs.
-                        let surface_pdf: &dyn PDF = match sample.pdf_kind {
+                        let surface_pdf: &dyn PDF<S> = match sample.pdf_kind {
                             PdfKind::Cosine { normal } => &CosinePDF::new(normal),
                             PdfKind::Ggx {
                                 wo: ggx_wo,
@@ -458,10 +449,10 @@ impl Camera {
                         };
 
                         let light_pdf = HittablePDF::new(lights, record.point);
-                        let pdfs: &[&dyn PDF] = &[&light_pdf, surface_pdf, surface_pdf];
+                        let pdfs: &[&dyn PDF<S>] = &[&light_pdf, surface_pdf, surface_pdf];
                         let sampling_pdf = MixturePDF::new(pdfs);
 
-                        let direction = sampling_pdf.generate(sampler, sample_index, &mut dims);
+                        let direction = sampling_pdf.generate(dims);
                         // Unitize for BRDF evaluation — PlanarPatch::random() returns a
                         // non-unit vector (distance to light), and BRDFs expect unit length.
                         let direction_unit = direction.unit_vector();
