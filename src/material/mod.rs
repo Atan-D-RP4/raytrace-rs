@@ -304,8 +304,16 @@ impl Material {
             }
             Material::Coated {
                 substrate,
-                coating: _,
+                coating: _coating,
             } => {
+                // NOTE: `_coating` is intentionally unused in `sample()` because
+                // the outer Fresnel branch handles coating reflection directly
+                // (delta BSDF). The coating IS used in `eval()` and `pdf()` for
+                // MIS weighting — this is correct because the coating's eval/pdf
+                // return zero for non-specular directions, so the mixture resolves
+                // identically. If the coating BSDF ever gains a non-delta component,
+                // this branch will need to be updated to keep sample/eval/pdf
+                // consistent.
                 let cos_o = wo.dot(&si.shading_normal()).abs();
                 let f = fresnel_schlick(cos_o, 1.5);
                 if u < f {

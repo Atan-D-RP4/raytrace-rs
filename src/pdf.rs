@@ -117,27 +117,14 @@ pub struct MixturePDF<'a, S: Sampler> {
 }
 
 impl<'a, S: Sampler> MixturePDF<'a, S> {
-    /// Creates a mixture PDF with weights inferred from pointer identity.
+    /// Creates a mixture PDF with uniform weights per entry.
     ///
-    /// If a PDF appears multiple times in the slice, its weight is proportional
-    /// to its count. For example, `[light_pdf, surface_pdf, surface_pdf]`
-    /// yields weights `[1/3, 2/3]` — the surface PDF gets double weight.
+    /// Callers control the mixture by repeating entries: `[light, surface, surface]`
+    /// gives surface double weight — each entry gets `1/n`, so `value()` returns
+    /// `light/3 + 2*surface/3`.
     pub fn new(pdfs: &'a [&'a dyn PDF<S>]) -> Self {
         let n = pdfs.len() as f64;
-        let weights: Vec<f64> = pdfs
-            .iter()
-            .map(|pdf| {
-                let ptr: *const (dyn PDF<S> + 'a) = *pdf;
-                let count = pdfs
-                    .iter()
-                    .filter(|p| {
-                        let other: *const (dyn PDF<S> + 'a) = **p;
-                        std::ptr::eq(other, ptr)
-                    })
-                    .count();
-                count as f64 / n
-            })
-            .collect();
+        let weights = vec![1.0 / n; pdfs.len()];
         MixturePDF { pdfs, weights }
     }
 }

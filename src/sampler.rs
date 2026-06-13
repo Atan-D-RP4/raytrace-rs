@@ -4,7 +4,6 @@
 //! This makes samplers deterministic, `Sync`, and immune to state corruption
 //! from variable-length paths.
 
-use std::cell::Cell;
 use std::sync::LazyLock;
 
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
@@ -98,7 +97,7 @@ pub fn pixel_seed(pixel_x: i32, pixel_y: i32) -> u64 {
 }
 
 /// SplitMix64 — fast deterministic hash.
-fn splitmix64(mut x: u64) -> u64 {
+pub(crate) fn splitmix64(mut x: u64) -> u64 {
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
     x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
     x ^ (x >> 31)
@@ -110,7 +109,7 @@ fn splitmix_shift(seed: u64, d: u32) -> u32 {
 }
 
 /// Hash `(n, d, seed)` into [0, 1).
-fn hash_sample(n: u32, d: u32, seed: u64) -> f64 {
+pub(crate) fn hash_sample(n: u32, d: u32, seed: u64) -> f64 {
     let h = splitmix64(
         seed ^ (n as u64)
             .wrapping_mul(0x9E3779B97F4A7C15)
@@ -119,77 +118,9 @@ fn hash_sample(n: u32, d: u32, seed: u64) -> f64 {
     ((h >> 11) as f64) * INV_53
 }
 
-// Gray-code Sobol recurrence: x_{k+1}[d] = x_k[d] ⊕ V[d][tzcnt(k+1)].
-// Since V[d][c] only depends on c = tzcnt(k), ALL dimensions share step c.
-//
-// xs[d] stores raw_accum ⊕ shift(seed, d) so the hot path is cache lookup +
-// multiply — no per-sample splitmix.  When the pixel seed changes the cache
-// rebases all 512 dims (amortised across 50+ bounces × ~8 dims).
-
-thread_local! {
-    static GRAY_CACHE: GrayCodeCache = const { GrayCodeCache {
-        last_n: Cell::new(0),
-        last_seed: Cell::new(0),
-        // Cell<u32> is !Copy, const { ... } initialises each element independently.
-        xs: [const { Cell::new(0) }; MAX_DIMS],
-    } };
-}
-
-/// Per-thread Sobol cache — folds the digital shift into xs[d] so sample()
-/// is just a load + multiply.  Rebases all 512 dims when the pixel seed changes.
-struct GrayCodeCache {
-    last_n: Cell<u32>,
-    last_seed: Cell<u64>,
-    xs: [Cell<u32>; MAX_DIMS],
-}
-
-impl GrayCodeCache {
-    /// Ensure cache is current for `(n, seed)`, return `xs[d]`.
-    #[inline(always)]
-    fn get(&self, d: usize, n: u32, seed: u64) -> u32 {
-        let last_seed = self.last_seed.get();
-        if last_seed != seed {
-            // Rebase: XOR out old shift, XOR in new shift for all 512 dims.
-            for dim in 0..MAX_DIMS {
-                let cur = self.xs[dim].get();
-                let old_sh = splitmix_shift(last_seed, dim as u32);
-                let new_sh = splitmix_shift(seed, dim as u32);
-                self.xs[dim].set(cur ^ old_sh ^ new_sh);
-            }
-            self.last_seed.set(seed);
-        }
-
-        let last_n = self.last_n.get();
-        if n > last_n {
-            for k in (last_n + 1)..=n {
-                let c = k.trailing_zeros() as usize;
-                for dim in 0..MAX_DIMS {
-                    let cur = self.xs[dim].get();
-                    self.xs[dim].set(cur ^ DIRS[dim][c]);
-                }
-            }
-            self.last_n.set(n);
-        } else if n < last_n {
-            // Full reset: initialise with shift(seed), then accumulate to n.
-            for dim in 0..MAX_DIMS {
-                self.xs[dim].set(splitmix_shift(seed, dim as u32));
-            }
-            for k in 1..=n {
-                let c = k.trailing_zeros() as usize;
-                for dim in 0..MAX_DIMS {
-                    let cur = self.xs[dim].get();
-                    self.xs[dim].set(cur ^ DIRS[dim][c]);
-                }
-            }
-            self.last_n.set(n);
-        }
-
-        self.xs[d].get()
-    }
-}
-
-/// Sobol' quasi-random sampler — uses a thread-local Gray-code cache
-/// so `sample()` is a single cache lookup + multiply.
+/// Sobol' quasi-random sampler — stateless, uses direct Gray-code
+/// computation so `sample(n, d)` is fully deterministic and independent
+/// of prior sample history. No thread-local state.
 pub struct SobolQmcSampler {
     seed: u64,
 }
@@ -224,11 +155,18 @@ impl Default for SobolQmcSampler {
 impl Sampler for SobolQmcSampler {
     #[inline(always)]
     fn sample(&self, n: u32, d: u32) -> f64 {
-        GRAY_CACHE.with(|cache| {
-            let d_idx = (d as usize).min(MAX_DIMS - 1);
-            // xs[d] has the digital shift folded in — no per-sample hash.
-            cache.get(d_idx, n, self.seed) as f64 * INV_U32
-        })
+        let d_idx = (d as usize).min(MAX_DIMS - 1);
+        // Gray code g(n) = n ^ (n >> 1).
+        // Each set bit at position c contributes V[dim][c].
+        let gn = n ^ (n >> 1);
+        let mut v = splitmix_shift(self.seed, d);
+        let mut g = gn;
+        while g != 0 {
+            let c = g.trailing_zeros() as usize;
+            v ^= DIRS[d_idx][c];
+            g &= g - 1; // clear lowest set bit
+        }
+        v as f64 * INV_U32
     }
 }
 

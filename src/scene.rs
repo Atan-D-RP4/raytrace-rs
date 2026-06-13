@@ -258,9 +258,9 @@ impl<S: Sampler + 'static> Scene<S> {
             Color3::from(1., 1., 1.),
         )));
 
-        let emat: Arc<dyn Texture> = match ImageTexture::new("./earthmap.jpg") {
+        let emat: Arc<dyn Texture> = match ImageTexture::new("./earthmap.png") {
             Ok(tex) => Arc::new(MappedTexture::new(TextureMapping::Identity, Arc::new(tex))),
-            Err(e) => panic!("Failed to load earthmap.jpg for complex_scene: {e:?}"),
+            Err(e) => panic!("Failed to load earthmap.png for complex_scene: {e:?}"),
         };
         scene.add_sphere(
             Point3::from(400., 200., 400.),
@@ -439,7 +439,7 @@ impl<S: Sampler + 'static> Scene<S> {
             green,
         );
         scene.add_quad(
-            Point3::from(0., 555., 555.),
+            Point3::from(0., 0., 555.),
             Vec3::from(0., 0., -555.),
             Vec3::from(0., 555., 0.),
             red,
