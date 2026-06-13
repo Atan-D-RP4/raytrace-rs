@@ -1,41 +1,43 @@
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
-use crate::hittable::{HitRecord, Hittable};
+use crate::hittable::{Bounded, Intersectable, MaterialHit};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::sampler::{DimCursor, Sampler};
-use crate::vec3::{Point3, Vec3};
+use crate::vec3::Point3;
 use tracing::{info, trace};
 
 const BVH_BIN_SIZE: usize = 32;
 
 /// A binary BVH node for accelerating ray-scene intersection queries.
-pub enum BvhNode<S: Sampler> {
+///
+/// No generic parameter needed — leaf objects are trait-object slices
+/// that provide both `Intersectable` and `Bounded`.
+pub enum BvhNode {
     Empty,
     Interior {
-        left: Box<BvhNode<S>>,
-        right: Box<BvhNode<S>>,
+        left: Box<BvhNode>,
+        right: Box<BvhNode>,
         bbox: Aabb,
     },
     Leaf {
-        object: Arc<dyn Hittable<S>>,
+        object: Arc<dyn Intersectable>,
         bbox: Aabb,
     },
 }
 
-impl<S: Sampler> BvhNode<S> {
+impl BvhNode {
     /// Builds a BVH subtree from `objects` (a mutable slice).
     ///
     /// Strategy:
     /// - compute merged bounds for all objects,
     /// - bin centroids on each axis and evaluate SAH cost,
     /// - split at cheapest partition, recurse.
-    pub fn new(objects: &mut [Arc<dyn Hittable<S>>]) -> Self {
+    pub fn new(objects: &mut [Arc<dyn Intersectable>]) -> Self {
         info!(object_count = objects.len(), "building bvh");
         let obj_span = objects.len();
 
-        let mut centroids: Vec<(Arc<dyn Hittable<S>>, Point3)> = Vec::with_capacity(obj_span);
+        let mut centroids: Vec<(Arc<dyn Intersectable>, Point3)> = Vec::with_capacity(obj_span);
         let mut bbox = Aabb::new();
 
         for object in objects.iter() {
@@ -104,7 +106,6 @@ impl<S: Sampler> BvhNode<S> {
                     }
 
                     // Precompute suffix AABBs and counts.
-                    // suffix_bbox[b] = AABB of bins[b..B-1], suffix_count[b] = #objects in those bins.
                     let mut suffix_bbox = [Aabb::new(); BVH_BIN_SIZE];
                     let mut suffix_count = [0usize; BVH_BIN_SIZE];
                     {
@@ -172,72 +173,36 @@ impl<S: Sampler> BvhNode<S> {
         info!(object_count = objects.len(), "bvh built");
         result
     }
-
-    /// Returns the number of leaf objects in this subtree.
-    fn leaf_count(&self) -> usize {
-        match self {
-            Self::Empty => 0,
-            Self::Leaf { .. } => 1,
-            Self::Interior { left, right, .. } => left.leaf_count() + right.leaf_count(),
-        }
-    }
 }
 
-impl<S: Sampler> Hittable<S> for BvhNode<S> {
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
+impl Intersectable for BvhNode {
+    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         match self {
             Self::Empty => None,
-            Self::Leaf { object, .. } => object.hit(ray, ray_t),
+            Self::Leaf { object, .. } => object.intersect(ray, ray_t),
             Self::Interior { left, right, bbox } => {
                 if !bbox.hit(ray, ray_t) {
                     return None;
                 }
-                let hit_left = left.hit(ray, ray_t);
-                let hit_right = right.hit(
+                let hit_left = left.intersect(ray, ray_t);
+                let hit_right = right.intersect(
                     ray,
-                    Interval::from(ray_t.min, hit_left.as_ref().map_or(ray_t.max, |h| h.time)),
+                    Interval::from(
+                        ray_t.min,
+                        hit_left.as_ref().map_or(ray_t.max, |h| h.hit.time),
+                    ),
                 );
                 hit_right.or(hit_left)
             }
         }
     }
+}
 
+impl Bounded for BvhNode {
     fn bounding_box(&self) -> Aabb {
         match self {
             Self::Empty => Aabb::new(),
             Self::Leaf { bbox, .. } | Self::Interior { bbox, .. } => *bbox,
-        }
-    }
-
-    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        match self {
-            Self::Empty => 0.0,
-            Self::Leaf { object, .. } => object.pdf_value(origin, direction),
-            Self::Interior { left, right, .. } => {
-                let left_count = left.leaf_count() as f64;
-                let right_count = right.leaf_count() as f64;
-                let total = left_count + right_count;
-                (left_count / total) * left.pdf_value(origin, direction)
-                    + (right_count / total) * right.pdf_value(origin, direction)
-            }
-        }
-    }
-
-    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        match self {
-            Self::Empty => Vec3::from(1., 0., 0.),
-            Self::Leaf { object, .. } => object.random(origin, dim_offset),
-            Self::Interior { left, right, .. } => {
-                let left_count = left.leaf_count() as f64;
-                let right_count = right.leaf_count() as f64;
-                let total = left_count + right_count;
-                let u = dim_offset.next_sample();
-                if u < left_count / total {
-                    left.random(origin, dim_offset)
-                } else {
-                    right.random(origin, dim_offset)
-                }
-            }
         }
     }
 }

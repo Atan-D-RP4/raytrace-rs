@@ -20,10 +20,9 @@ use std::sync::Arc;
 
 use crate::aabb::Aabb;
 use crate::bvh::BvhNode;
-use crate::hittable::{HitRecord, Hittable};
+use crate::hittable::{Bounded, Intersectable, MaterialHit};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::sampler::Sampler;
 
 /// Maximum traversal stack depth. 64 handles BVHs with up to 2^64 primitives.
 const MAX_STACK: usize = 64;
@@ -149,21 +148,21 @@ impl FlatBvhNode {
 }
 
 /// Flat BVH container: array-of-nodes + flat primitive list.
-pub struct FlatBvh<S: Sampler> {
+pub struct FlatBvh {
     /// Contiguous array of flat BVH nodes in DFS (pre-order) layout.
     nodes: Vec<FlatBvhNode>,
     /// Scene primitives in the order they appear in the flat leaf nodes.
-    primitives: Vec<Arc<dyn Hittable<S>>>,
+    primitives: Vec<Arc<dyn Intersectable>>,
 }
 
-impl<S: Sampler> FlatBvh<S> {
+impl FlatBvh {
     /// Builds a flat BVH from a tree BVH.
     ///
     /// Traverses the tree in depth-first pre-order, collecting leaf
     /// primitives and emitting flat nodes. Interior children are stored
     /// by index; the DFS ordering guarantees children are emitted
     /// immediately after their parent.
-    pub fn from_bvh(bvh: BvhNode<S>) -> Self {
+    pub fn from_bvh(bvh: BvhNode) -> Self {
         let mut flat_nodes = Vec::new();
         let mut primitives = Vec::new();
 
@@ -182,9 +181,9 @@ impl<S: Sampler> FlatBvh<S> {
     ///
     /// Returns the index of the emitted node.
     fn flatten_node(
-        node: BvhNode<S>,
+        node: BvhNode,
         flat_nodes: &mut Vec<FlatBvhNode>,
-        primitives: &mut Vec<Arc<dyn Hittable<S>>>,
+        primitives: &mut Vec<Arc<dyn Intersectable>>,
     ) -> u32 {
         match node {
             BvhNode::Empty => {
@@ -271,14 +270,14 @@ impl<S: Sampler> FlatBvh<S> {
     }
 }
 
-impl<S: Sampler> Hittable<S> for FlatBvh<S> {
-    fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
+impl Intersectable for FlatBvh {
+    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         if self.nodes.is_empty() {
             return None;
         }
 
         let mut best_t = ray_t.max;
-        let mut best_hit: Option<HitRecord> = None;
+        let mut best_hit: Option<MaterialHit<'a>> = None;
 
         // Iterative stack-based traversal — no recursion, no allocation.
         let mut stack = [0u32; MAX_STACK];
@@ -301,12 +300,12 @@ impl<S: Sampler> Hittable<S> for FlatBvh<S> {
                 let start = node.prim_start();
                 let count = node.prim_count();
                 for i in start..start + count {
-                    if let Some(hit) =
-                        self.primitives[i].hit(ray, Interval::from(ray_t.min, best_t))
-                        && hit.time < best_t
+                    if let Some(mat_hit) =
+                        self.primitives[i].intersect(ray, Interval::from(ray_t.min, best_t))
+                        && mat_hit.hit.time < best_t
                     {
-                        best_t = hit.time;
-                        best_hit = Some(hit);
+                        best_t = mat_hit.hit.time;
+                        best_hit = Some(mat_hit);
                     }
                 }
             } else {
@@ -344,7 +343,9 @@ impl<S: Sampler> Hittable<S> for FlatBvh<S> {
 
         best_hit
     }
+}
 
+impl Bounded for FlatBvh {
     fn bounding_box(&self) -> Aabb {
         if self.nodes.is_empty() {
             return Aabb::new();
@@ -361,8 +362,8 @@ impl<S: Sampler> Hittable<S> for FlatBvh<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hittable::{Bounded, Intersectable};
     use crate::material::Material;
-    use crate::sampler::SobolQmcSampler;
     use crate::sphere::Sphere;
     use crate::vec3::Vec3;
 
@@ -376,24 +377,24 @@ mod tests {
 
     #[test]
     fn flat_bvh_empty() {
-        let bvh = BvhNode::<SobolQmcSampler>::Empty;
+        let bvh: BvhNode = BvhNode::Empty;
         let flat = FlatBvh::from_bvh(bvh);
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(0., 0., -1.), 0.0);
         assert!(
-            flat.hit(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_none()
         );
     }
 
     #[test]
     fn flat_bvh_single_sphere() {
-        let sphere: Arc<dyn Hittable<SobolQmcSampler>> = Arc::new(Sphere::new(
+        let sphere: Arc<dyn Intersectable> = Arc::new(Sphere::new(
             &Vec3::from(0., 0., -2.),
             0.5,
             Material::lambertian_color(0.8, 0.2, 0.2),
         ));
         let bbox = sphere.bounding_box();
-        let bvh = BvhNode::Leaf {
+        let bvh: BvhNode = BvhNode::Leaf {
             object: sphere.clone(),
             bbox,
         };
@@ -404,26 +405,26 @@ mod tests {
         // Ray toward the sphere.
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(0., 0., -1.), 0.0);
         assert!(
-            flat.hit(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_some()
         );
 
         // Ray missing the sphere.
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(10., 0., -1.), 0.0);
         assert!(
-            flat.hit(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_none()
         );
     }
 
     #[test]
     fn flat_bvh_two_spheres() {
-        let s1: Arc<dyn Hittable<SobolQmcSampler>> = Arc::new(Sphere::new(
+        let s1: Arc<dyn Intersectable> = Arc::new(Sphere::new(
             &Vec3::from(-1., 0., -2.),
             0.5,
             Material::lambertian_color(1.0, 0.0, 0.0),
         ));
-        let s2: Arc<dyn Hittable<SobolQmcSampler>> = Arc::new(Sphere::new(
+        let s2: Arc<dyn Intersectable> = Arc::new(Sphere::new(
             &Vec3::from(1., 0., -2.),
             0.5,
             Material::lambertian_color(0.0, 1.0, 0.0),
@@ -433,7 +434,7 @@ mod tests {
         let bbox2 = s2.bounding_box();
         let merged_bbox = bbox1.merge(bbox2);
 
-        let interior = BvhNode::Interior {
+        let interior: BvhNode = BvhNode::Interior {
             left: Box::new(BvhNode::Leaf {
                 object: s1.clone(),
                 bbox: bbox1,
@@ -452,21 +453,21 @@ mod tests {
         // Hit left sphere (at -1, 0, -2).
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(-1., 0., -2.).unit_vector(), 0.0);
         assert!(
-            flat.hit(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_some()
         );
 
         // Hit right sphere (at 1, 0, -2).
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(1., 0., -2.).unit_vector(), 0.0);
         assert!(
-            flat.hit(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_some()
         );
 
         // Hit neither.
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(0., 10., -1.), 0.0);
         assert!(
-            flat.hit(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_none()
         );
     }

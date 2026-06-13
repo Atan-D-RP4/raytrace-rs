@@ -16,7 +16,7 @@
 //! not over a distribution. The integrator must skip MIS weighting and use the
 //! sampled direction directly.
 
-use crate::hittable::HitRecord;
+use crate::hittable::SurfaceInteraction;
 use crate::vec3::{Color3, Vec3, reflect, refract};
 
 use super::GPU_NONE;
@@ -37,24 +37,24 @@ impl Bsdf for DielectricMaterial {
     fn sample(
         &self,
         wo: Vec3,
-        hit: &HitRecord,
+        si: &SurfaceInteraction,
         u: f64,
         _v: f64,
         _w: f64,
         _x: f64,
     ) -> Option<BsdfSample> {
-        let ri = if hit.front_face {
+        let ri = if si.front_face() {
             1.0 / self.refractive_idx
         } else {
             self.refractive_idx
         };
-        let cos_theta = wo.dot(&hit.normal).min(1.0);
+        let cos_theta = wo.dot(&si.shading_normal()).min(1.0);
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
         let direction =
             if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.refractive_idx) > u {
-                reflect(&-wo, &hit.normal)
+                reflect(&-wo, &si.shading_normal())
             } else {
-                refract(&-wo, &hit.normal, ri)
+                refract(&-wo, &si.shading_normal(), ri)
             };
         Some(BsdfSample {
             wi: direction,
@@ -65,12 +65,12 @@ impl Bsdf for DielectricMaterial {
     }
 
     /// Delta material — cannot evaluate at arbitrary directions. Returns zero.
-    fn eval(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> Color3 {
+    fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
         Color3::from(0., 0., 0.)
     }
 
     /// Delta material — probability of any specific direction is zero.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> f64 {
+    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
         0.0
     }
 

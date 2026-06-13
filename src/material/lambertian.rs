@@ -14,7 +14,7 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use crate::hittable::HitRecord;
+use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -39,7 +39,7 @@ impl Bsdf for LambertianMaterial {
     fn sample(
         &self,
         _wo: Vec3,
-        hit: &HitRecord,
+        si: &SurfaceInteraction,
         _u: f64,
         _v: f64,
         _w: f64,
@@ -48,24 +48,26 @@ impl Bsdf for LambertianMaterial {
         let attenuation = self
             .tex
             .as_ref()
-            .map(|t| t.value(&hit.texture_coords()))
+            .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
         Some(BsdfSample {
             wi: Vec3::ZERO,
             f_cos: attenuation,
             pdf: 1.0,
-            pdf_kind: PdfKind::Cosine { normal: hit.normal },
+            pdf_kind: PdfKind::Cosine {
+                normal: si.shading_normal(),
+            },
         })
     }
 
     /// Lambertian BRDF: `albedo · cos(θ) / π`. Returns zero if `wi` is below the surface.
-    fn eval(&self, _wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 {
+    fn eval(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         let attenuation = self
             .tex
             .as_ref()
-            .map(|t| t.value(&hit.texture_coords()))
+            .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
-        let cos_theta = hit.normal.dot(&wi);
+        let cos_theta = si.shading_normal().dot(&wi);
         if cos_theta < 0.0 {
             Color3::from(0., 0., 0.)
         } else {
@@ -74,8 +76,8 @@ impl Bsdf for LambertianMaterial {
     }
 
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
-    fn pdf(&self, _wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 {
-        let cos_theta = hit.normal.dot(&wi);
+    fn pdf(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
+        let cos_theta = si.shading_normal().dot(&wi);
         if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
     }
 

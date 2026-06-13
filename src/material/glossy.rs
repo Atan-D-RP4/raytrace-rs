@@ -18,7 +18,7 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use crate::hittable::HitRecord;
+use crate::hittable::SurfaceInteraction;
 use crate::onb::Onb;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
@@ -47,7 +47,7 @@ impl Bsdf for GlossyMaterial {
     fn sample(
         &self,
         wo: Vec3,
-        hit: &HitRecord,
+        si: &SurfaceInteraction,
         u: f64,
         v: f64,
         _w: f64,
@@ -56,7 +56,7 @@ impl Bsdf for GlossyMaterial {
         let albedo = self
             .tex
             .as_ref()
-            .map(|t| t.value(&hit.texture_coords()))
+            .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         // Sample H from GGX NDF.
@@ -69,19 +69,19 @@ impl Bsdf for GlossyMaterial {
         let phi = 2.0 * PI * u1;
         let h_local = Vec3::from(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
 
-        let onb = Onb::build_from_normal(hit.normal);
+        let onb = Onb::build_from_normal(si.shading_normal());
         let h_world = onb.local_to_world(h_local);
 
         let wi = reflect(&-wo, &h_world);
 
-        if wi.dot(&hit.normal) <= 0.0 {
+        if wi.dot(&si.shading_normal()) <= 0.0 {
             return None;
         }
 
-        let cos_o = wo.dot(&hit.normal).max(0.0);
-        let cos_i = wi.dot(&hit.normal).max(0.0);
+        let cos_o = wo.dot(&si.shading_normal()).max(0.0);
+        let cos_i = wi.dot(&si.shading_normal()).max(0.0);
         let cos_h_o = wo.dot(&h_world).max(0.0);
-        let cos_h_n = h_world.dot(&hit.normal).max(0.0);
+        let cos_h_n = h_world.dot(&si.shading_normal()).max(0.0);
 
         let d = ggx_d(cos_h_n, alpha);
         let f = fresnel_schlick(cos_h_o, self.ior);
@@ -100,25 +100,25 @@ impl Bsdf for GlossyMaterial {
             pdf: d * cos_h_n / (4.0 * cos_h_o),
             pdf_kind: PdfKind::Ggx {
                 wo,
-                normal: hit.normal,
+                normal: si.shading_normal(),
                 alpha,
             },
         })
     }
 
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.
-    fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 {
+    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         let albedo = self
             .tex
             .as_ref()
-            .map(|t| t.value(&hit.texture_coords()))
+            .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         let h = (wo + wi).unit_vector();
-        let cos_h_n = h.dot(&hit.normal).max(0.0);
+        let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
         let cos_h_o = wo.dot(&h).max(0.0);
-        let cos_o = wo.dot(&hit.normal).max(0.0);
-        let cos_i = wi.dot(&hit.normal).max(0.0);
+        let cos_o = wo.dot(&si.shading_normal()).max(0.0);
+        let cos_i = wi.dot(&si.shading_normal()).max(0.0);
         if cos_h_o <= 0.0 || cos_o <= 0.0 || cos_i <= 0.0 {
             return Color3::from(0., 0., 0.);
         }
@@ -129,10 +129,10 @@ impl Bsdf for GlossyMaterial {
     }
 
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
-    fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 {
+    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         let h = (wo + wi).unit_vector();
-        let cos_h_n = h.dot(&hit.normal).max(0.0);
+        let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
         let cos_h_o = wo.dot(&h).max(0.0);
         if cos_h_o <= 0.0 {
             return 0.0;

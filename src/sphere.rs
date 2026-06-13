@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
-use crate::hittable::{HitRecord, Hittable};
+use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::onb::Onb;
@@ -78,12 +78,12 @@ impl Sphere {
     }
 }
 
-impl<S: Sampler> Hittable<S> for Sphere {
+impl Intersectable for Sphere {
     /// Intersects a ray with the sphere and returns the nearest valid hit.
     ///
     /// Uses the quadratic root form optimized with `h = dot(d, oc)` and checks
     /// near root first, then far root within the supplied `ray_t` interval.
-    fn hit(&self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'_>> {
+    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         let current_center = self.center.at(ray.time);
         let origin_center = current_center - ray.origin;
         let a = ray.direction.length_squared();
@@ -108,27 +108,34 @@ impl<S: Sampler> Hittable<S> for Sphere {
 
         let point = ray.at(root);
         let outward_normal = (point - current_center) / self.radius;
+        let (u, v) = self.get_sphere_uv(&outward_normal);
 
-        let mut hit_rec =
-            HitRecord::new(root, point, outward_normal, outward_normal, &self.material);
-        hit_rec.set_face_normal(ray, &outward_normal);
-
-        (hit_rec.u, hit_rec.v) = self.get_sphere_uv(&outward_normal);
-
-        Some(hit_rec)
+        Some(MaterialHit {
+            hit: Hit {
+                time: root,
+                point,
+                geometric_normal: outward_normal,
+                uv: Some((u, v)),
+            },
+            material: &self.material,
+        })
     }
+}
 
+impl Bounded for Sphere {
     fn bounding_box(&self) -> Aabb {
         self.bbox
     }
+}
 
+impl<S: Sampler> Sampleable<S> for Sphere {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        if <Sphere as Hittable<S>>::hit(
-            self,
-            &Ray::new(origin, direction),
-            Interval::from(0.001, f64::INFINITY),
-        )
-        .is_some()
+        if self
+            .intersect(
+                &Ray::new(origin, direction),
+                Interval::from(0.001, f64::INFINITY),
+            )
+            .is_some()
         {
             let distance_squared = (self.center.at(0.) - origin).length_squared();
             let cos_theta_max = (1. - (self.radius * self.radius) / distance_squared).sqrt();

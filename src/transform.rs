@@ -1,5 +1,5 @@
 use crate::aabb::Aabb;
-use crate::hittable::{HitRecord, Hittable};
+use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, Sampler};
@@ -12,7 +12,7 @@ use crate::vec3::{Point3, Vec3};
 pub trait Transform: Send + Sync {
     fn ray(&self, ray: &Ray) -> Ray;
 
-    fn hit(&self, hit: &mut HitRecord<'_>);
+    fn hit(&self, hit: &mut Hit);
 
     fn bbox(&self, bbox: Aabb) -> Aabb;
 
@@ -24,11 +24,11 @@ pub trait Transform: Send + Sync {
     }
 }
 
-/// A zero-cost wrapper that applies a transform to any hittable object.
+/// A zero-cost wrapper that applies a transform to any intersectable object.
 ///
 /// The transform and object stay generic, so the compiler can inline through
 /// the whole stack without trait-object dispatch.
-pub struct TransformObject<T, O: Hittable<S>, S: Sampler> {
+pub struct TransformObject<T, O: Intersectable, S: Sampler> {
     transform: T,
     object: O,
     bbox: Aabb,
@@ -38,7 +38,7 @@ pub struct TransformObject<T, O: Hittable<S>, S: Sampler> {
 impl<T, O, S: Sampler> TransformObject<T, O, S>
 where
     T: Transform,
-    O: Hittable<S>,
+    O: Intersectable,
 {
     pub fn new(transform: T, object: O) -> Self {
         let bbox = transform.bbox(object.bounding_box());
@@ -52,24 +52,36 @@ where
     }
 }
 
-impl<T, O, S: Sampler> Hittable<S> for TransformObject<T, O, S>
+impl<T, O, S: Sampler> Intersectable for TransformObject<T, O, S>
 where
     T: Transform,
-    O: Hittable<S>,
+    O: Intersectable,
 {
-    fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
+    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         let transformed_ray = self.transform.ray(ray);
-        let mut hit = self.object.hit(&transformed_ray, ray_t)?;
+        let mut mat_hit = self.object.intersect(&transformed_ray, ray_t)?;
 
-        self.transform.hit(&mut hit);
+        self.transform.hit(&mut mat_hit.hit);
 
-        Some(hit)
+        Some(mat_hit)
     }
+}
 
+impl<T, O, S: Sampler> Bounded for TransformObject<T, O, S>
+where
+    T: Transform,
+    O: Intersectable,
+{
     fn bounding_box(&self) -> Aabb {
         self.bbox
     }
+}
 
+impl<T, O, S: Sampler> Sampleable<S> for TransformObject<T, O, S>
+where
+    T: Transform,
+    O: Sampleable<S>,
+{
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         // Transform the ray into object space and delegate to the inner object.
         // For rigid transforms (rotation + translation), the Jacobian of the
@@ -109,9 +121,8 @@ impl Transform for Translate {
         Ray::new_with_time(ray.origin - self.offset, ray.direction, ray.time)
     }
 
-    fn hit(&self, hit: &mut HitRecord<'_>) {
+    fn hit(&self, hit: &mut Hit) {
         hit.point += self.offset;
-        hit.mapping_point += self.offset;
     }
 
     fn bbox(&self, bbox: Aabb) -> Aabb {
@@ -149,26 +160,16 @@ impl Transform for RotateY {
         Ray::new_with_time(origin, direction, ray.time)
     }
 
-    fn hit(&self, hit: &mut HitRecord<'_>) {
+    fn hit(&self, hit: &mut Hit) {
         hit.point = Point3::from(
             (self.cos_theta * hit.point.x) + (self.sin_theta * hit.point.z),
             hit.point.y,
             (-self.sin_theta * hit.point.x) + (self.cos_theta * hit.point.z),
         );
-        hit.normal = Vec3::from(
-            (self.cos_theta * hit.normal.x) + (self.sin_theta * hit.normal.z),
-            hit.normal.y,
-            (-self.sin_theta * hit.normal.x) + (self.cos_theta * hit.normal.z),
-        );
-        hit.mapping_point = Vec3::from(
-            (self.cos_theta * hit.mapping_point.x) + (self.sin_theta * hit.mapping_point.z),
-            hit.mapping_point.y,
-            (-self.sin_theta * hit.mapping_point.x) + (self.cos_theta * hit.mapping_point.z),
-        );
-        hit.geometry_normal = Vec3::from(
-            (self.cos_theta * hit.geometry_normal.x) + (self.sin_theta * hit.geometry_normal.z),
-            hit.geometry_normal.y,
-            (-self.sin_theta * hit.geometry_normal.x) + (self.cos_theta * hit.geometry_normal.z),
+        hit.geometric_normal = Vec3::from(
+            (self.cos_theta * hit.geometric_normal.x) + (self.sin_theta * hit.geometric_normal.z),
+            hit.geometric_normal.y,
+            (-self.sin_theta * hit.geometric_normal.x) + (self.cos_theta * hit.geometric_normal.z),
         );
     }
 

@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
-use crate::hittable::HitRecord;
-use crate::hittable::Hittable;
+use crate::hittable::Bounded;
+use crate::hittable::Hit;
+use crate::hittable::Intersectable;
+use crate::hittable::MaterialHit;
+use crate::hittable::Sampleable;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
@@ -45,7 +48,7 @@ pub struct PlanarPatch<R: Region2D> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct PlanarHit {
-    t: f64,
+    time: f64,
     point: Point3,
     a: f64,
     b: f64,
@@ -96,33 +99,16 @@ impl<R: Region2D> PlanarPatch<R> {
         let a = self.w.dot(&planar_hit_point_vector.cross(&self.side_b));
         let b = self.w.dot(&self.side_a.cross(&planar_hit_point_vector));
 
-        Some(PlanarHit { t, point, a, b })
+        Some(PlanarHit {
+            time: t,
+            point,
+            a,
+            b,
+        })
     }
 
     pub(crate) fn material(&self) -> &Material {
         self.material.as_ref()
-    }
-
-    pub(crate) fn normal(&self) -> &Vec3 {
-        &self.normal
-    }
-
-    pub(crate) fn bounding_box(&self) -> Aabb {
-        self.bbox
-    }
-
-    pub(crate) fn make_hit_record(
-        &self,
-        ray: &Ray,
-        hit: PlanarHit,
-        u: f64,
-        v: f64,
-    ) -> HitRecord<'_> {
-        let mut hit_rec = HitRecord::new(hit.t, hit.point, hit.point, Vec3::new(), self.material());
-        hit_rec.set_face_normal(ray, self.normal());
-        hit_rec.u = u;
-        hit_rec.v = v;
-        hit_rec
     }
 }
 
@@ -154,22 +140,33 @@ pub trait Region2D: Send + Sync {
     /// Samples `(a, b)` within the region from `(u, v)` ∈ [0,1]².
     fn sample(&self, u: f64, v: f64) -> (f64, f64);
 }
-
-impl<R: Region2D, S: Sampler> Hittable<S> for PlanarPatch<R> {
-    fn hit<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<HitRecord<'a>> {
+impl<R: Region2D> Intersectable for PlanarPatch<R> {
+    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         let hit = self.hit_plane(ray, ray_t)?;
+
         if !self.region.contains(hit.a, hit.b) {
             return None;
         }
 
-        let (u, v) = self.region.uv(hit.a, hit.b);
-        Some(self.make_hit_record(ray, hit, u, v))
+        Some(MaterialHit {
+            hit: Hit {
+                time: hit.time,
+                point: hit.point,
+                geometric_normal: self.normal,
+                uv: Some(self.region.uv(hit.a, hit.b)),
+            },
+            material: self.material(),
+        })
     }
+}
 
+impl<R: Region2D> Bounded for PlanarPatch<R> {
     fn bounding_box(&self) -> Aabb {
         self.bbox
     }
+}
 
+impl<R: Region2D, S: Sampler> Sampleable<S> for PlanarPatch<R> {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         // Back-face culling - if the ray is coming from behind the patch, it cannot hit the
         // emitting side, so return 0 PDF.
@@ -179,15 +176,18 @@ impl<R: Region2D, S: Sampler> Hittable<S> for PlanarPatch<R> {
             return 0.0;
         }
 
-        if let Some(hit) = <Self as Hittable<S>>::hit(
-            self,
+        if let Some(hit) = self.intersect(
             &Ray::new(origin, direction),
             Interval::from(0.001, f64::INFINITY),
         ) {
-            let distance_squared = hit.time * hit.time * direction.length_squared();
+            let distance_squared = hit.hit.time * hit.hit.time * direction.length_squared();
             // After set_face_normal, hit.normal always faces the incoming ray (negative dot).
             // .abs() gives the Jacobian factor for the area-to-solid-angle measure conversion.
-            let cosine = hit.normal.dot(&direction.unit_vector()).abs();
+            let cosine = hit
+                .hit
+                .geometric_normal
+                .dot(&(-direction.unit_vector()))
+                .abs();
             let world_area = self.area * self.region.bounding_box_area();
 
             distance_squared / (cosine * world_area)

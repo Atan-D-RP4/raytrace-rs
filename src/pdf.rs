@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use crate::hittable::Hittable;
+use crate::hittable::Sampleable;
 use crate::material::ggx_d;
 use crate::onb::Onb;
 use crate::sampler::{DimCursor, Sampler};
@@ -69,12 +69,12 @@ impl<S: Sampler> PDF<S> for CosinePDF {
 }
 
 pub struct HittablePDF<'a, S: Sampler> {
-    objects: &'a dyn Hittable<S>,
+    objects: &'a dyn Sampleable<S>,
     origin: Point3,
 }
 
 impl<'a, S: Sampler> HittablePDF<'a, S> {
-    pub fn new(objects: &'a dyn Hittable<S>, origin: Point3) -> Self {
+    pub fn new(objects: &'a dyn Sampleable<S>, origin: Point3) -> Self {
         HittablePDF { objects, origin }
     }
 }

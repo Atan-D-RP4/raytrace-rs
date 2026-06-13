@@ -13,7 +13,7 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use crate::hittable::HitRecord;
+use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -36,7 +36,7 @@ impl Bsdf for IsotropicMaterial {
     fn sample(
         &self,
         _wo: Vec3,
-        hit: &HitRecord,
+        si: &SurfaceInteraction,
         _u: f64,
         _v: f64,
         _w: f64,
@@ -45,7 +45,7 @@ impl Bsdf for IsotropicMaterial {
         let attenuation = self
             .tex
             .as_ref()
-            .map(|t| t.value(&hit.texture_coords()))
+            .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
         Some(BsdfSample {
             wi: Vec3::ZERO,
@@ -57,17 +57,17 @@ impl Bsdf for IsotropicMaterial {
 
     /// Isotropic phase function: `albedo / (4π)`. Returns the attenuation
     /// regardless of direction — every scattering direction is equally likely.
-    fn eval(&self, _wo: Vec3, _wi: Vec3, hit: &HitRecord) -> Color3 {
+    fn eval(&self, _wo: Vec3, _wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         let attenuation = self
             .tex
             .as_ref()
-            .map(|t| t.value(&hit.texture_coords()))
+            .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
         attenuation / (4.0 * PI)
     }
 
     /// Uniform sphere PDF: `1 / (4π)`.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> f64 {
+    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
         1.0 / (4.0 * PI)
     }
 

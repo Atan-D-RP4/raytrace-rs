@@ -17,7 +17,7 @@ use winit::{
 use raytrace_rs::bvh::BvhNode;
 use raytrace_rs::camera::{Camera, Framebuffer, SharedFramebuffer};
 use raytrace_rs::flat_bvh::FlatBvh;
-use raytrace_rs::hittable::Hittable;
+use raytrace_rs::hittable::Sampleable;
 use raytrace_rs::sampler::SobolQmcSampler;
 use raytrace_rs::scene::Scene;
 
@@ -415,24 +415,18 @@ fn live_render(
         info!("starting render thread");
 
         profiling::scope!("scene_build");
-        let (mut objects, mut light_objects) = scene.into_objects();
+        let (mut objects, light_objects) = scene.into_objects();
         let world_len = objects.len();
         let light_len = light_objects.len();
         info!(
             object_count = world_len,
             light_count = light_len,
-            "building BVHs"
+            "building world BVH"
         );
         profiling::scope!("root_bvh_build");
         let world_bvh = BvhNode::new(&mut objects);
         let world = FlatBvh::from_bvh(world_bvh);
-        let lights: Arc<dyn Hittable<SobolQmcSampler>> = if light_len > 0 {
-            Arc::new(BvhNode::<SobolQmcSampler>::new(&mut light_objects))
-        } else {
-            Arc::new(BvhNode::<SobolQmcSampler>::new(&mut Vec::<
-                Arc<dyn Hittable<SobolQmcSampler>>,
-            >::new()))
-        };
+        let lights: Arc<dyn Sampleable<SobolQmcSampler>> = Arc::new(light_objects);
 
         let mut camera = Camera::from_config(&config);
         // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
@@ -485,7 +479,7 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
     info!(
         object_count = world_len,
         light_count = light_len,
-        "building BVHs"
+        "building world BVH"
     );
     // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
     profiling::scope!("root_bvh_build");

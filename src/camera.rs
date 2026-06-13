@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 use rayon::prelude::*;
 use tracing::info;
 
-use crate::hittable::Hittable;
+use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::interval::Interval;
 use crate::material::PdfKind;
 use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
@@ -222,10 +222,10 @@ impl Camera {
     /// When `framebuffer` is `Some`, publishes progressive intermediate frames
     /// to the shared framebuffer during rendering (live preview mode).
     /// When `None`, renders all samples and returns the final image only.
-    pub fn render<S: Sampler, W: Hittable<S>>(
+    pub fn render<S: Sampler, W: Intersectable>(
         &mut self,
         world: &W,
-        lights: &dyn Hittable<S>,
+        lights: &dyn Sampleable<S>,
         make_sampler: impl Fn(i32, i32) -> S + Sync,
         framebuffer: Option<SharedFramebuffer>,
     ) -> (u32, u32, Vec<u8>) {
@@ -378,12 +378,12 @@ impl Camera {
     ///
     /// TODO(renderer-abstraction): extract this integrator behind a renderer trait
     /// so multiple pipelines (GPU/raster/hybrid/SDF/displacement-aware) can coexist.
-    fn ray_color<S: Sampler, W: Hittable<S>>(
+    fn ray_color<S: Sampler, W: Intersectable>(
         &self,
         initial_ray: &Ray,
         depth: i32,
         world: &W,
-        lights: &dyn Hittable<S>,
+        lights: &dyn Sampleable<S>,
         dims: &mut DimCursor<S>,
     ) -> Color3 {
         let mut ray = *initial_ray;
@@ -391,8 +391,9 @@ impl Camera {
         let mut accumulated_color = Color3::from(0., 0., 0.);
 
         for bounce in 0..depth {
-            if let Some(record) = world.hit(&ray, Interval::from(0.001, f64::INFINITY)) {
-                let emission = record.material.emitted(&record);
+            if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f64::INFINITY)) {
+                let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
+                let emission = si.material().emitted(&si);
                 accumulated_color += accumulated_attenuation * emission;
 
                 let max_attenuation = accumulated_attenuation
@@ -423,15 +424,12 @@ impl Camera {
                 let wo = -ray.direction.unit_vector();
 
                 // TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
-                if let Some(sample) = record
-                    .material
-                    .sample(wo, &record, u_mat, v_mat, w_mat, x_mat)
-                {
+                if let Some(sample) = si.material().sample(wo, &si, u_mat, v_mat, w_mat, x_mat) {
                     // Per-sample delta routing: composed materials (Coated/Mix)
                     // decide via pdf_kind, not a fixed material property.
                     if matches!(sample.pdf_kind, PdfKind::Delta) {
                         accumulated_attenuation = accumulated_attenuation * sample.f_cos;
-                        ray = Ray::new_with_time(record.point, sample.wi, ray.time);
+                        ray = Ray::new_with_time(si.point(), sample.wi, ray.time);
                     } else {
                         // Non-delta material: mixture PDF of light + surface sampling.
                         // Weighted 1/3 light, 2/3 surface — surface PDF is usually the better match
@@ -448,7 +446,7 @@ impl Camera {
                             PdfKind::Delta => unreachable!(),
                         };
 
-                        let light_pdf = HittablePDF::new(lights, record.point);
+                        let light_pdf = HittablePDF::new(lights, si.point());
                         let pdfs: &[&dyn PDF<S>] = &[&light_pdf, surface_pdf, surface_pdf];
                         let sampling_pdf = MixturePDF::new(pdfs);
 
@@ -456,10 +454,10 @@ impl Camera {
                         // Unitize for BRDF evaluation — PlanarPatch::random() returns a
                         // non-unit vector (distance to light), and BRDFs expect unit length.
                         let direction_unit = direction.unit_vector();
-                        let scattered = Ray::new_with_time(record.point, direction, ray.time);
+                        let scattered = Ray::new_with_time(si.point(), direction, ray.time);
                         let pdf_val = sampling_pdf.value(direction_unit);
 
-                        let f_cos = record.material.eval(wo, direction_unit, &record);
+                        let f_cos = si.material().eval(wo, direction_unit, &si);
 
                         // Standard single-sample MIS unbiased estimator: f(x) / p_mixture(x).
                         let weight = 1.0 / pdf_val.max(1e-6);

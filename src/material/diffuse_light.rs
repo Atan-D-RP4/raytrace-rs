@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::hittable::HitRecord;
+use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
@@ -32,7 +32,7 @@ impl Bsdf for DiffuseLightMaterial {
     fn sample(
         &self,
         _wo: Vec3,
-        _hit: &HitRecord,
+        _si: &SurfaceInteraction,
         _u: f64,
         _v: f64,
         _w: f64,
@@ -42,21 +42,21 @@ impl Bsdf for DiffuseLightMaterial {
     }
 
     /// No reflection — always zero.
-    fn eval(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> Color3 {
+    fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
         Color3::from(0., 0., 0.)
     }
 
     /// No scattering PDF — always zero.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> f64 {
+    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
         0.0
     }
 
     /// Returns the emission color if the hit is on the front face, zero otherwise.
-    fn emitted(&self, hit: &HitRecord) -> Color3 {
-        if hit.front_face {
+    fn emitted(&self, si: &SurfaceInteraction) -> Color3 {
+        if si.front_face() {
             self.tex
                 .as_ref()
-                .map(|t| t.value(&hit.texture_coords()))
+                .map(|t| t.value(&si.texture_coords()))
                 .unwrap_or(self.emit)
         } else {
             Color3::from(0., 0., 0.)

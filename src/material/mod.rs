@@ -34,15 +34,15 @@
 //!
 //! ```ignore
 //! use raytrace_rs::material::{Bsdf, BsdfSample, Material, PdfKind};
-//! use raytrace_rs::hittable::HitRecord;
+//! use raytrace_rs::hittable::SurfaceInteraction;
 //! use raytrace_rs::vec3::{Color3, Vec3};
 //!
 //! struct MyCustomBrdf { ... }
 //!
 //! impl Bsdf for MyCustomBrdf {
-//!     fn sample(&self, wo: Vec3, hit: &HitRecord, _u: f64, _v: f64, _w: f64, _x: f64) -> Option<BsdfSample> { ... }
-//!     fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 { ... }
-//!     fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 { ... }
+//!     fn sample(&self, wo: Vec3, si: &SurfaceInteraction, _u: f64, _v: f64, _w: f64, _x: f64) -> Option<BsdfSample> { ... }
+//!     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 { ... }
+//!     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 { ... }
 //! }
 //!
 //! let my_mat = Material::Custom(Box::new(MyCustomBrdf { ... }));
@@ -79,7 +79,7 @@ use gpu::write_node;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use crate::hittable::HitRecord;
+use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
@@ -144,7 +144,7 @@ pub trait Bsdf: Send + Sync {
     fn sample(
         &self,
         wo: Vec3,
-        hit: &HitRecord,
+        si: &SurfaceInteraction,
         u: f64,
         v: f64,
         w: f64,
@@ -156,18 +156,18 @@ pub trait Bsdf: Send + Sync {
     /// Used by the integrator when the direction was sampled externally
     /// (e.g., from a light source PDF) and we need the material's response
     /// at that direction.
-    fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3;
+    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3;
 
     /// Evaluate the material's sampling PDF for a given direction pair.
     ///
     /// Used by MIS when the integrator needs to know the probability
     /// that this material would have sampled `wi` given `wo`.
-    fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64;
+    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64;
 
     /// Returns the emitted light color at the hit point.
     ///
     /// Default: no emission. Override for light-emitting materials.
-    fn emitted(&self, _hit: &HitRecord) -> Color3 {
+    fn emitted(&self, _si: &SurfaceInteraction) -> Color3 {
         Color3::from(0., 0., 0.)
     }
 
@@ -284,29 +284,29 @@ impl Material {
     pub fn sample(
         &self,
         wo: Vec3,
-        record: &HitRecord,
+        si: &SurfaceInteraction,
         u: f64,
         v: f64,
         w: f64,
         x: f64,
     ) -> Option<BsdfSample> {
         match self {
-            Material::Lambertian(inner) => inner.sample(wo, record, u, v, w, x),
-            Material::Metal(inner) => inner.sample(wo, record, u, v, w, x),
-            Material::Dielectric(inner) => inner.sample(wo, record, u, v, w, x),
-            Material::DiffuseLight(inner) => inner.sample(wo, record, u, v, w, x),
-            Material::Isotropic(inner) => inner.sample(wo, record, u, v, w, x),
-            Material::Glossy(inner) => inner.sample(wo, record, u, v, w, x),
-            Material::Custom(inner) => inner.sample(wo, record, u, v, w, x),
+            Material::Lambertian(inner) => inner.sample(wo, si, u, v, w, x),
+            Material::Metal(inner) => inner.sample(wo, si, u, v, w, x),
+            Material::Dielectric(inner) => inner.sample(wo, si, u, v, w, x),
+            Material::DiffuseLight(inner) => inner.sample(wo, si, u, v, w, x),
+            Material::Isotropic(inner) => inner.sample(wo, si, u, v, w, x),
+            Material::Glossy(inner) => inner.sample(wo, si, u, v, w, x),
+            Material::Custom(inner) => inner.sample(wo, si, u, v, w, x),
             Material::Mix { a, b, weight } => {
                 let chosen: &dyn Bsdf = if u < *weight { b.as_ref() } else { a.as_ref() };
-                chosen.sample(wo, record, v, w, x, 0.0)
+                chosen.sample(wo, si, v, w, x, 0.0)
             }
             Material::Coated {
                 substrate,
                 coating: _,
             } => {
-                let cos_o = wo.dot(&record.normal).abs();
+                let cos_o = wo.dot(&si.shading_normal()).abs();
                 let f = fresnel_schlick(cos_o, 1.5);
                 if u < f {
                     // Compute coating reflection directly — delegating to the
@@ -316,7 +316,7 @@ impl Material {
                     //
                     // MC weight: Fresnel f is both branch probability and delta
                     // BSDF value (lossless dielectric), so f/f = 1.
-                    let wi = reflect(&-wo, &record.normal);
+                    let wi = reflect(&-wo, &si.shading_normal());
                     Some(BsdfSample {
                         wi,
                         f_cos: Color3::from(1., 1., 1.),
@@ -326,7 +326,7 @@ impl Material {
                 } else {
                     // Transmit through coating; importance-sample substrate with
                     // transmission probability (1-f) weight.
-                    let mut bsdf = substrate.sample(wo, record, v, w, x, 0.0)?;
+                    let mut bsdf = substrate.sample(wo, si, v, w, x, 0.0)?;
                     bsdf.f_cos /= 1.0 - f;
                     Some(bsdf)
                 }
@@ -338,67 +338,67 @@ impl Material {
     ///
     /// Used by MIS when the integrator samples a direction from the light
     /// PDF and needs to evaluate the material at that direction.
-    pub fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 {
+    pub fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         match self {
-            Material::Lambertian(inner) => inner.eval(wo, wi, hit),
-            Material::Metal(inner) => inner.eval(wo, wi, hit),
-            Material::Dielectric(inner) => inner.eval(wo, wi, hit),
-            Material::DiffuseLight(inner) => inner.eval(wo, wi, hit),
-            Material::Isotropic(inner) => inner.eval(wo, wi, hit),
-            Material::Glossy(inner) => inner.eval(wo, wi, hit),
-            Material::Custom(inner) => inner.eval(wo, wi, hit),
+            Material::Lambertian(inner) => inner.eval(wo, wi, si),
+            Material::Metal(inner) => inner.eval(wo, wi, si),
+            Material::Dielectric(inner) => inner.eval(wo, wi, si),
+            Material::DiffuseLight(inner) => inner.eval(wo, wi, si),
+            Material::Isotropic(inner) => inner.eval(wo, wi, si),
+            Material::Glossy(inner) => inner.eval(wo, wi, si),
+            Material::Custom(inner) => inner.eval(wo, wi, si),
             Material::Mix { a, b, weight } => {
                 let w = *weight;
-                (1.0 - w) * a.eval(wo, wi, hit) + w * b.eval(wo, wi, hit)
+                (1.0 - w) * a.eval(wo, wi, si) + w * b.eval(wo, wi, si)
             }
             Material::Coated { substrate, coating } => {
-                let cos_o = wo.dot(&hit.normal).abs();
+                let cos_o = wo.dot(&si.shading_normal()).abs();
                 let f = fresnel_schlick(cos_o, 1.5);
-                f * coating.eval(wo, wi, hit) + (1.0 - f) * substrate.eval(wo, wi, hit)
+                f * coating.eval(wo, wi, si) + (1.0 - f) * substrate.eval(wo, wi, si)
             }
         }
     }
 
     /// Evaluate the material's sampling PDF for a given direction pair.
-    pub fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 {
+    pub fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         match self {
-            Material::Lambertian(inner) => inner.pdf(wo, wi, hit),
-            Material::Metal(inner) => inner.pdf(wo, wi, hit),
-            Material::Dielectric(inner) => inner.pdf(wo, wi, hit),
-            Material::DiffuseLight(inner) => inner.pdf(wo, wi, hit),
-            Material::Isotropic(inner) => inner.pdf(wo, wi, hit),
-            Material::Glossy(inner) => inner.pdf(wo, wi, hit),
-            Material::Custom(inner) => inner.pdf(wo, wi, hit),
+            Material::Lambertian(inner) => inner.pdf(wo, wi, si),
+            Material::Metal(inner) => inner.pdf(wo, wi, si),
+            Material::Dielectric(inner) => inner.pdf(wo, wi, si),
+            Material::DiffuseLight(inner) => inner.pdf(wo, wi, si),
+            Material::Isotropic(inner) => inner.pdf(wo, wi, si),
+            Material::Glossy(inner) => inner.pdf(wo, wi, si),
+            Material::Custom(inner) => inner.pdf(wo, wi, si),
             Material::Mix { a, b, weight } => {
-                (1.0 - weight) * a.pdf(wo, wi, hit) + weight * b.pdf(wo, wi, hit)
+                (1.0 - weight) * a.pdf(wo, wi, si) + weight * b.pdf(wo, wi, si)
             }
             Material::Coated { substrate, coating } => {
-                let cos_o = wo.dot(&hit.normal).abs();
+                let cos_o = wo.dot(&si.shading_normal()).abs();
                 let f = fresnel_schlick(cos_o, 1.5);
-                f * coating.pdf(wo, wi, hit) + (1.0 - f) * substrate.pdf(wo, wi, hit)
+                f * coating.pdf(wo, wi, si) + (1.0 - f) * substrate.pdf(wo, wi, si)
             }
         }
     }
 
     /// Returns the emitted light color at the hit point.
-    pub fn emitted(&self, hit_rec: &HitRecord) -> Color3 {
+    pub fn emitted(&self, si: &SurfaceInteraction) -> Color3 {
         match self {
-            Material::Lambertian(inner) => inner.emitted(hit_rec),
-            Material::Metal(inner) => inner.emitted(hit_rec),
-            Material::Dielectric(inner) => inner.emitted(hit_rec),
-            Material::DiffuseLight(inner) => inner.emitted(hit_rec),
-            Material::Isotropic(inner) => inner.emitted(hit_rec),
-            Material::Glossy(inner) => inner.emitted(hit_rec),
-            Material::Custom(inner) => inner.emitted(hit_rec),
+            Material::Lambertian(inner) => inner.emitted(si),
+            Material::Metal(inner) => inner.emitted(si),
+            Material::Dielectric(inner) => inner.emitted(si),
+            Material::DiffuseLight(inner) => inner.emitted(si),
+            Material::Isotropic(inner) => inner.emitted(si),
+            Material::Glossy(inner) => inner.emitted(si),
+            Material::Custom(inner) => inner.emitted(si),
             Material::Mix { a, b, weight } => {
                 let w = *weight;
-                (1.0 - w) * a.emitted(hit_rec) + w * b.emitted(hit_rec)
+                (1.0 - w) * a.emitted(si) + w * b.emitted(si)
             }
             Material::Coated { substrate, coating } => {
                 // No view direction available in emitted(), so we can't compute
                 // a proper Fresnel term. Sum both — in practice coatings don't
                 // emit, so this just returns the substrate's emission.
-                coating.emitted(hit_rec) + substrate.emitted(hit_rec)
+                coating.emitted(si) + substrate.emitted(si)
             }
         }
     }
@@ -440,25 +440,25 @@ impl Bsdf for Material {
     fn sample(
         &self,
         wo: Vec3,
-        hit: &HitRecord,
+        si: &SurfaceInteraction,
         u: f64,
         v: f64,
         w: f64,
         x: f64,
     ) -> Option<BsdfSample> {
-        self.sample(wo, hit, u, v, w, x)
+        self.sample(wo, si, u, v, w, x)
     }
 
-    fn eval(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> Color3 {
-        self.eval(wo, wi, hit)
+    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+        self.eval(wo, wi, si)
     }
 
-    fn pdf(&self, wo: Vec3, wi: Vec3, hit: &HitRecord) -> f64 {
-        self.pdf(wo, wi, hit)
+    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
+        self.pdf(wo, wi, si)
     }
 
-    fn emitted(&self, hit: &HitRecord) -> Color3 {
-        self.emitted(hit)
+    fn emitted(&self, si: &SurfaceInteraction) -> Color3 {
+        self.emitted(si)
     }
 
     fn is_emissive(&self) -> bool {
@@ -791,7 +791,7 @@ mod tests {
             fn sample(
                 &self,
                 _wo: Vec3,
-                _hit: &HitRecord,
+                _si: &SurfaceInteraction,
                 _u: f64,
                 _v: f64,
                 _w: f64,
@@ -799,10 +799,10 @@ mod tests {
             ) -> Option<BsdfSample> {
                 None
             }
-            fn eval(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> Color3 {
+            fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
                 Color3::from(0., 0., 0.)
             }
-            fn pdf(&self, _wo: Vec3, _wi: Vec3, _hit: &HitRecord) -> f64 {
+            fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
                 0.0
             }
             fn clone_box(&self) -> Box<dyn Bsdf> {

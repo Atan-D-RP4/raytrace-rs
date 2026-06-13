@@ -5,7 +5,7 @@ use rand::RngExt;
 use crate::bvh::BvhNode;
 use crate::camera::CameraConfig;
 use crate::const_medium::ConstantMedium;
-use crate::hittable::Hittable;
+use crate::hittable::{Intersectable, Sampleable};
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
 use crate::sampler::Sampler;
@@ -26,10 +26,10 @@ fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
 
 pub struct Scene<S: Sampler> {
     config: CameraConfig,
-    objects: Vec<Arc<dyn Hittable<S>>>,
+    objects: Vec<Arc<dyn Intersectable>>,
     /// Geometry-only copies of emitting objects, used by the integrator
     /// for light importance sampling (HittablePDF).
-    light_objects: Vec<Arc<dyn Hittable<S>>>,
+    light_objects: Vec<Arc<dyn Sampleable<S>>>,
 }
 
 impl<S: Sampler + 'static> Scene<S> {
@@ -54,7 +54,7 @@ impl<S: Sampler + 'static> Scene<S> {
     ///
     /// `light_objects` are geometry-only copies of emitting primitives,
     /// used by the integrator for importance sampling (HittablePDF).
-    pub fn into_objects(self) -> (Vec<Arc<dyn Hittable<S>>>, Vec<Arc<dyn Hittable<S>>>) {
+    pub fn into_objects(self) -> (Vec<Arc<dyn Intersectable>>, Vec<Arc<dyn Sampleable<S>>>) {
         (self.objects, self.light_objects)
     }
 
@@ -155,11 +155,11 @@ impl<S: Sampler + 'static> Scene<S> {
         )));
     }
 
-    pub fn add_object(&mut self, object: Arc<dyn Hittable<S>>) {
+    pub fn add_object(&mut self, object: Arc<dyn Intersectable>) {
         self.objects.push(object);
     }
 
-    pub fn add_light(&mut self, light: Arc<dyn Hittable<S>>) {
+    pub fn add_light(&mut self, light: Arc<dyn Sampleable<S>>) {
         self.objects.push(light.clone());
         self.light_objects.push(light);
     }
@@ -167,15 +167,13 @@ impl<S: Sampler + 'static> Scene<S> {
 
 impl<S: Sampler + 'static> Scene<S> {
     pub fn complex_scene() -> Self {
-        // TODO(gpu): split into scene graph build + accel flatten + resource staging phases.
         profiling::scope!("complex_scene_build");
         let mut scene = Self::new();
 
         let ground = Material::lambertian_color(0.48, 0.83, 0.53);
 
         let boxes_per_side = 20;
-        // TODO(gpu): this dense grid is a prime candidate for GPU instance buffers.
-        let mut boxes1: Vec<Arc<dyn Hittable<S>>> =
+        let mut boxes1: Vec<Arc<dyn Intersectable>> =
             Vec::with_capacity(boxes_per_side * boxes_per_side);
         for i in 0..boxes_per_side {
             for j in 0..boxes_per_side {
@@ -198,7 +196,6 @@ impl<S: Sampler + 'static> Scene<S> {
         }
 
         let boxes1_bvh = {
-            // TODO(gpu): keep a reusable coarse-BVH boundary here; GPU can mirror it with its own build path.
             let mut boxes = boxes1;
             let boxes_len = boxes.len();
             info!(
@@ -242,9 +239,7 @@ impl<S: Sampler + 'static> Scene<S> {
             70.,
             Material::dielectric(1.5),
         ));
-        scene
-            .objects
-            .push(Arc::clone(&boundary) as Arc<dyn Hittable<S>>);
+        scene.objects.push(boundary.clone());
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             boundary,
             0.2,
@@ -256,9 +251,7 @@ impl<S: Sampler + 'static> Scene<S> {
             5000.,
             Material::dielectric(1.5),
         ));
-        scene
-            .objects
-            .push(Arc::clone(&boundary) as Arc<dyn Hittable<S>>);
+        scene.objects.push(boundary.clone());
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             boundary,
             0.0001,
@@ -286,7 +279,7 @@ impl<S: Sampler + 'static> Scene<S> {
         );
 
         let white = Material::lambertian_color(0.73, 0.73, 0.73);
-        let mut boxes2: Vec<Arc<dyn Hittable<S>>> = Vec::with_capacity(1000);
+        let mut boxes2: Vec<Arc<dyn Intersectable>> = Vec::with_capacity(1000);
         for _ in 0..1000 {
             boxes2.push(Arc::new(Sphere::new(
                 &Point3::random_range(0., 165.),
@@ -295,7 +288,7 @@ impl<S: Sampler + 'static> Scene<S> {
             )));
         }
 
-        let cluster = {
+        let cluster: TransformObject<Translate, TransformObject<RotateY, BvhNode, S>, S> = {
             let mut boxes = boxes2;
             let boxes_len = boxes.len();
             info!(
@@ -354,13 +347,13 @@ impl<S: Sampler + 'static> Scene<S> {
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
                     Translate,
-                    TransformObject<RotateY, Vec<Arc<dyn Hittable<S>>>, S>,
+                    TransformObject<RotateY, Vec<Arc<dyn Intersectable>>, S>,
                     S,
                 > = TransformObject::new(Translate::new(*translate_vec), rotated);
                 let const_medium =
                     ConstantMedium::new(Arc::new(wrapped), 0.01, Arc::new(phase_fn.clone()));
 
-                Arc::new(const_medium) as Arc<dyn Hittable<S>>
+                Arc::new(const_medium) as Arc<dyn Intersectable>
             });
 
         scene.objects.extend(boxes);
@@ -405,16 +398,16 @@ impl<S: Sampler + 'static> Scene<S> {
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
                     Translate,
-                    TransformObject<RotateY, Vec<Arc<dyn Hittable<S>>>, S>,
+                    TransformObject<RotateY, Vec<Arc<dyn Intersectable>>, S>,
                     S,
                 > = TransformObject::new(Translate::new(*translate_vec), rotated);
 
-                Arc::new(wrapped) as Arc<dyn Hittable<S>>
+                Arc::new(wrapped) as Arc<dyn Intersectable>
             });
 
         scene.objects.extend(boxes);
 
-        // Add a small sphere in the center to better visualize the light transport effects of the constant media.
+        // Add a small sphere in the center to better visualize the light transport effects.
         scene.add_sphere(
             Point3::from(348., 400., 278.),
             40.,
@@ -427,7 +420,6 @@ impl<S: Sampler + 'static> Scene<S> {
         );
 
         scene.config.samples_per_pixel = 200;
-        // scene.config.exposure = 1.7;
         scene.config.tone_map = true;
 
         scene
@@ -447,7 +439,7 @@ impl<S: Sampler + 'static> Scene<S> {
             green,
         );
         scene.add_quad(
-            Point3::from(0., 0., 555.),
+            Point3::from(0., 555., 555.),
             Vec3::from(0., 0., -555.),
             Vec3::from(0., 555., 0.),
             red,
