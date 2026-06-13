@@ -613,7 +613,7 @@ impl<S: Sampler + 'static> Scene<S> {
     pub fn earth_sphere() -> Self {
         let mut scene = Self::new();
 
-        let image_tex = match ImageTexture::new("./earthmap.jpg") {
+        let image_tex = match ImageTexture::new("./earthmap.png") {
             Ok(tex) => tex,
             Err(e) => panic!("Failed to load to image as Texture: {:?}", e),
         };
@@ -751,7 +751,7 @@ impl<S: Sampler + 'static> Scene<S> {
         scene.add_light(Arc::new(Sphere::new(
             &Point3::from(0., 4.5, 0.),
             1.5,
-            Material::light_textured(Arc::new(ImageTexture::new("./earthmap.jpg").unwrap())),
+            Material::light_textured(Arc::new(ImageTexture::new("./earthmap.png").unwrap())),
         )));
 
         scene.config.aspect_ratio = 16.0 / 9.0;
