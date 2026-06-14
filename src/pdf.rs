@@ -111,25 +111,26 @@ impl<S: Sampler> PDF<S> for DiracPDF {
     }
 }
 
-pub struct MixturePDF<'a, S: Sampler> {
-    pdfs: &'a [&'a dyn PDF<S>],
-    weights: Vec<f64>,
+pub struct MixturePDF<'a, S: Sampler, const N: usize> {
+    pdfs: &'a [&'a dyn PDF<S>; N],
+    /// Uniform weights — fully stack-allocated, no heap, no runtime len field.
+    weights: [f64; N],
 }
 
-impl<'a, S: Sampler> MixturePDF<'a, S> {
+impl<'a, S: Sampler, const N: usize> MixturePDF<'a, S, N> {
     /// Creates a mixture PDF with uniform weights per entry.
     ///
     /// Callers control the mixture by repeating entries: `[light, surface, surface]`
     /// gives surface double weight — each entry gets `1/n`, so `value()` returns
     /// `light/3 + 2*surface/3`.
-    pub fn new(pdfs: &'a [&'a dyn PDF<S>]) -> Self {
-        let n = pdfs.len() as f64;
-        let weights = vec![1.0 / n; pdfs.len()];
+    pub fn new(pdfs: &'a [&'a dyn PDF<S>; N]) -> Self {
+        let inv_n = 1.0 / N as f64;
+        let weights = [inv_n; N];
         MixturePDF { pdfs, weights }
     }
 }
 
-impl<'a, S: Sampler> PDF<S> for MixturePDF<'a, S> {
+impl<'a, S: Sampler, const N: usize> PDF<S> for MixturePDF<'a, S, N> {
     fn value(&self, direction: Vec3) -> f64 {
         self.pdfs
             .iter()
@@ -148,7 +149,7 @@ impl<'a, S: Sampler> PDF<S> for MixturePDF<'a, S> {
             }
         }
 
-        self.pdfs.last().unwrap().generate(dim_offset)
+        self.pdfs[N - 1].generate(dim_offset)
     }
 }
 
@@ -169,8 +170,9 @@ impl<'a, S: Sampler> PDF<S> for MixturePDF<'a, S> {
 /// so the GGX lobe is correctly oriented in the hemisphere.
 pub struct GgxSamplePDF {
     alpha: f64,
-    /// The outgoing direction (toward camera), kept for value().
-    wo: Vec3,
+    /// Pre-normalized outgoing direction (toward camera) — avoids redundant
+    /// `unit_vector()` calls in value() and generate().
+    wo_unit: Vec3,
     // /// The surface normal — the GGX distribution is centered on this.
     // normal: Vec3,
     onb: Onb,
@@ -184,17 +186,21 @@ impl GgxSamplePDF {
         // Build the ONB from the **surface normal**, not wo, so the GGX lobe is correctly centered
         // on the normal.
         let onb = Onb::build_from_normal(normal);
+        let wo_unit = wo.unit_vector();
 
-        Self { alpha, wo, onb }
+        Self {
+            alpha,
+            wo_unit,
+            onb,
+        }
     }
 }
 
 impl<S: Sampler> PDF<S> for GgxSamplePDF {
     fn value(&self, direction: Vec3) -> f64 {
         let wi = direction.unit_vector();
-        let h = (self.wo + wi).unit_vector();
-        // let cos_h = h.dot(&wi); // |wo·H| == |wi·H| when H is the half-vector
-        let cos_h = self.wo.unit_vector().dot(&h).abs();
+        let h = (self.wo_unit + wi).unit_vector();
+        let cos_h = self.wo_unit.dot(&h).abs();
         if cos_h <= 0.0 {
             return 0.0;
         }
@@ -226,7 +232,6 @@ impl<S: Sampler> PDF<S> for GgxSamplePDF {
 
         // Reflect wo about H to get wi. `reflect` expects the incident direction (toward surface),
         // so negate wo which points away from the surface.
-        let wo_unit = self.wo.unit_vector();
-        reflect(&-wo_unit, &h_world)
+        reflect(&-self.wo_unit, &h_world)
     }
 }

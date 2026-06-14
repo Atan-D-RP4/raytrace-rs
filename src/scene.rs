@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rand::RngExt;
 
 use crate::bvh::BvhNode;
-use crate::camera::CameraConfig;
+use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
@@ -70,11 +70,6 @@ impl<S: Sampler + 'static> Scene<S> {
 
     pub fn samples_per_pixel(mut self, samples: i32) -> Self {
         self.config.samples_per_pixel = samples;
-        self
-    }
-
-    pub fn max_depth(mut self, depth: i32) -> Self {
-        self.config.max_depth = depth;
         self
     }
 

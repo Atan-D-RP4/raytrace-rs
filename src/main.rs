@@ -14,12 +14,16 @@ use winit::{
     window::{Theme, Window, WindowId},
 };
 
-use raytrace_rs::bvh::BvhNode;
-use raytrace_rs::camera::{Camera, Framebuffer, SharedFramebuffer};
-use raytrace_rs::flat_bvh::FlatBvh;
-use raytrace_rs::hittable::Sampleable;
 use raytrace_rs::sampler::SobolQmcSampler;
 use raytrace_rs::scene::Scene;
+use raytrace_rs::{bvh::BvhNode, camera::PerspectiveCamera};
+use raytrace_rs::{camera::Camera, film::RgbFilm};
+use raytrace_rs::{
+    film::{Framebuffer, SharedFramebuffer},
+    integrator::PathTracingIntegrator,
+};
+use raytrace_rs::{flat_bvh::FlatBvh, renderer::CpuRenderer};
+use raytrace_rs::{hittable::Sampleable, renderer::Renderer};
 
 const WIDTH: u32 = 800;
 
@@ -34,6 +38,9 @@ struct WindowState {
 
     /// Shared render output consumed by draw loop.
     framebuffer: SharedFramebuffer,
+
+    /// Cached surface dimensions to avoid redundant resize calls.
+    last_surface_size: PhysicalSize<u32>,
 }
 
 impl WindowState {
@@ -57,6 +64,7 @@ impl WindowState {
             window,
             theme,
             framebuffer,
+            last_surface_size: size,
         }
     }
 
@@ -65,6 +73,7 @@ impl WindowState {
     /// Resizes backing surface and schedules redraw for fresh present.
     fn resize(&mut self, size: PhysicalSize<u32>) {
         resize_surface(&mut self.surface, size);
+        self.last_surface_size = size;
         self.window.request_redraw();
     }
 
@@ -88,10 +97,12 @@ impl WindowState {
             return;
         }
 
-        // TODO(opt-preview): cache last surface size and resize only on dimension change.
-        // Current path resizes every redraw to defend against compositor/scale drift.
-        profiling::scope!("ui_surface_resize");
-        resize_surface(&mut self.surface, size);
+        // Only resize surface if dimensions actually changed
+        if size != self.last_surface_size {
+            profiling::scope!("ui_surface_resize");
+            resize_surface(&mut self.surface, size);
+            self.last_surface_size = size;
+        }
 
         let fb = self.framebuffer.read().unwrap();
         if fb.width == 0 || fb.height == 0 {
@@ -287,23 +298,6 @@ fn save_framebuffer(framebuffer: &SharedFramebuffer, filename: &str) {
     }
 }
 
-/// Configures the global rayon thread pool from the `RT_THREADS` environment variable.
-///
-/// Must be called **before** any rayon usage (the global pool is created once, on first use).
-/// Without `RT_THREADS`, rayon defaults to the number of available CPU cores.
-fn configure_rayon() {
-    let mut builder = rayon::ThreadPoolBuilder::new().num_threads(4);
-
-    if let Ok(n) = std::env::var("RT_THREADS")
-        && let Ok(n) = n.parse::<usize>()
-    {
-        builder = builder.num_threads(n);
-    }
-
-    // Silently ignores error if pool was already initialized (shouldn't happen here).
-    let _ = builder.build_global();
-}
-
 /// Initializes global tracing subscriber for app/process lifetime.
 ///
 /// Uses `RUST_LOG` when available, falls back to `info` level.
@@ -316,8 +310,6 @@ fn init_tracing() {
         .with_thread_ids(true)
         .with_line_number(true)
         .init();
-
-    info!(threads = rayon::current_num_threads(), "startup");
 }
 
 /// Entry point for live-preview application mode.
@@ -329,8 +321,16 @@ fn init_tracing() {
 /// 4. Spawn render worker thread.
 /// 5. Run winit event loop + softbuffer presentation on main thread.
 fn main() -> Result<(), winit::error::EventLoopError> {
-    configure_rayon();
+    // Initialize rayon BEFORE anything calls rayon::current_num_threads(),
+    // which would lazily create the default all-cores pool.
+    let render_threads = std::env::var("RT_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get() / 2));
+    CpuRenderer::init_thread_pool(render_threads);
+
     init_tracing();
+    info!(threads = rayon::current_num_threads(), "startup");
 
     // Parse scene name from CLI args (optional first positional arg).
     // Default is "cornell_box" to preserve original behavior.
@@ -391,11 +391,14 @@ fn live_render(
         .unwrap_or(1000);
     config.max_depth = std::env::var("RT_DEPTH")
         .ok()
-        .and_then(|s| s.parse::<i32>().ok())
+        .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(50);
 
-    let camera = Camera::from_config(&config);
-    let (width, height) = camera.image_dimensions();
+    let camera = PerspectiveCamera::from_config(&config);
+    let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
+    let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
+    let renderer = CpuRenderer::new(config.samples_per_pixel as u32);
+    let (width, height) = camera.image_resolution();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new(width, height)));
 
     let event_loop = EventLoop::new()?;
@@ -428,15 +431,17 @@ fn live_render(
         let world = FlatBvh::from_bvh(world_bvh);
         let lights: Arc<dyn Sampleable<SobolQmcSampler>> = Arc::new(light_objects);
 
-        let mut camera = Camera::from_config(&config);
         // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
         // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
         profiling::scope!("render");
-        camera.render(
+        renderer.render(
+            &camera,
+            &integrator,
+            &mut film,
             &world,
-            &*lights,
-            SobolQmcSampler::for_pixel,
+            &lights,
             Some(framebuffer.clone()),
+            SobolQmcSampler::for_pixel,
         );
 
         save_framebuffer(&framebuffer, &scene_name);
@@ -467,10 +472,14 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
         .unwrap_or(1000);
     config.max_depth = std::env::var("RT_DEPTH")
         .ok()
-        .and_then(|s| s.parse::<i32>().ok())
+        .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(50);
 
-    let mut camera = Camera::from_config(&config);
+    let camera = PerspectiveCamera::from_config(&config);
+    let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
+    let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
+    let renderer = CpuRenderer::new(config.samples_per_pixel as u32);
+    let (width, height) = camera.image_resolution();
 
     let (mut objects, light_objects) = scene.into_objects();
 
@@ -493,10 +502,21 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
 
     let start = std::time::Instant::now();
     profiling::scope!("render_cpu");
-    let (width, height, rgb_data) =
-        camera.render(&world, &light_objects, SobolQmcSampler::for_pixel, None);
-    let end = std::time::Instant::now();
-    info!(elapsed = ?(end - start), width, height, "render complete");
+    renderer.render(
+        &camera,
+        &integrator,
+        &mut film,
+        &world,
+        &Arc::new(light_objects),
+        None,
+        SobolQmcSampler::for_pixel,
+    );
+    info!(
+        elapsed = format!("{:.4}", start.elapsed().as_secs_f64()),
+        width, height, "render complete"
+    );
+
+    let rgb_data = film.to_rgb8();
 
     let mut img: RgbImage = ImageBuffer::new(width, height);
     for (i, pixel) in rgb_data.chunks(3).enumerate() {

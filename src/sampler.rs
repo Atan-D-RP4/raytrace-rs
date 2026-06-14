@@ -120,7 +120,7 @@ pub(crate) fn hash_sample(n: u32, d: u32, seed: u64) -> f64 {
 
 /// Sobol' quasi-random sampler — stateless, uses direct Gray-code
 /// computation so `sample(n, d)` is fully deterministic and independent
-/// of prior sample history. No thread-local state.
+/// of prior sample history.
 pub struct SobolQmcSampler {
     seed: u64,
 }
