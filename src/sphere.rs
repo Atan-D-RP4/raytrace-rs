@@ -130,20 +130,33 @@ impl Bounded for Sphere {
 
 impl<S: Sampler> Sampleable<S> for Sphere {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        if self
-            .intersect(
-                &Ray::new(origin, direction),
-                Interval::from(0.001, f64::INFINITY),
-            )
-            .is_some()
-        {
-            let distance_squared = (self.center.at(0.) - origin).length_squared();
-            let cos_theta_max = (1. - (self.radius * self.radius) / distance_squared).sqrt();
-            let solid_angle = 2. * PI * (1. - cos_theta_max);
-            1. / solid_angle
-        } else {
-            0.0
+        // Inline discriminant-only hit test — avoids constructing a temporary
+        // Ray (3 divisions for `inverse_direction` that is never used) and
+        // the full intersection (~50 ops) when we only need a boolean hit.
+        let current_center = self.center.at(0.);
+        let oc = current_center - origin;
+        let a = direction.length_squared();
+        let h = direction.dot(&oc);
+        let c = oc.length_squared() - (self.radius * self.radius);
+        let discriminant = h * h - a * c;
+
+        if discriminant < 0.0 {
+            return 0.0;
         }
+
+        let sqrtd = discriminant.sqrt();
+        let root = (h - sqrtd) / a;
+        if root <= 0.001 {
+            let root2 = (h + sqrtd) / a;
+            if root2 <= 0.001 {
+                return 0.0;
+            }
+        }
+
+        let distance_squared = (current_center - origin).length_squared();
+        let cos_theta_max = (1. - (self.radius * self.radius) / distance_squared).sqrt();
+        let solid_angle = 2. * PI * (1. - cos_theta_max);
+        1. / solid_angle
     }
 
     fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {

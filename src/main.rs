@@ -432,7 +432,7 @@ fn live_render(
         );
         profiling::scope!("root_bvh_build");
         let world_bvh = BvhNode::new(&mut objects);
-        let world = FlatBvh::from_bvh(world_bvh);
+        let world = FlatBvh::from(world_bvh);
         let lights: Arc<dyn Sampleable<SobolQmcSampler>> = Arc::new(light_objects);
 
         // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
@@ -501,7 +501,7 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
     // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
     profiling::scope!("root_bvh_build");
     let world_bvh = BvhNode::new(&mut objects);
-    let world = FlatBvh::from_bvh(world_bvh);
+    let world = FlatBvh::from(world_bvh);
 
     info!(
         threads = rayon::current_num_threads(),

@@ -16,6 +16,19 @@
 //! Traversal is iterative with an explicit stack (no recursion). The stack
 //! depth is fixed at 64 entries — sufficient for any practical BVH depth.
 
+/*
+References for optimizing BVH traversal and flat layouts on the CPU:
+1. Embree architecture: Wald et al., "Embree: A Kernel Framework for Efficient CPU Ray Tracing," SIGGRAPH 2014 — embree.org/papers/2014-Siggraph-Embree.pdf (https://www.embree.org/papers/2014-Siggraph-Embree.pdf)
+2. Embree source: kernels/bvh/bvh.h and kernels/bvh/bvh_node_aabb.h — github.com/RenderKit/embree (https://github.com/RenderKit/embree)
+3. WiVe algorithm: Fuetterling et al., "Accelerated Single-Ray Tracing for Wide Vector Units," HPG 2017
+4. PBRT BVH chapter: pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies (https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies)
+5. Psychopath BVH4 analysis: psychopath.io/post/2017_08_03_bvh4_without_simd (https://psychopath.io/post/2017_08_03_bvh4_without_simd)
+6. tinybvh: github.com/jbikker/tinybvh (https://github.com/jbikker/tinybvh) — includes BVH4_CPU, BVH8_CPU, CWBVH implementations
+7. CLPT paper (coherent packets for BVH4): jcgt.org/published/0004/04/05/
+8. Stackless BVH traversal: Hapala et al., "Efficient Stack-less BVH Traversal for Ray Tracing," SCCG 2011
+9. DRST (dynamic ray stream tracing): Barringer & Akenine-Möller, 2014
+*/
+
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
@@ -27,31 +40,27 @@ use crate::ray::Ray;
 /// Maximum traversal stack depth. 64 handles BVHs with up to 2^64 primitives.
 const MAX_STACK: usize = 64;
 
-/// A flat (array-of-structs) BVH node.
+/// A flat (array-of-structs) BVH node. Aligned to 64 bytes for cache efficiency.
 ///
 /// Layout is `repr(C)` for deterministic padding and cache-line alignment.
-/// Interior nodes: left/right are indices into the flat node array.
-/// Leaf nodes: prim_offset/count index into the primitive index array.
-///
-/// # Memory Layout (64 bytes)
-///
-/// ```text
-/// [0..6]   min/max AABB: 6 x f64 = 48 bytes
-/// [48]     child_or_count: u32  (interior: left child index; leaf: prim count)
-/// [52]     right_or_unused: u32 (interior: right child index; leaf: 0)
-/// [56]     prim_offset: u32     (leaf: start index; interior: 0)
-/// [60]     flags: u8            (0 = interior, 1 = leaf)
-/// [61..63] _pad: [u8; 3]
-/// ```
+/// Interior nodes: left/right are indices into the flat node array. Leaf nodes: prim_offset/count
+/// index into the primitive index array.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FlatBvhNode {
+    /// [0..3] min AABB: 3 x f64 = 24 bytes
     pub min: [f64; 3], // min_x, min_y, min_z
-    pub max: [f64; 3], // min_x, min_y, min_z
+    /// [4..6] max AABB: 3 x f64 = 24 bytes
+    pub max: [f64; 3], // max_x, max_y, max_z
+    /// [48] child_or_count: u32  (interior: left child index; leaf: prim count)
     pub child_or_count: u32,
+    /// [52] right_or_unused: u32 (interior: right child index; leaf: 0)
     pub right_or_unused: u32,
+    /// [56] prim_offset: u32 (leaf: start index; interior: 0)
     pub prim_offset: u32,
+    /// [60] flags: u8    (0 = interior, 1 = leaf)
     pub flags: u8,
+    /// [61..63] _pad: [u8; 3]
     _pad: [u8; 3],
 }
 
@@ -111,40 +120,6 @@ impl FlatBvhNode {
         debug_assert!(self.is_leaf(), "prim_count() on interior");
         self.child_or_count as usize
     }
-
-    /// Slab-method AABB-ray intersection test.
-    #[inline]
-    fn hit_aabb(&self, ray: &Ray, ray_t: &mut Interval) -> bool {
-        for (origin, inv_d, ax_min, ax_max) in [
-            (
-                ray.origin.x,
-                ray.inverse_direction.x,
-                self.min[0], // min_x
-                self.max[0], // max_x
-            ),
-            (
-                ray.origin.y,
-                ray.inverse_direction.y,
-                self.min[1], // min_y
-                self.max[1], // max_y
-            ),
-            (
-                ray.origin.z,
-                ray.inverse_direction.z,
-                self.min[2],
-                self.max[2],
-            ),
-        ] {
-            let t0 = (ax_min - origin) * inv_d;
-            let t1 = (ax_max - origin) * inv_d;
-            ray_t.min = ray_t.min.max(t0.min(t1));
-            ray_t.max = ray_t.max.min(t0.max(t1));
-            if ray_t.max <= ray_t.min {
-                return false;
-            }
-        }
-        true
-    }
 }
 
 /// Flat BVH container: array-of-nodes + flat primitive list.
@@ -155,14 +130,14 @@ pub struct FlatBvh {
     primitives: Vec<Arc<dyn Intersectable>>,
 }
 
-impl FlatBvh {
+impl From<BvhNode> for FlatBvh {
     /// Builds a flat BVH from a tree BVH.
     ///
     /// Traverses the tree in depth-first pre-order, collecting leaf
     /// primitives and emitting flat nodes. Interior children are stored
     /// by index; the DFS ordering guarantees children are emitted
     /// immediately after their parent.
-    pub fn from_bvh(bvh: BvhNode) -> Self {
+    fn from(bvh: BvhNode) -> Self {
         let mut flat_nodes = Vec::new();
         let mut primitives = Vec::new();
 
@@ -173,7 +148,9 @@ impl FlatBvh {
             primitives,
         }
     }
+}
 
+impl FlatBvh {
     /// Recursively flattens a tree BVH node into the flat array.
     ///
     /// Takes ownership of the tree node and its children, moving leaf
@@ -227,38 +204,6 @@ impl FlatBvh {
         }
     }
 
-    /// Estimates the t-value at which a ray enters a node's AABB.
-    /// Used for near-first child ordering during traversal.
-    #[inline]
-    fn t_bound(ray: &Ray, node: &FlatBvhNode) -> f64 {
-        let mut t_min = f64::NEG_INFINITY;
-        for (origin, inv_d, ax_min, ax_max) in [
-            (
-                ray.origin.x,
-                ray.inverse_direction.x,
-                node.min[0],
-                node.max[0],
-            ),
-            (
-                ray.origin.y,
-                ray.inverse_direction.y,
-                node.min[1],
-                node.max[1],
-            ),
-            (
-                ray.origin.z,
-                ray.inverse_direction.z,
-                node.min[2],
-                node.max[2],
-            ),
-        ] {
-            let t0 = (ax_min - origin) * inv_d;
-            let t1 = (ax_max - origin) * inv_d;
-            t_min = t_min.max(t0.min(t1));
-        }
-        t_min
-    }
-
     /// Returns the number of flat nodes (for diagnostics).
     pub fn node_count(&self) -> usize {
         self.nodes.len()
@@ -285,14 +230,49 @@ impl Intersectable for FlatBvh {
         stack[sp] = 0; // root
         sp += 1;
 
+        // Precompute ray components — hoisted out of the loop to avoid
+        // repeated field access through pointer indirection.
+        let ox = ray.origin.x;
+        let oy = ray.origin.y;
+        let oz = ray.origin.z;
+        let idx = ray.inverse_direction.x;
+        let idy = ray.inverse_direction.y;
+        let idz = ray.inverse_direction.z;
+        let dx = ray.direction.x;
+        let dy = ray.direction.y;
+        let dz = ray.direction.z;
+        let tmin = ray_t.min;
+
         while sp > 0 {
             sp -= 1;
-            let node_idx = stack[sp] as usize;
-            let node = &self.nodes[node_idx];
+            let node = &self.nodes[stack[sp] as usize];
 
-            // AABB test with the current best-t to prune distant hits.
-            let mut current_t = Interval::from(ray_t.min, best_t);
-            if !node.hit_aabb(ray, &mut current_t) {
+            // Inline slab AABB test — avoids Interval construction and
+            // array-of-tuples iteration per node visit.
+            let mut lo = tmin;
+            let mut hi = best_t;
+
+            let t0 = (node.min[0] - ox) * idx;
+            let t1 = (node.max[0] - ox) * idx;
+            lo = lo.max(t0.min(t1));
+            hi = hi.min(t0.max(t1));
+            if hi <= lo {
+                continue;
+            }
+
+            let t0 = (node.min[1] - oy) * idy;
+            let t1 = (node.max[1] - oy) * idy;
+            lo = lo.max(t0.min(t1));
+            hi = hi.min(t0.max(t1));
+            if hi <= lo {
+                continue;
+            }
+
+            let t0 = (node.min[2] - oz) * idz;
+            let t1 = (node.max[2] - oz) * idz;
+            lo = lo.max(t0.min(t1));
+            hi = hi.min(t0.max(t1));
+            if hi <= lo {
                 continue;
             }
 
@@ -301,7 +281,7 @@ impl Intersectable for FlatBvh {
                 let count = node.prim_count();
                 for i in start..start + count {
                     if let Some(mat_hit) =
-                        self.primitives[i].intersect(ray, Interval::from(ray_t.min, best_t))
+                        self.primitives[i].intersect(ray, Interval::from(tmin, best_t))
                         && mat_hit.hit.time < best_t
                     {
                         best_t = mat_hit.hit.time;
@@ -312,31 +292,36 @@ impl Intersectable for FlatBvh {
                 let left_idx = node.left_child();
                 let right_idx = node.right_child();
 
-                // Near-first ordering: push far child first so near is popped first.
-                let left_node = &self.nodes[left_idx as usize];
-                let right_node = &self.nodes[right_idx as usize];
-                let left_t = Self::t_bound(ray, left_node);
-                let right_t = Self::t_bound(ray, right_node);
+                // Near-first ordering via centroid projection — cheaper than
+                // full t_bound (6 multiplies + 6 adds vs 36 ops per pair).
+                // The 0.5 factor cancels in the comparison, so we skip it.
+                let left = &self.nodes[left_idx as usize];
+                let right = &self.nodes[right_idx as usize];
 
-                if left_t <= right_t {
-                    // Push right (far) first, then left (near).
-                    if sp < MAX_STACK {
-                        stack[sp] = right_idx;
-                        sp += 1;
-                    }
-                    if sp < MAX_STACK {
-                        stack[sp] = left_idx;
-                        sp += 1;
-                    }
+                let lcx = left.min[0] + left.max[0];
+                let lcy = left.min[1] + left.max[1];
+                let lcz = left.min[2] + left.max[2];
+                let rcx = right.min[0] + right.max[0];
+                let rcy = right.min[1] + right.max[1];
+                let rcz = right.min[2] + right.max[2];
+
+                let ld = (lcx - ox) * dx + (lcy - oy) * dy + (lcz - oz) * dz;
+                let rd = (rcx - ox) * dx + (rcy - oy) * dy + (rcz - oz) * dz;
+
+                let (near_idx, far_idx) = if ld <= rd {
+                    (left_idx, right_idx)
                 } else {
-                    if sp < MAX_STACK {
-                        stack[sp] = left_idx;
-                        sp += 1;
-                    }
-                    if sp < MAX_STACK {
-                        stack[sp] = right_idx;
-                        sp += 1;
-                    }
+                    (right_idx, left_idx)
+                };
+
+                // Push far child first so near is popped first (stack LIFO).
+                if sp < MAX_STACK {
+                    stack[sp] = far_idx;
+                    sp += 1;
+                }
+                if sp < MAX_STACK {
+                    stack[sp] = near_idx;
+                    sp += 1;
                 }
             }
         }
@@ -378,7 +363,7 @@ mod tests {
     #[test]
     fn flat_bvh_empty() {
         let bvh: BvhNode = BvhNode::Empty;
-        let flat = FlatBvh::from_bvh(bvh);
+        let flat = FlatBvh::from(bvh);
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(0., 0., -1.), 0.0);
         assert!(
             flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
@@ -398,7 +383,7 @@ mod tests {
             object: sphere.clone(),
             bbox,
         };
-        let flat = FlatBvh::from_bvh(bvh);
+        let flat = FlatBvh::from(bvh);
         assert_eq!(flat.primitive_count(), 1);
         assert_eq!(flat.node_count(), 1);
 
@@ -446,7 +431,7 @@ mod tests {
             bbox: merged_bbox,
         };
 
-        let flat = FlatBvh::from_bvh(interior);
+        let flat = FlatBvh::from(interior);
         assert_eq!(flat.primitive_count(), 2);
         assert_eq!(flat.node_count(), 3); // 1 interior + 2 leaves
 

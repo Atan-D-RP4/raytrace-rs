@@ -176,24 +176,34 @@ impl<R: Region2D, S: Sampler> Sampleable<S> for PlanarPatch<R> {
             return 0.0;
         }
 
-        if let Some(hit) = self.intersect(
-            &Ray::new(origin, direction),
-            Interval::from(0.001, f64::INFINITY),
-        ) {
-            let distance_squared = hit.hit.time * hit.hit.time * direction.length_squared();
-            // After set_face_normal, hit.normal always faces the incoming ray (negative dot).
-            // .abs() gives the Jacobian factor for the area-to-solid-angle measure conversion.
-            let cosine = hit
-                .hit
-                .geometric_normal
-                .dot(&(-direction.unit_vector()))
-                .abs();
-            let world_area = self.area * self.region.bounding_box_area();
-
-            distance_squared / (cosine * world_area)
-        } else {
-            0.0
+        // Inline plane intersection — avoids constructing a temporary Ray (3
+        // divisions for `inverse_direction` that `hit_plane` never uses).
+        let denom = self.normal.dot(&direction);
+        if denom.abs() < 1e-8 {
+            return 0.0;
         }
+
+        let t = (self.d - self.normal.dot(&origin)) / denom;
+        if t <= 0.001 {
+            return 0.0;
+        }
+
+        let point = origin + direction * t;
+        let planar_hit_point_vector = point - self.corner;
+        let a = self.w.dot(&planar_hit_point_vector.cross(&self.side_b));
+        let b = self.w.dot(&self.side_a.cross(&planar_hit_point_vector));
+
+        if !self.region.contains(a, b) {
+            return 0.0;
+        }
+
+        let distance_squared = t * t * direction.length_squared();
+        // The normal is constant for a planar patch; .abs() gives the Jacobian
+        // factor for the area-to-solid-angle measure conversion.
+        let cosine = self.normal.dot(&(-direction.unit_vector())).abs();
+        let world_area = self.area * self.region.bounding_box_area();
+
+        distance_squared / (cosine * world_area)
     }
 
     fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
