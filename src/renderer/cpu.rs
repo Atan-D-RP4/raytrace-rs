@@ -10,12 +10,41 @@ use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::Color3;
 
 pub struct CpuRenderer {
+    /// Number of samples to take per pixel. Higher values yield better quality but take longer.
     samples_per_pixel: u32,
+    /// Absolute variance floor. Pixels with variance below this threshold are
+    /// considered converged regardless of their brightness. Prevents wasting
+    /// samples on near-black pixels that are genuinely dark.
+    threshold_abs: f64,
+    /// Relative variance threshold: variance / luminance². Pixels whose relative
+    /// noise drops below this ratio are considered converged. Typical values:
+    /// 0.01 (stddev = 10% of mean) to 0.05 (stddev = 22%).
+    threshold_rel: f64,
+    /// Minimum number of samples to take before considering adaptive sampling.
+    /// Ensures we have enough data to make a reliable variance estimate.
+    min_samples_before_adapt: u32,
 }
 
 impl CpuRenderer {
     pub fn new(samples_per_pixel: u32) -> Self {
-        Self { samples_per_pixel }
+        Self {
+            samples_per_pixel,
+            threshold_abs: 1e-4,
+            threshold_rel: 0.02,
+            min_samples_before_adapt: 64,
+        }
+    }
+
+    pub fn set_threshold_abs(&mut self, threshold: f64) {
+        self.threshold_abs = threshold;
+    }
+
+    pub fn set_threshold_rel(&mut self, threshold: f64) {
+        self.threshold_rel = threshold;
+    }
+
+    pub fn set_min_samples_before_adapt(&mut self, min_samples: u32) {
+        self.min_samples_before_adapt = min_samples;
     }
 
     /// Initialize the rayon global thread pool. Must be called before any
@@ -83,15 +112,54 @@ where
             })
             .collect();
 
+        // Pre-allocate the convergence mask once, then refill in place each pass
+        // to avoid repeated heap allocation of the full-resolution bool buffer.
+        let mut converged = vec![false; (width * height) as usize];
+
         for sample_idx in 0..self.samples_per_pixel {
             let pass_start = std::time::Instant::now();
             let _sample_span =
                 tracing::info_span!("sample_pass", sample_index = sample_idx + 1).entered();
             profiling::scope!("sample_pass");
 
+            // After accumulating enough samples (min_samples_before_adapt), refill
+            // the convergence mask in place — no reallocation. Before that, keep
+            // all pixels unconverged (false) to build up initial variance estimates.
+            if sample_idx >= self.min_samples_before_adapt {
+                film.reset_convergence_mask(
+                    self.threshold_rel,
+                    self.threshold_abs,
+                    self.min_samples_before_adapt,
+                    &mut converged,
+                );
+
+                // Early exit: if every pixel has converged, stop sampling.
+                if converged.iter().all(|&c| c) {
+                    info!(
+                        "all pixels converged at sample {} of {}",
+                        sample_idx + 1,
+                        self.samples_per_pixel
+                    );
+                    // Still publish the final frame so the preview shows the result.
+                    if let Some(ref framebuffer) = framebuffer {
+                        let rgb = film.progressive();
+                        if let Ok(mut fb) = framebuffer.write() {
+                            fb.width = width;
+                            fb.height = height;
+                            fb.rgb.iter_mut().zip(rgb).for_each(|(dst, src)| *dst = src);
+                            fb.finished = true;
+                        }
+                    }
+                    break;
+                }
+            } else {
+                converged.fill(false);
+            }
+
             // Zero-fill all pooled tiles before reuse.
             for tile in &mut tile_pool {
                 tile.pixels.fill(Color3::ZERO);
+                tile.sampled.fill(false);
             }
 
             // Parallel Iterate over tiles — each thread produces its own FilmTile,
@@ -103,33 +171,35 @@ where
                     // Bounds were set at pool creation time; read them from the tile.
                     let [x_start, x_end, y_start, y_end] = tile.bounds;
 
-                    for y in y_start..y_end {
-                        for x in x_start..x_end {
-                            // Sample the pixel using the sampler and camera
-                            let sampler = make_sampler(x as i32, y as i32);
-                            let mut dim_cursor = DimCursor::new(0, sampler);
-                            dim_cursor.sample_idx = sample_idx;
+                    for (y, x) in
+                        (y_start..y_end).flat_map(|y| (x_start..x_end).map(move |x| (y, x)))
+                    {
+                        if converged[y as usize * width as usize + x as usize] {
+                            continue; // Skip pixels that have already converged
+                        }
 
-                            // Generate a camera sample for the pixel from sampler dimensions
-                            // Dims 0-1: AA jitter, dims 2-3: lens (defocus)
-                            let camera_sampler = CameraSampler {
-                                pixel: (x, y),
-                                jitter: (dim_cursor.next_sample(), dim_cursor.next_sample()),
-                                lens: (dim_cursor.next_sample(), dim_cursor.next_sample()),
-                                time: 0.,
-                            };
+                        // Sample the pixel using the sampler and camera
+                        let sampler = make_sampler(x as i32, y as i32);
+                        let mut dim_cursor = DimCursor::new(0, sampler);
+                        dim_cursor.sample_idx = sample_idx;
 
-                            if let Some(mut cam_ray) = camera.generate_ray(&camera_sampler) {
-                                let radiance =
-                                    integrator.li(&mut cam_ray.ray, world, lights, &mut dim_cursor);
-                                let sample = radiance * cam_ray.weight;
-                                // Guard against NaN/Inf poisoning the accumulation buffer.
-                                if sample.x.is_finite()
-                                    && sample.y.is_finite()
-                                    && sample.z.is_finite()
-                                {
-                                    tile.add_sample(x, y, sample);
-                                }
+                        // Generate a camera sample for the pixel from sampler dimensions
+                        // Dims 0-1: AA jitter, dims 2-3: lens (defocus)
+                        let camera_sampler = CameraSampler {
+                            pixel: (x, y),
+                            jitter: (dim_cursor.next_sample(), dim_cursor.next_sample()),
+                            lens: (dim_cursor.next_sample(), dim_cursor.next_sample()),
+                            time: 0.,
+                        };
+
+                        if let Some(mut cam_ray) = camera.generate_ray(&camera_sampler) {
+                            let radiance =
+                                integrator.li(&mut cam_ray.ray, world, lights, &mut dim_cursor);
+                            let sample = radiance * cam_ray.weight;
+                            // Guard against NaN/Inf poisoning the accumulation buffer.
+                            if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite()
+                            {
+                                tile.add_sample(x, y, sample);
                             }
                         }
                     }
@@ -158,7 +228,7 @@ where
                 false
             };
             if should_publish && let Some(ref framebuffer) = framebuffer {
-                let rgb = film.progressive(sample_idx as usize + 1);
+                let rgb = film.progressive();
                 if let Ok(mut fb) = framebuffer.write() {
                     fb.width = width;
                     fb.height = height;

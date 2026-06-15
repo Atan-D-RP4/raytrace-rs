@@ -397,9 +397,13 @@ fn live_render(
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
     let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
-    let renderer = CpuRenderer::new(config.samples_per_pixel as u32);
+    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32);
     let (width, height) = camera.image_resolution();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new(width, height)));
+
+    renderer.set_threshold_abs(1e-4);
+    renderer.set_threshold_rel(0.02);
+    renderer.set_min_samples_before_adapt(64);
 
     let event_loop = EventLoop::new()?;
     let mut app = App::new(framebuffer.clone(), width, height);
@@ -478,8 +482,12 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
     let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
-    let renderer = CpuRenderer::new(config.samples_per_pixel as u32);
+    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32);
     let (width, height) = camera.image_resolution();
+
+    renderer.set_threshold_abs(1e-4);
+    renderer.set_threshold_rel(0.02);
+    renderer.set_min_samples_before_adapt(64);
 
     let (mut objects, light_objects) = scene.into_objects();
 

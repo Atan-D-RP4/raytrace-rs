@@ -13,7 +13,10 @@ pub struct RgbFilm {
     height: u32,
     /// Accumulated color for each pixel (linear space, not gamma-corrected).
     pixels: Vec<Color3>,
+    /// Parallel vector to `pixels` that tracks the number of samples accumulated for each pixel.
     sample_counts: Vec<u32>,
+    /// The running sum of squared differences from the current mean
+    m_2: Vec<Color3>,
     // Exposure value for tone mapping.
     exposure: f64,
     // Whether to apply tone mapping to final colors.
@@ -29,6 +32,7 @@ impl RgbFilm {
             height,
             pixels: vec![Color3::ZERO; (width * height) as usize],
             sample_counts: vec![0; (width * height) as usize],
+            m_2: vec![Color3::ZERO; (width * height) as usize],
             exposure,
             tone_map,
         }
@@ -50,20 +54,46 @@ impl RgbFilm {
             .collect()
     }
 
-    /// Progressive tonemap for live preview (moved from Camera's progressive block).
-    pub fn progressive_rgb8(&self, samples_so_far: usize) -> impl Iterator<Item = u8> + '_ {
-        self.pixels.iter().flat_map(move |color| {
-            let avg_color = *color / (samples_so_far as f64);
-            post_process(avg_color, self.exposure, self.tone_map)
-        })
+    /// Progressive tonemap for live preview.
+    /// Uses per-pixel sample counts so adaptive sampling works correctly
+    /// (each pixel may have a different number of accumulated samples).
+    pub fn progressive_rgb8(&self) -> impl Iterator<Item = u8> + '_ {
+        self.pixels
+            .iter()
+            .zip(self.sample_counts.iter())
+            .flat_map(|(color, &count)| {
+                let avg_color = if count > 0 {
+                    *color / (count as f64)
+                } else {
+                    *color
+                };
+                post_process(avg_color, self.exposure, self.tone_map)
+            })
     }
 }
 
 impl Film for RgbFilm {
     fn add_sample(&mut self, x: u32, y: u32, color: Color3, weight: f64) {
         let index = (y * self.width + x) as usize;
-        self.pixels[index] += color * weight;
-        self.sample_counts[index] += 1;
+        let c = color * weight;
+        let n_prev = self.sample_counts[index];
+
+        if n_prev == 0 {
+            self.pixels[index] = c;
+            self.sample_counts[index] = 1;
+            // m_2 stays 0 — variance undefined for a single sample
+        } else {
+            let n_prev_f = n_prev as f64;
+            let mean_prev = self.pixels[index] / n_prev_f;
+            let delta = c - mean_prev;
+            let n_new_f = n_prev_f + 1.0;
+
+            self.pixels[index] += c;
+            // Welford's online M2 update (algebraically equivalent form):
+            //   M2 += delta² * n_prev / (n_prev + 1)
+            self.m_2[index] += delta * delta * (n_prev_f / n_new_f);
+            self.sample_counts[index] = n_prev + 1;
+        }
     }
 
     fn read_image(&self) -> Vec<u8> {
@@ -88,6 +118,7 @@ impl Film for RgbFilm {
     fn reset(&mut self) {
         self.pixels.fill(Color3::ZERO);
         self.sample_counts.fill(0);
+        self.m_2.fill(Color3::ZERO);
     }
 
     fn merge_tile(&mut self, tile: &FilmTile) {
@@ -99,16 +130,69 @@ impl Film for RgbFilm {
         );
 
         let tile_width = x_max - x_min;
-        for (tile_idx, &color) in tile.pixels.iter().enumerate() {
+        for (tile_idx, (&color, &sampled)) in
+            tile.pixels.iter().zip(tile.sampled.iter()).enumerate()
+        {
+            if !sampled {
+                continue;
+            }
             let tx = x_min + (tile_idx as u32 % tile_width);
             let ty = y_min + (tile_idx as u32 / tile_width);
-            let index = (ty * self.width + tx) as usize;
-            self.pixels[index] += color;
-            self.sample_counts[index] += 1; // Assuming each tile contributes one sample per pixel
+            // Tile pixels are already premultiplied by camera ray weight,
+            // so pass weight=1.0 to delegate the full Welford update to add_sample.
+            self.add_sample(tx, ty, color, 1.0);
         }
     }
 
-    fn progressive(&self, samples_so_far: usize) -> impl Iterator<Item = u8> + '_ {
-        self.progressive_rgb8(samples_so_far)
+    fn progressive(&self) -> impl Iterator<Item = u8> + '_ {
+        self.progressive_rgb8()
+    }
+
+    fn pixel_variance(&self, idx: usize) -> f64 {
+        let m_2 = self.m_2[idx];
+        let n = self.sample_counts[idx] as f64;
+
+        if n < 2.0 {
+            f64::INFINITY // Variance is undefined for n < 2
+        } else {
+            let variance = m_2 / (n - 1.0);
+            // Use max across RGB channels: a single noisy channel should prevent
+            // convergence — averaging could hide it and produce visible artifacts.
+            variance.x.max(variance.y).max(variance.z)
+        }
+    }
+
+    fn convergence_mask(
+        &self,
+        threshold_rel: f64,
+        threshold_abs: f64,
+        min_samples: u32,
+    ) -> Vec<bool> {
+        (0..self.pixels.len())
+            .map(|idx| {
+                let variance = self.pixel_variance(idx);
+                let mean = self.pixels[idx] / (self.sample_counts[idx] as f64);
+                let luminance = 0.2126 * mean.x + 0.7152 * mean.y + 0.0722 * mean.z;
+
+                self.sample_counts[idx] >= min_samples
+                    && (variance < threshold_abs || variance / luminance.max(1e-6) < threshold_rel)
+            })
+            .collect()
+    }
+
+    fn reset_convergence_mask(
+        &self,
+        threshold_rel: f64,
+        threshold_abs: f64,
+        min_samples: u32,
+        out: &mut [bool],
+    ) {
+        for (idx, entry) in out.iter_mut().enumerate() {
+            let variance = self.pixel_variance(idx);
+            let mean = self.pixels[idx] / (self.sample_counts[idx] as f64);
+            let luminance = 0.2126 * mean.x + 0.7152 * mean.y + 0.0722 * mean.z;
+            *entry = self.sample_counts[idx] >= min_samples
+                && (variance < threshold_abs || variance / luminance.max(1e-6) < threshold_rel);
+        }
     }
 }

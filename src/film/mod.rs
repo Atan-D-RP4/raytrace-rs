@@ -68,7 +68,32 @@ pub trait Film: Send + Sync {
     /// Merge a film tile into the film, accumulating its samples.
     fn merge_tile(&mut self, tile: &FilmTile);
 
-    fn progressive(&self, samples_so_far: usize) -> impl Iterator<Item = u8> + '_;
+    /// Produce a progressive RGB8 preview of the current film state.
+    /// Uses per-pixel sample counts so adaptive sampling previews correctly.
+    fn progressive(&self) -> impl Iterator<Item = u8> + '_;
+
+    /// Returns the estimated per-pixel variance (max over RGB channels).
+    /// Returns `f64::INFINITY` if fewer than 2 samples for this pixel.
+    fn pixel_variance(&self, idx: usize) -> f64;
+
+    /// Returns a fresh convergence mask: `true` = pixel variance is below threshold
+    /// with at least `min_samples` accumulated. Allocates a new `Vec<bool>`.
+    fn convergence_mask(
+        &self,
+        threshold_rel: f64,
+        threshold_abs: f64,
+        min_samples: u32,
+    ) -> Vec<bool>;
+
+    /// Refills an existing convergence mask `out` in place, avoiding allocation.
+    /// The slice must have length == pixel count.
+    fn reset_convergence_mask(
+        &self,
+        threshold_rel: f64,
+        threshold_abs: f64,
+        min_samples: u32,
+        out: &mut [bool],
+    );
 }
 
 /// Thread-safe framebuffer shared between UI thread and render thread.

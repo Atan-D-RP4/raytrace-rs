@@ -5,6 +5,8 @@ pub struct FilmTile {
     pub bounds: [u32; 4],
     /// Accumulated color for each pixel in the tile
     pub pixels: Vec<Color3>,
+    /// A parallel vector to `pixels` that tracks whether each pixel has been sampled at least once.
+    pub sampled: Vec<bool>,
 }
 
 impl FilmTile {
@@ -15,6 +17,7 @@ impl FilmTile {
         Self {
             bounds,
             pixels: vec![Color3::ZERO; (width * height) as usize],
+            sampled: vec![false; (width * height) as usize],
         }
     }
 
@@ -30,5 +33,6 @@ impl FilmTile {
         let width = self.bounds[1] - self.bounds[0];
         let index = ((y - y_min) * width + (x - x_min)) as usize;
         self.pixels[index] += color;
+        self.sampled[index] = true;
     }
 }
