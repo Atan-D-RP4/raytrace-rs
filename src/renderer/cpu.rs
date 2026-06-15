@@ -162,12 +162,12 @@ where
                 tile.sampled.fill(false);
             }
 
-            // Parallel Iterate over tiles — each thread produces its own FilmTile,
+            // Parallelly Iterate over tiles — each thread produces its own FilmTile,
             // then we merge sequentially to avoid contention on the film.
-            tile_pool = tile_pool
-                .into_par_iter()
+            tile_pool
+                .par_iter_mut()
                 .enumerate()
-                .map(|(_tile_idx, mut tile)| {
+                .for_each(|(_tile_idx, tile)| {
                     // Bounds were set at pool creation time; read them from the tile.
                     let [x_start, x_end, y_start, y_end] = tile.bounds;
 
@@ -203,9 +203,7 @@ where
                             }
                         }
                     }
-                    tile
-                })
-                .collect();
+                });
 
             // Merge all tiles sequentially — fast, no contention.
             for tile in &tile_pool {

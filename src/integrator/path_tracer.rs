@@ -91,6 +91,12 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     if matches!(sample.pdf_kind, crate::material::PdfKind::Delta) {
                         accumulated_attenuation = accumulated_attenuation * sample.f_cos;
                         ray = Ray::new_with_time(si.point(), sample.wi, ray.time);
+                        // Fixed stride per bounce: pad to consume 4 mixture+direction dims,
+                        // ensuring the next bounce reads from the same Sobol dimensions
+                        // regardless of this bounce's path decisions (QMC consistency).
+                        for _ in 0..4 {
+                            let _ = sampler.next_sample();
+                        }
                     } else {
                         // Non-delta materials: mixture PDF(light + material surface) sampling.
                         // If the material sample returns None, we terminate the path.
@@ -107,10 +113,16 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                         let pdfs = &[&light_pdf, surface_pdf, surface_pdf];
                         let sampling_pdf = MixturePDF::new(pdfs);
 
+                        // Track mixture-dimension consumption so we can pad to a fixed
+                        // 4-dim stride (1 selection + 3 direction) regardless of which
+                        // mixture component was selected.
+                        let mix_start = sampler.offset();
+
                         // Sample the mixture PDF to get the next direction Unitize for BRDF eval -
                         // PlanarPatch::random() returns a non-unit vector (distance to light), but
                         // BRDFs expect unit length.
                         let direction = sampling_pdf.generate(sampler).unit_vector();
+                        let mix_consumed = sampler.offset() - mix_start;
 
                         let scattered_ray = Ray::new_with_time(si.point(), direction, ray.time);
                         let pdf_val = sampling_pdf.value(direction);
@@ -121,6 +133,13 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                         let weight = 1. / pdf_val.max(1e-6); // Avoid division by zero
                         accumulated_attenuation = accumulated_attenuation * weight * f_cos;
                         ray = scattered_ray;
+
+                        // Pad to fixed mixture stride: the mixture PDF consumes 3-4 dims
+                        // (1 selection + 2-3 direction). Pad to ensure exactly 4, keeping
+                        // subsequent bounces at consistent Sobol dimensions.
+                        for _ in mix_consumed..4 {
+                            let _ = sampler.next_sample();
+                        }
                     }
                 } else {
                     // Material sample returned None, terminate the path

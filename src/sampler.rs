@@ -279,6 +279,12 @@ impl<S: Sampler> DimCursor<S> {
         self.offset += 1;
         self.sampler.sample(self.sample_idx, d)
     }
+
+    /// Returns the number of dimensions consumed so far (current offset).
+    #[inline(always)]
+    pub fn offset(&self) -> u32 {
+        self.offset
+    }
 }
 
 #[cfg(test)]
