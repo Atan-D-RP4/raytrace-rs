@@ -229,28 +229,21 @@ impl<S: Sampler + 'static> Scene<S> {
             Material::metal(Color3::from(0.8, 0.8, 0.9), 1.0),
         );
 
-        let boundary = Arc::new(Sphere::new(
-            &Point3::from(360., 150., 145.),
-            70.,
-            Material::dielectric(1.5),
-        ));
-        scene.objects.push(boundary.clone());
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
-            boundary,
+            Sphere::new(
+                &Point3::from(360., 150., 145.),
+                70.,
+                Material::dielectric(1.5),
+            ),
             0.2,
             Color3::from(0.2, 0.4, 0.9),
         )));
 
-        let boundary = Arc::new(Sphere::new(
-            &Point3::from(0., 0., 0.),
-            5000.,
-            Material::dielectric(1.5),
-        ));
-        scene.objects.push(boundary.clone());
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
-            boundary,
+            Sphere::new(&Point3::from(0., 0., 0.), 5000., Material::dielectric(1.5)),
             0.0001,
-            Color3::from(1., 1., 1.),
+            // Color3::from(1., 1., 1.), // Pure white
+            Color3::from(0.7, 0.1, 0.1), // A faint red tint to visualize the volume better
         )));
 
         let emat: Arc<dyn Texture> = match ImageTexture::new("./earthmap.png") {
@@ -345,8 +338,7 @@ impl<S: Sampler + 'static> Scene<S> {
                     TransformObject<RotateY, Vec<Arc<dyn Intersectable>>, S>,
                     S,
                 > = TransformObject::new(Translate::new(*translate_vec), rotated);
-                let const_medium =
-                    ConstantMedium::new(Arc::new(wrapped), 0.01, Arc::new(phase_fn.clone()));
+                let const_medium = ConstantMedium::new(Arc::new(wrapped), 0.01, phase_fn.clone());
 
                 Arc::new(const_medium) as Arc<dyn Intersectable>
             });
