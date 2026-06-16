@@ -27,8 +27,7 @@ where
         camera: &C,
         integrator: &I,
         film: &mut F,
-        world: &W,
-        lights: &L,
+        scene: (&W, &L),
         framebuffer: Option<SharedFramebuffer>,
         make_sampler: impl Fn(i32, i32) -> S + Sync,
     );

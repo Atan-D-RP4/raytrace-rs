@@ -442,8 +442,7 @@ fn live_render(
             &camera,
             &integrator,
             &mut film,
-            &world,
-            &lights,
+            (&world, &lights),
             Some(framebuffer.clone()),
             SobolQmcSampler::for_pixel,
         );
@@ -514,8 +513,7 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
         &camera,
         &integrator,
         &mut film,
-        &world,
-        &Arc::new(light_objects),
+        (&world, &Arc::new(light_objects)),
         None,
         SobolQmcSampler::for_pixel,
     );

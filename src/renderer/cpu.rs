@@ -71,12 +71,12 @@ where
         camera: &C,
         integrator: &I,
         film: &mut F,
-        world: &W,
-        lights: &L,
+        scene: (&W, &L),
         framebuffer: Option<SharedFramebuffer>,
         make_sampler: impl Fn(i32, i32) -> S + Sync,
     ) {
         let (width, height) = camera.image_resolution();
+        let (world, lights) = scene;
 
         let _span = tracing::info_span!(
             "render",
