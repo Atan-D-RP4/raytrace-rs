@@ -238,12 +238,12 @@ impl Sampler for StratifiedRandomSampler {
 ///
 /// Use with `Sampler::sample(n, cursor.next())` to consume dimensions sequentially:
 ///
-/// ```ignore
 /// let mut dims = DimCursor::new(4);
 /// let u = sampler.sample(n, dims.next());
 /// let v = sampler.sample(n, dims.next());
+/// assert_eq!(dims.offset(), 2);
 /// // dims is now at offset 2; next caller starts at dim 6
-/// ```
+///
 #[derive(Clone, Debug)]
 pub struct DimCursor<S: Sampler> {
     base: u32,

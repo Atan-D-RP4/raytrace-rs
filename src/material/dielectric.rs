@@ -28,6 +28,8 @@ use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialTyp
 pub struct DielectricMaterial {
     /// Index of refraction (1.0 = air, 1.33 = water, 1.5 = glass, 2.42 = diamond).
     pub refractive_idx: f64,
+    /// Optional tint color for colored glass. Pure white means no tint.
+    pub tint: Color3,
 }
 
 impl Bsdf for DielectricMaterial {
@@ -58,7 +60,7 @@ impl Bsdf for DielectricMaterial {
             };
         Some(BsdfSample {
             wi: direction,
-            f_cos: Color3::from(1., 1., 1.),
+            f_cos: self.tint,
             pdf: 1.0,
             pdf_kind: PdfKind::Delta,
         })

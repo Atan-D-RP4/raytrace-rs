@@ -533,6 +533,14 @@ impl Material {
     pub fn dielectric(ior: f64) -> Self {
         Material::Dielectric(DielectricMaterial {
             refractive_idx: ior,
+            tint: Color3::from(1., 1., 1.),
+        })
+    }
+
+    pub fn dielectric_tinted(ior: f64, tint: Color3) -> Self {
+        Material::Dielectric(DielectricMaterial {
+            refractive_idx: ior,
+            tint,
         })
     }
 
@@ -738,7 +746,10 @@ mod tests {
     fn gpu_buffer_nested() {
         let inner = Material::lambertian_color(0.5, 0.5, 0.5)
             .mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.5), 0.5);
-        let mat = inner.coated(Material::dielectric(1.5));
+        let mat = inner.coated(Material::dielectric_tinted(
+            1.5,
+            Color3::from(1.0, 0.8, 0.8),
+        ));
         let buf = mat.to_gpu_buffer();
         // inner is 3 nodes (lambertian, metal, mix). coated adds 1
         // (dielectric) + 1 (coat) = 2 more = 5 total.

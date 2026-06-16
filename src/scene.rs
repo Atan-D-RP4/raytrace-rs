@@ -403,7 +403,8 @@ impl<S: Sampler + 'static> Scene<S> {
         scene.add_sphere(
             Point3::from(200., 350., 200.),
             90.,
-            Material::dielectric(1.5),
+            // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
+            Material::dielectric_tinted(1.5, Color3::from(1.1, 1.1, 1.9)),
         );
 
         scene.config.samples_per_pixel = 200;
