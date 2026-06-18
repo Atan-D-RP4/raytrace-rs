@@ -63,11 +63,6 @@ impl Bsdf for MetalMaterial {
         _y: f64,
         _z: f64,
     ) -> Option<BsdfSample> {
-        let albedo = self
-            .tex
-            .as_ref()
-            .map(|t| t.value(&si.texture_coords()))
-            .unwrap_or(self.albedo);
         let alpha = (self.fuzz * self.fuzz).clamp(0.001, 1.0);
         // Sample H from GGX NDF.
         let u1 = u;
@@ -89,13 +84,7 @@ impl Bsdf for MetalMaterial {
             return None;
         }
 
-        // Note: D/F/G evaluation is deferred to eval() — the integrator
-        // ignores f_cos and pdf for non-delta materials and recomputes
-        // the BRDF via eval() with a direction from the mixture PDF.
-        Some(BsdfSample {
-            wi: Vec3::ZERO,
-            f_cos: albedo,
-            pdf: 1.0,
+        Some(BsdfSample::NonDelta {
             pdf_kind: PdfKind::Ggx {
                 wo,
                 normal: si.shading_normal(),

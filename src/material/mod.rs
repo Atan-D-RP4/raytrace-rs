@@ -83,32 +83,21 @@ use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
-/// Result of material sampling for a single bounce.
+/// Material sample result for one bounce.
 ///
-/// For **delta** materials (e.g., dielectric), `wi`, `f_cos`, and `pdf` are all
-/// correct and used directly by the integrator.
-///
-/// For **non-delta** materials (e.g., glossy, metal, lambertian), the integrator
-/// ignores `wi`, `f_cos`, and `pdf` — it draws its own direction from a mixture
-/// PDF and calls `eval()` for the BRDF. Only `pdf_kind` is guaranteed correct;
-/// it tells the integrator which PDF to configure for MIS.
+/// [`BsdfSample::Delta`]: integrator uses direction and throughput directly.
+/// [`BsdfSample::NonDelta`]: integrator samples from mixture PDF and calls
+/// [`Bsdf::eval`]; only [`PdfKind`] matters, the sampled direction is discarded.
 #[derive(Clone, Copy, Debug)]
-pub struct BsdfSample {
-    /// Sampled outgoing direction (world space, away from surface).
-    /// Placeholder (`Vec3::ZERO`) for non-delta materials.
-    pub wi: Vec3,
-    /// Product of BSDF value and cosine of the angle between `wi` and the
-    /// surface normal. This is the Monte Carlo *integrand* weight.
-    /// Placeholder (raw albedo) for non-delta materials.
-    pub f_cos: Color3,
-    /// Probability density of this sample, under the material's own
-    /// sampling distribution.
-    /// Placeholder (`1.0`) for non-delta materials.
-    pub pdf: f64,
-    /// Which PDF the integrator should configure for the mixture with
-    /// light sampling. The material returns this so the integrator can
-    /// build the correct MIS mixture.
-    pub pdf_kind: PdfKind,
+pub enum BsdfSample {
+    /// Perfect specular — used directly without MIS weighting.
+    Delta {
+        wi: Vec3,
+        /// BSDF × cosine. Tint for dielectrics, white for lossless coatings.
+        f_cos: Color3,
+    },
+    /// Non-specular — integrator calls [`Bsdf::eval`] for the BRDF.
+    NonDelta { pdf_kind: PdfKind },
 }
 
 /// Describes which surface sampling PDF the integrator should use.
@@ -144,15 +133,9 @@ pub enum PdfKind {
 pub trait Bsdf: Send + Sync {
     /// Sample an outgoing direction for the given outgoing direction and hit.
     ///
-    /// Uses six random dimensions `(u, v, w, x, y, z)` for sampling. The first
-    /// dimension `(u)` is typically used for categorical/material decisions
-    /// (e.g., which BSDF lobe to sample), while `(v, w)` are used for 2D
-    /// directional sampling and `(x, y, z)` are available for additional
-    /// sub-dimensional decisions or multi-lobe selection.
-    ///
-    /// Returns `None` for materials that don't scatter (e.g., pure emitters).
-    /// The returned [`BsdfSample`] contains the direction, BSDF × cosine,
-    /// and PDF — all from the same internal sample.
+    /// `u` is typically used for categorical decisions (which lobe to sample),
+    /// `(v, w)` for 2D directional sampling, and `(x, y, z)` are reserved.
+    /// Returns `None` for pure emitters.
     fn sample(
         &self,
         wo: Vec3,
@@ -330,11 +313,9 @@ impl Material {
                     // MC weight: Fresnel f is both branch probability and delta
                     // BSDF value (lossless dielectric), so f/f = 1.
                     let wi = reflect(&-wo, &si.shading_normal());
-                    Some(BsdfSample {
+                    Some(BsdfSample::Delta {
                         wi,
                         f_cos: Color3::from(1., 1., 1.),
-                        pdf: 1.0,
-                        pdf_kind: PdfKind::Delta,
                     })
                 } else {
                     // Transmit through coating; importance-sample substrate with
@@ -342,7 +323,12 @@ impl Material {
                     // Same dim recycling as Mix: `v` is reused as the substrate's
                     // 5th dim since `u` was consumed by the Fresnel branch decision.
                     let mut bsdf = substrate.sample(wo, si, v, w, x, y, z, v)?;
-                    bsdf.f_cos /= 1.0 - f;
+                    match &mut bsdf {
+                        BsdfSample::Delta { f_cos, .. } => {
+                            *f_cos /= 1.0 - f;
+                        }
+                        BsdfSample::NonDelta { .. } => {}
+                    }
                     Some(bsdf)
                 }
             }

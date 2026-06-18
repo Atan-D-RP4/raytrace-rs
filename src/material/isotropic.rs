@@ -36,7 +36,7 @@ impl Bsdf for IsotropicMaterial {
     fn sample(
         &self,
         _wo: Vec3,
-        si: &SurfaceInteraction,
+        _si: &SurfaceInteraction,
         _u: f64,
         _v: f64,
         _w: f64,
@@ -44,15 +44,7 @@ impl Bsdf for IsotropicMaterial {
         _y: f64,
         _z: f64,
     ) -> Option<BsdfSample> {
-        let attenuation = self
-            .tex
-            .as_ref()
-            .map(|t| t.value(&si.texture_coords()))
-            .unwrap_or(self.albedo);
-        Some(BsdfSample {
-            wi: Vec3::ZERO,
-            f_cos: attenuation,
-            pdf: 1.0,
+        Some(BsdfSample::NonDelta {
             pdf_kind: PdfKind::UniformSphere,
         })
     }

@@ -21,7 +21,7 @@ use crate::vec3::{Color3, Vec3, reflect, refract};
 
 use super::GPU_NONE;
 use super::fresnel_schlick;
-use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
+use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 
 /// Dielectric transmission/reflection controlled by refractive index.
 #[derive(Clone)]
@@ -60,11 +60,9 @@ impl Bsdf for DielectricMaterial {
             } else {
                 refract(&-wo, &si.shading_normal(), ri)
             };
-        Some(BsdfSample {
+        Some(BsdfSample::Delta {
             wi: direction,
             f_cos: self.tint,
-            pdf: 1.0,
-            pdf_kind: PdfKind::Delta,
         })
     }
 

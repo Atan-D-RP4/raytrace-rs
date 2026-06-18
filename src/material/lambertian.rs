@@ -47,15 +47,7 @@ impl Bsdf for LambertianMaterial {
         _y: f64,
         _z: f64,
     ) -> Option<BsdfSample> {
-        let attenuation = self
-            .tex
-            .as_ref()
-            .map(|t| t.value(&si.texture_coords()))
-            .unwrap_or(self.albedo);
-        Some(BsdfSample {
-            wi: Vec3::ZERO,
-            f_cos: attenuation,
-            pdf: 1.0,
+        Some(BsdfSample::NonDelta {
             pdf_kind: PdfKind::Cosine {
                 normal: si.shading_normal(),
             },

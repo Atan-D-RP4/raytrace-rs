@@ -9,7 +9,7 @@
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::PdfKind;
+use crate::material::{BsdfSample, PdfKind};
 use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, Sampler};
@@ -90,73 +90,58 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 if let Some(sample) =
                     material.sample(wo, &si, u_mat, v_mat, w_mat, x_mat, y_mat, z_mat)
                 {
-                    // Per-sample delta routing: composed materials (Coated/Mix) decide via PDFKind
-                    // whether to continue the path or not. If the sample is a delta, continue path.
-                    if matches!(sample.pdf_kind, crate::material::PdfKind::Delta) {
-                        accumulated_attenuation = accumulated_attenuation * sample.f_cos;
-                        ray = Ray::new_with_time(si.point(), sample.wi, ray.time);
-                        // Fixed stride per bounce: pad to consume 4 mixture+direction dims,
-                        // ensuring the next bounce reads from the same Sobol dimensions
-                        // regardless of this bounce's path decisions (QMC consistency).
-                        for _ in 0..4 {
-                            let _ = sampler.next_sample();
-                        }
-                    } else {
-                        // Non-delta materials: mixture PDF(light + material surface) sampling.
-                        // If the material sample returns None, we terminate the path.
-                        let surface_pdf: &dyn PDF<_> = match sample.pdf_kind {
-                            PdfKind::Cosine { normal } => &CosinePDF::new(normal),
-                            PdfKind::Ggx { wo, normal, alpha } => {
-                                &GgxSamplePDF::new(wo, normal, alpha)
+                    match sample {
+                        BsdfSample::Delta { wi, f_cos } => {
+                            accumulated_attenuation = accumulated_attenuation * f_cos;
+                            ray = Ray::new_with_time(si.point(), wi, ray.time);
+                            // Pad to fixed 9-dim stride so subsequent bounces use consistent
+                            // Sobol dimensions regardless of this bounce's path structure.
+                            for _ in 0..4 {
+                                let _ = sampler.next_sample();
                             }
-                            PdfKind::UniformSphere => &UniformSpherePDF::new(),
-                            PdfKind::Delta => unreachable!(),
-                        };
+                        }
+                        BsdfSample::NonDelta { pdf_kind } => {
+                            let surface_pdf: &dyn PDF<_> = match pdf_kind {
+                                PdfKind::Cosine { normal } => &CosinePDF::new(normal),
+                                PdfKind::Ggx { wo, normal, alpha } => {
+                                    &GgxSamplePDF::new(wo, normal, alpha)
+                                }
+                                PdfKind::UniformSphere => &UniformSpherePDF::new(),
+                                PdfKind::Delta => unreachable!(),
+                            };
 
-                        let light_pdf = HittablePDF::new(lights, si.point());
-                        let pdfs = &[&light_pdf, surface_pdf, surface_pdf];
-                        let sampling_pdf = MixturePDF::new(pdfs);
+                            let light_pdf = HittablePDF::new(lights, si.point());
+                            let pdfs = &[&light_pdf, surface_pdf, surface_pdf];
+                            let sampling_pdf = MixturePDF::new(pdfs);
 
-                        // Track mixture-dimension consumption so we can pad to a fixed
-                        // 4-dim stride (1 selection + 3 direction) regardless of which
-                        // mixture component was selected.
-                        let mix_start = sampler.offset();
+                            // Track mixture consumption for fixed-dim stride padding.
+                            let mix_start = sampler.offset();
 
-                        // Sample the mixture PDF to get the next direction Unitize for BRDF eval -
-                        // PlanarPatch::random() returns a non-unit vector (distance to light), but
-                        // BRDFs expect unit length.
-                        let direction = sampling_pdf.generate(sampler).unit_vector();
-                        let mix_consumed = sampler.offset() - mix_start;
+                            // PlanarPatch::random() returns a non-unit vector (distance to light);
+                            // BRDFs expect unit length so call .unit_vector().
+                            let direction = sampling_pdf.generate(sampler).unit_vector();
+                            let mix_consumed = sampler.offset() - mix_start;
 
-                        let scattered_ray = Ray::new_with_time(si.point(), direction, ray.time);
-                        let pdf_val = sampling_pdf.value(direction);
+                            let scattered_ray = Ray::new_with_time(si.point(), direction, ray.time);
+                            let pdf_val = sampling_pdf.value(direction);
 
-                        let f_cos = material.eval(wo, direction, &si);
+                            let f_cos = material.eval(wo, direction, &si);
 
-                        // Standard single-sample MIS unbiased estimator: f * cos / p_mix(x)
-                        let weight = 1. / pdf_val.max(1e-6); // Avoid division by zero
-                        accumulated_attenuation = accumulated_attenuation * weight * f_cos;
-                        ray = scattered_ray;
+                            // Single-sample MIS: f * cos / p_mix(x)
+                            let weight = 1. / pdf_val.max(1e-6);
+                            accumulated_attenuation = accumulated_attenuation * weight * f_cos;
+                            ray = scattered_ray;
 
-                        // Pad to fixed mixture stride: the mixture PDF consumes 3-4 dims
-                        // (1 selection + 2-3 direction). Pad to ensure exactly 4, keeping
-                        // subsequent bounces at consistent Sobol dimensions.
-                        for _ in mix_consumed..4 {
-                            let _ = sampler.next_sample();
+                            // Pad mixture dims to exactly 4 (1 selection + 3 direction).
+                            for _ in mix_consumed..4 {
+                                let _ = sampler.next_sample();
+                            }
                         }
                     }
                 } else {
-                    // Material sample returned None, terminate the path
                     return accumulated_color;
                 }
             } else {
-                // If the ray hits nothing, return the background color
-
-                // let unit_direction = ray.direction.unit_vector();
-                // let t = 0.5 * (unit_direction.y + 1.0);
-                // The background gradient
-                // let background = ((1.0 - t) * Vec3::from(1.0, 1.0, 1.0)) + (t * Vec3::from(0.5, 0.7, 1.0));
-
                 return accumulated_color + accumulated_attenuation * self.background;
             }
         }
