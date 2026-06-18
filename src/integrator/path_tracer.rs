@@ -42,6 +42,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
         let mut ray = *initial_ray;
 
         for bounce in 0..self.max_depth {
+            let bounce_start = sampler.checkpoint();
             if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f64::INFINITY)) {
                 // Create a SurfaceInteraction from the material hit and the ray
                 let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
@@ -138,6 +139,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             }
                         }
                     }
+                    // QMC invariant: every completed bounce must consume exactly 11 dims.
+                    debug_assert_eq!(sampler.offset() - bounce_start, 11);
                 } else {
                     return accumulated_color;
                 }

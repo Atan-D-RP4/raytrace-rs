@@ -285,6 +285,24 @@ impl<S: Sampler> DimCursor<S> {
     pub fn offset(&self) -> u32 {
         self.offset
     }
+
+    /// Snapshots current offset for later stride assertions.
+    ///
+    /// ```
+    /// use raytrace_rs::sampler::{DimCursor, SobolQmcSampler};
+    ///
+    /// let s = SobolQmcSampler::with_seed(42);
+    /// let mut cursor = DimCursor::new(0, s);
+    /// cursor.next_sample();
+    /// let ck = cursor.checkpoint();
+    /// cursor.next_sample();
+    /// cursor.next_sample();
+    /// assert_eq!(cursor.offset() - ck, 2);
+    /// ```
+    #[inline(always)]
+    pub fn checkpoint(&self) -> u32 {
+        self.offset
+    }
 }
 
 #[cfg(test)]
