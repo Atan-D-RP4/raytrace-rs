@@ -19,6 +19,12 @@ pub struct Hit {
     /// World-space intersection position.
     // TODO(mapping-2d3d): move 3D mapping inputs into a dedicated 3D mapping payload.
     pub point: Vec3,
+    /// Mapping-space position. For sphere primitives this is the unit-sphere point
+    /// (normalized direction from sphere center), stable under rigid transforms.
+    /// For planar primitives this is the world-space hit point (same as `point`).
+    /// Procedural textures (NoiseTexture) sample from `mapping` via TexturePoints,
+    /// so this decouples world-space translation from the texture coordinate frame.
+    pub mapping_point: Vec3,
     /// Outward geometric normal before face-orientation or shading adjustments.
     pub geometric_normal: Vec3,
     /// Optional UV coordinates for the hit point. `None` for Volume or other primitives that may not have UVs.
@@ -26,10 +32,17 @@ pub struct Hit {
 }
 
 impl Hit {
-    pub fn new(time: f64, point: Vec3, geometric_normal: Vec3, uv: Option<(f64, f64)>) -> Self {
+    pub fn new(
+        time: f64,
+        point: Vec3,
+        mapping_point: Vec3,
+        geometric_normal: Vec3,
+        uv: Option<(f64, f64)>,
+    ) -> Self {
         Self {
             time,
             point,
+            mapping_point,
             geometric_normal,
             uv,
         }
@@ -118,7 +131,7 @@ impl<'si> SurfaceInteraction<'si> {
             self.u(),
             self.v(),
             self.point(),
-            self.point(), // mapping_point eliminated; point is used as fallback
+            self.hit.mapping_point,
             self.geometric_normal(),
         )
     }

@@ -14,6 +14,7 @@ use winit::{
     window::{Theme, Window, WindowId},
 };
 
+use raytrace_rs::renderer::Renderer;
 use raytrace_rs::sampler::SobolQmcSampler;
 use raytrace_rs::scene::Scene;
 use raytrace_rs::{bvh::BvhNode, camera::PerspectiveCamera};
@@ -23,7 +24,6 @@ use raytrace_rs::{
     integrator::PathTracingIntegrator,
 };
 use raytrace_rs::{flat_bvh::FlatBvh, renderer::CpuRenderer};
-use raytrace_rs::{hittable::Sampleable, renderer::Renderer};
 
 const WIDTH: u32 = 800;
 
@@ -104,7 +104,11 @@ impl WindowState {
             self.last_surface_size = size;
         }
 
-        let fb = self.framebuffer.read().unwrap();
+        let Ok(fb) = self.framebuffer.read() else {
+            tracing::error!("failed to lock framebuffer for drawing");
+            return;
+        };
+
         if fb.width == 0 || fb.height == 0 {
             tracing::trace!("skip draw: framebuffer not initialized");
             return;
@@ -122,7 +126,11 @@ impl WindowState {
         // TODO(opt-preview): replace full-frame blit with tile/dirty-rect blits.
         // This lowers memory bandwidth and improves interactivity on large windows.
         profiling::scope!("ui_blit");
-        let mut buffer = self.surface.buffer_mut().unwrap();
+        // let mut buffer = self.surface.buffer_mut().unwrap();
+        let Ok(mut buffer) = self.surface.buffer_mut() else {
+            tracing::error!("failed to acquire softbuffer buffer for drawing");
+            return;
+        };
         buffer.fill(0);
 
         // TODO(viewport): implement aspect-fit viewport (letterbox/pillarbox) instead of stretch.
@@ -183,7 +191,6 @@ struct App {
     width: u32,
     /// Initial window height used when creating first window.
     height: u32,
-
     /// Shared live-preview framebuffer used by all windows.
     framebuffer: SharedFramebuffer,
 }
@@ -358,6 +365,7 @@ fn main() -> Result<(), winit::error::EventLoopError> {
             std::process::exit(1);
         }
     };
+
     // Re-emit into a headless or live render using the selected scene.
     // Optional env-var overrides: RT_SAMPLES, RT_WIDTH, RT_DEPTH (for fast debugging).
     // Set RT_LIVE=1 for live preview window, otherwise defaults to headless.
@@ -433,7 +441,6 @@ fn live_render(
         profiling::scope!("root_bvh_build");
         let world_bvh = BvhNode::new(&mut objects);
         let world = FlatBvh::from(world_bvh);
-        let lights: Arc<dyn Sampleable<SobolQmcSampler>> = Arc::new(light_objects);
 
         // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
         // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
@@ -442,7 +449,7 @@ fn live_render(
             &camera,
             &integrator,
             &mut film,
-            (&world, &lights),
+            (&world, &light_objects),
             Some(framebuffer.clone()),
             SobolQmcSampler::for_pixel,
         );
@@ -513,7 +520,7 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
         &camera,
         &integrator,
         &mut film,
-        (&world, &Arc::new(light_objects)),
+        (&world, &light_objects),
         None,
         SobolQmcSampler::for_pixel,
     );

@@ -85,19 +85,25 @@ use crate::vec3::{Color3, Vec3, reflect};
 
 /// Result of material sampling for a single bounce.
 ///
-/// Contains the sampled direction, the BSDF value × cosine term, and the PDF
-/// used for that sample. The direction and its PDF come from the same internal
-/// sample, so they cannot diverge — making the Glossy direction-PDF mismatch
-/// bug structurally impossible.
+/// For **delta** materials (e.g., dielectric), `wi`, `f_cos`, and `pdf` are all
+/// correct and used directly by the integrator.
+///
+/// For **non-delta** materials (e.g., glossy, metal, lambertian), the integrator
+/// ignores `wi`, `f_cos`, and `pdf` — it draws its own direction from a mixture
+/// PDF and calls `eval()` for the BRDF. Only `pdf_kind` is guaranteed correct;
+/// it tells the integrator which PDF to configure for MIS.
 #[derive(Clone, Copy, Debug)]
 pub struct BsdfSample {
     /// Sampled outgoing direction (world space, away from surface).
+    /// Placeholder (`Vec3::ZERO`) for non-delta materials.
     pub wi: Vec3,
     /// Product of BSDF value and cosine of the angle between `wi` and the
     /// surface normal. This is the Monte Carlo *integrand* weight.
+    /// Placeholder (raw albedo) for non-delta materials.
     pub f_cos: Color3,
     /// Probability density of this sample, under the material's own
     /// sampling distribution.
+    /// Placeholder (`1.0`) for non-delta materials.
     pub pdf: f64,
     /// Which PDF the integrator should configure for the mixture with
     /// light sampling. The material returns this so the integrator can
@@ -138,6 +144,12 @@ pub enum PdfKind {
 pub trait Bsdf: Send + Sync {
     /// Sample an outgoing direction for the given outgoing direction and hit.
     ///
+    /// Uses six random dimensions `(u, v, w, x, y, z)` for sampling. The first
+    /// dimension `(u)` is typically used for categorical/material decisions
+    /// (e.g., which BSDF lobe to sample), while `(v, w)` are used for 2D
+    /// directional sampling and `(x, y, z)` are available for additional
+    /// sub-dimensional decisions or multi-lobe selection.
+    ///
     /// Returns `None` for materials that don't scatter (e.g., pure emitters).
     /// The returned [`BsdfSample`] contains the direction, BSDF × cosine,
     /// and PDF — all from the same internal sample.
@@ -149,6 +161,8 @@ pub trait Bsdf: Send + Sync {
         v: f64,
         w: f64,
         x: f64,
+        y: f64,
+        z: f64,
     ) -> Option<BsdfSample>;
 
     /// Evaluate the BSDF for an outgoing→incoming direction pair.
@@ -174,21 +188,6 @@ pub trait Bsdf: Send + Sync {
     /// Returns `true` if this material emits light. Default: `false`.
     fn is_emissive(&self) -> bool {
         false
-    }
-
-    /// Returns `true` if this material is a delta distribution (perfect
-    /// specular). Delta materials skip MIS weighting. Default: `false`.
-    fn is_delta(&self) -> bool {
-        false
-    }
-
-    /// Serialize this material node for the GPU buffer.
-    ///
-    /// Leaf materials return their node directly. Composition materials
-    /// should recursively serialize children. Return `None` if this
-    /// material has no GPU representation (e.g., custom materials).
-    fn gpu_node(&self, _buf: &mut GpuMaterialBuffer) -> Option<u32> {
-        None
     }
 
     /// Clone this material into a boxed trait object.
@@ -289,18 +288,24 @@ impl Material {
         v: f64,
         w: f64,
         x: f64,
+        y: f64,
+        z: f64,
     ) -> Option<BsdfSample> {
         match self {
-            Material::Lambertian(inner) => inner.sample(wo, si, u, v, w, x),
-            Material::Metal(inner) => inner.sample(wo, si, u, v, w, x),
-            Material::Dielectric(inner) => inner.sample(wo, si, u, v, w, x),
-            Material::DiffuseLight(inner) => inner.sample(wo, si, u, v, w, x),
-            Material::Isotropic(inner) => inner.sample(wo, si, u, v, w, x),
-            Material::Glossy(inner) => inner.sample(wo, si, u, v, w, x),
-            Material::Custom(inner) => inner.sample(wo, si, u, v, w, x),
+            Material::Lambertian(inner) => inner.sample(wo, si, u, v, w, x, y, z),
+            Material::Metal(inner) => inner.sample(wo, si, u, v, w, x, y, z),
+            Material::Dielectric(inner) => inner.sample(wo, si, u, v, w, x, y, z),
+            Material::DiffuseLight(inner) => inner.sample(wo, si, u, v, w, x, y, z),
+            Material::Isotropic(inner) => inner.sample(wo, si, u, v, w, x, y, z),
+            Material::Glossy(inner) => inner.sample(wo, si, u, v, w, x, y, z),
+            Material::Custom(inner) => inner.sample(wo, si, u, v, w, x, y, z),
             Material::Mix { a, b, weight } => {
                 let chosen: &dyn Bsdf = if u < *weight { b.as_ref() } else { a.as_ref() };
-                chosen.sample(wo, si, v, w, x, 0.0)
+                // Note: `v` is recycled as the child's 5th dim since Mix consumed
+                // `u` for selection. No current material reads the 5th dim, so
+                // this is safe. When a material needs 5 independent dims, Mix
+                // will need a 6th sampler draw.
+                chosen.sample(wo, si, v, w, x, y, z, v)
             }
             Material::Coated {
                 substrate,
@@ -334,7 +339,9 @@ impl Material {
                 } else {
                     // Transmit through coating; importance-sample substrate with
                     // transmission probability (1-f) weight.
-                    let mut bsdf = substrate.sample(wo, si, v, w, x, 0.0)?;
+                    // Same dim recycling as Mix: `v` is reused as the substrate's
+                    // 5th dim since `u` was consumed by the Fresnel branch decision.
+                    let mut bsdf = substrate.sample(wo, si, v, w, x, y, z, v)?;
                     bsdf.f_cos /= 1.0 - f;
                     Some(bsdf)
                 }
@@ -425,23 +432,6 @@ impl Material {
             _ => false,
         }
     }
-
-    /// Returns `true` if this material is a delta distribution (perfect
-    /// specular reflection or refraction). Delta materials cannot be
-    /// evaluated at arbitrary directions — the integrator must use the
-    /// sampled direction directly without MIS weighting.
-    ///
-    /// For composition variants ([`Mix`], [`Coated`]), this always returns
-    /// `false` because delta-ness is per-sample — the integrator checks
-    /// [`BsdfSample::pdf_kind`] after sampling to decide the path.
-    pub fn is_delta(&self) -> bool {
-        match self {
-            Material::Dielectric(_) => true,
-            // Compositions route delta per-sample via pdf_kind.
-            Material::Mix { .. } | Material::Coated { .. } => false,
-            _ => false,
-        }
-    }
 }
 
 impl Bsdf for Material {
@@ -453,8 +443,10 @@ impl Bsdf for Material {
         v: f64,
         w: f64,
         x: f64,
+        y: f64,
+        z: f64,
     ) -> Option<BsdfSample> {
-        self.sample(wo, si, u, v, w, x)
+        self.sample(wo, si, u, v, w, x, y, z)
     }
 
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
@@ -471,15 +463,6 @@ impl Bsdf for Material {
 
     fn is_emissive(&self) -> bool {
         Material::is_emissive(self)
-    }
-
-    fn is_delta(&self) -> bool {
-        Material::is_delta(self)
-    }
-
-    fn gpu_node(&self, _buf: &mut GpuMaterialBuffer) -> Option<u32> {
-        // Not used — serialization goes through write_node directly.
-        None
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {
@@ -815,6 +798,8 @@ mod tests {
                 _v: f64,
                 _w: f64,
                 _x: f64,
+                _y: f64,
+                _z: f64,
             ) -> Option<BsdfSample> {
                 None
             }

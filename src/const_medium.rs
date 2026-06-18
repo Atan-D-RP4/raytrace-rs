@@ -25,12 +25,25 @@ pub struct ConstantMedium<T: Intersectable, const SURFACE: bool = true> {
 
 impl<T: Intersectable> ConstantMedium<T> {
     pub fn new(boundary: T, density: f64, phase_fn: Material) -> Self {
-        // Derive deterministic seed from unique properties of this medium.
+        // Derive deterministic seed from density and the phase function's identity.
+        // Uses the material's type tag bits rather than a heap pointer, so the seed
+        // is reproducible across runs (not affected by ASLR / allocator state).
+        let phase_tag = match &phase_fn {
+            Material::Lambertian(_) => 0x01,
+            Material::Metal(_) => 0x02,
+            Material::Dielectric(_) => 0x03,
+            Material::DiffuseLight(_) => 0x04,
+            Material::Isotropic(_) => 0x05,
+            Material::Glossy(_) => 0x06,
+            Material::Mix { .. } => 0x07,
+            Material::Coated { .. } => 0x08,
+            Material::Custom(_) => 0x09,
+        };
         let seed = sampler::splitmix64(
             density
                 .to_bits()
                 .wrapping_mul(0x9E3779B97F4A7C15)
-                .wrapping_add(&phase_fn as *const Material as u64),
+                .wrapping_add(phase_tag),
         );
         Self {
             boundary,
@@ -128,6 +141,7 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
             hit: Hit {
                 time: new_time,
                 point,
+                mapping_point: point,
                 geometric_normal: Vec3::from(0., 0., 0.),
                 uv: None,
             },

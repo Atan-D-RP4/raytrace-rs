@@ -107,7 +107,7 @@ impl<S: Sampler + 'static> Scene<S> {
 impl<S: Sampler + 'static> Scene<S> {
     pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
         trace!(?center, radius, "add sphere");
-        if matches!(material, Material::DiffuseLight { .. }) {
+        if material.is_emissive() {
             self.light_objects
                 .push(Arc::new(Sphere::new(&center, radius, material.clone())));
         }
@@ -119,7 +119,7 @@ impl<S: Sampler + 'static> Scene<S> {
     pub fn add_quad(&mut self, Q: Point3, u: Vec3, v: Vec3, material: Material) {
         trace!(?Q, ?u, ?v, "add quad");
         // Auto-detect emitters: add geometry-only copy for light importance sampling.
-        if matches!(material, Material::DiffuseLight { .. }) {
+        if material.is_emissive() {
             self.light_objects
                 .push(Arc::new(quad(Q, u, v, material.clone())));
         }
@@ -134,7 +134,7 @@ impl<S: Sampler + 'static> Scene<S> {
         material: Material,
     ) {
         trace!(?center_start, ?center_end, radius, "add moving sphere");
-        if matches!(material, Material::DiffuseLight { .. }) {
+        if material.is_emissive() {
             self.light_objects.push(Arc::new(Sphere::new_moving(
                 &center_start,
                 &center_end,
@@ -276,7 +276,7 @@ impl<S: Sampler + 'static> Scene<S> {
             )));
         }
 
-        let cluster: TransformObject<Translate, TransformObject<RotateY, BvhNode, S>, S> = {
+        let cluster: TransformObject<Translate, TransformObject<RotateY, BvhNode>> = {
             let mut boxes = boxes2;
             let boxes_len = boxes.len();
             info!(
@@ -335,8 +335,7 @@ impl<S: Sampler + 'static> Scene<S> {
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
                     Translate,
-                    TransformObject<RotateY, Vec<Arc<dyn Intersectable>>, S>,
-                    S,
+                    TransformObject<RotateY, Vec<Arc<dyn Intersectable>>>,
                 > = TransformObject::new(Translate::new(*translate_vec), rotated);
                 let const_medium = ConstantMedium::new(Arc::new(wrapped), 0.01, phase_fn.clone());
 
@@ -385,8 +384,7 @@ impl<S: Sampler + 'static> Scene<S> {
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
                     Translate,
-                    TransformObject<RotateY, Vec<Arc<dyn Intersectable>>, S>,
-                    S,
+                    TransformObject<RotateY, Vec<Arc<dyn Intersectable>>>,
                 > = TransformObject::new(Translate::new(*translate_vec), rotated);
 
                 Arc::new(wrapped) as Arc<dyn Intersectable>

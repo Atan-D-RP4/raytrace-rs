@@ -152,6 +152,7 @@ impl<R: Region2D> Intersectable for PlanarPatch<R> {
             hit: Hit {
                 time: hit.time,
                 point: hit.point,
+                mapping_point: hit.point,
                 geometric_normal: self.normal,
                 uv: Some(self.region.uv(hit.a, hit.b)),
             },

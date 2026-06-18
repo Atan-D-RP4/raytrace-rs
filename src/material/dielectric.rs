@@ -44,6 +44,8 @@ impl Bsdf for DielectricMaterial {
         _v: f64,
         _w: f64,
         _x: f64,
+        _y: f64,
+        _z: f64,
     ) -> Option<BsdfSample> {
         let ri = if si.front_face() {
             1.0 / self.refractive_idx
@@ -74,20 +76,6 @@ impl Bsdf for DielectricMaterial {
     /// Delta material — probability of any specific direction is zero.
     fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
         0.0
-    }
-
-    fn gpu_node(&self, buf: &mut GpuMaterialBuffer) -> Option<u32> {
-        let params = vec![self.refractive_idx];
-        let param_offset = buf.params.len() as u32;
-        buf.push_params(&params);
-        buf.nodes.push(GpuMaterialNode {
-            material_type: GpuMaterialType::Dielectric as u32,
-            param_offset,
-            child_a: GPU_NONE,
-            child_b: GPU_NONE,
-            texture_index: GPU_NONE,
-        });
-        Some(buf.nodes.len() as u32 - 1)
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {

@@ -35,6 +35,12 @@ impl BvhNode {
     /// - split at cheapest partition, recurse.
     pub fn new(objects: &mut [Arc<dyn Intersectable>]) -> Self {
         info!(object_count = objects.len(), "building bvh");
+        let result = Self::new_inner(objects);
+        info!(object_count = objects.len(), "bvh built");
+        result
+    }
+
+    pub fn new_inner(objects: &mut [Arc<dyn Intersectable>]) -> Self {
         let obj_span = objects.len();
 
         let mut centroids: Vec<(Arc<dyn Intersectable>, Point3)> = Vec::with_capacity(obj_span);
@@ -46,7 +52,7 @@ impl BvhNode {
             centroids.push((object.clone(), object_bbox.centroid()));
         }
 
-        let result = match obj_span {
+        match obj_span {
             0 => {
                 trace!("bvh empty");
                 Self::Empty
@@ -168,10 +174,7 @@ impl BvhNode {
                 );
                 Self::Interior { left, right, bbox }
             }
-        };
-
-        info!(object_count = objects.len(), "bvh built");
-        result
+        }
     }
 }
 

@@ -37,6 +37,8 @@ use crate::hittable::{Bounded, Intersectable, MaterialHit};
 use crate::interval::Interval;
 use crate::ray::Ray;
 
+use tracing;
+
 /// Maximum traversal stack depth. 64 handles BVHs with up to 2^64 primitives.
 const MAX_STACK: usize = 64;
 
@@ -315,11 +317,21 @@ impl Intersectable for FlatBvh {
                 };
 
                 // Push far child first so near is popped first (stack LIFO).
-                if sp < MAX_STACK {
+                if sp >= MAX_STACK {
+                    tracing::warn!(
+                        "FlatBvh traversal stack overflow (max_depth={}), subtree dropped",
+                        MAX_STACK
+                    );
+                } else {
                     stack[sp] = far_idx;
                     sp += 1;
                 }
-                if sp < MAX_STACK {
+                if sp >= MAX_STACK {
+                    tracing::warn!(
+                        "FlatBvh traversal stack overflow (max_depth={}), subtree dropped",
+                        MAX_STACK
+                    );
+                } else {
                     stack[sp] = near_idx;
                     sp += 1;
                 }

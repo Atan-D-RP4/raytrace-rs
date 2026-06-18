@@ -60,6 +60,8 @@ impl Bsdf for MetalMaterial {
         v: f64,
         _w: f64,
         _x: f64,
+        _y: f64,
+        _z: f64,
     ) -> Option<BsdfSample> {
         let albedo = self
             .tex
@@ -87,27 +89,13 @@ impl Bsdf for MetalMaterial {
             return None;
         }
 
-        // Cook-Torrance BRDF evaluation for the attenuation.
-        let cos_o = wo.dot(&si.shading_normal()).max(0.0);
-        let cos_i = wi.dot(&si.shading_normal()).max(0.0);
-        let cos_h_o = wo.dot(&h_world).max(0.0);
-        let cos_h_n = h_world.dot(&si.shading_normal()).max(0.0);
-
-        let d = ggx_d(cos_h_n, alpha);
-        let f = fresnel_schlick(cos_h_o, self.ior);
-        let g = geometry_schlick_ggx(cos_o, alpha) * geometry_schlick_ggx(cos_i, alpha);
-
-        let denom = 4.0 * cos_o * cos_i;
-        let brdf = if denom > 1e-12 {
-            f * d * g / denom
-        } else {
-            0.0
-        };
-
+        // Note: D/F/G evaluation is deferred to eval() — the integrator
+        // ignores f_cos and pdf for non-delta materials and recomputes
+        // the BRDF via eval() with a direction from the mixture PDF.
         Some(BsdfSample {
-            wi,
-            f_cos: albedo * brdf * cos_i,
-            pdf: d * cos_h_n / (4.0 * cos_h_o),
+            wi: Vec3::ZERO,
+            f_cos: albedo,
+            pdf: 1.0,
             pdf_kind: PdfKind::Ggx {
                 wo,
                 normal: si.shading_normal(),
@@ -148,26 +136,6 @@ impl Bsdf for MetalMaterial {
             return 0.0;
         }
         ggx_d(cos_h_n, alpha) * cos_h_n / (4.0 * cos_h_o)
-    }
-
-    fn gpu_node(&self, buf: &mut GpuMaterialBuffer) -> Option<u32> {
-        let params = vec![
-            self.albedo.x,
-            self.albedo.y,
-            self.albedo.z,
-            self.fuzz,
-            self.ior,
-        ];
-        let param_offset = buf.params.len() as u32;
-        buf.push_params(&params);
-        buf.nodes.push(GpuMaterialNode {
-            material_type: GpuMaterialType::Metal as u32,
-            param_offset,
-            child_a: GPU_NONE,
-            child_b: GPU_NONE,
-            texture_index: GPU_NONE,
-        });
-        Some(buf.nodes.len() as u32 - 1)
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {

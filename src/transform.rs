@@ -28,14 +28,13 @@ pub trait Transform: Send + Sync {
 ///
 /// The transform and object stay generic, so the compiler can inline through
 /// the whole stack without trait-object dispatch.
-pub struct TransformObject<T, O: Intersectable, S: Sampler> {
+pub struct TransformObject<T, O: Intersectable> {
     transform: T,
     object: O,
     bbox: Aabb,
-    _sampler: std::marker::PhantomData<S>,
 }
 
-impl<T, O, S: Sampler> TransformObject<T, O, S>
+impl<T, O> TransformObject<T, O>
 where
     T: Transform,
     O: Intersectable,
@@ -47,12 +46,11 @@ where
             transform,
             object,
             bbox,
-            _sampler: std::marker::PhantomData,
         }
     }
 }
 
-impl<T, O, S: Sampler> Intersectable for TransformObject<T, O, S>
+impl<T, O> Intersectable for TransformObject<T, O>
 where
     T: Transform,
     O: Intersectable,
@@ -67,7 +65,7 @@ where
     }
 }
 
-impl<T, O, S: Sampler> Bounded for TransformObject<T, O, S>
+impl<T, O> Bounded for TransformObject<T, O>
 where
     T: Transform,
     O: Intersectable,
@@ -77,7 +75,7 @@ where
     }
 }
 
-impl<T, O, S: Sampler> Sampleable<S> for TransformObject<T, O, S>
+impl<T, O, S: Sampler> Sampleable<S> for TransformObject<T, O>
 where
     T: Transform,
     O: Sampleable<S>,
@@ -123,6 +121,7 @@ impl Transform for Translate {
 
     fn hit(&self, hit: &mut Hit) {
         hit.point += self.offset;
+        hit.mapping_point += self.offset;
     }
 
     fn bbox(&self, bbox: Aabb) -> Aabb {
@@ -165,6 +164,11 @@ impl Transform for RotateY {
             (self.cos_theta * hit.point.x) + (self.sin_theta * hit.point.z),
             hit.point.y,
             (-self.sin_theta * hit.point.x) + (self.cos_theta * hit.point.z),
+        );
+        hit.mapping_point = Point3::from(
+            (self.cos_theta * hit.mapping_point.x) + (self.sin_theta * hit.mapping_point.z),
+            hit.mapping_point.y,
+            (-self.sin_theta * hit.mapping_point.x) + (self.cos_theta * hit.mapping_point.z),
         );
         hit.geometric_normal = Vec3::from(
             (self.cos_theta * hit.geometric_normal.x) + (self.sin_theta * hit.geometric_normal.z),

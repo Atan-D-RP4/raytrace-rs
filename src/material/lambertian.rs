@@ -44,6 +44,8 @@ impl Bsdf for LambertianMaterial {
         _v: f64,
         _w: f64,
         _x: f64,
+        _y: f64,
+        _z: f64,
     ) -> Option<BsdfSample> {
         let attenuation = self
             .tex
@@ -79,20 +81,6 @@ impl Bsdf for LambertianMaterial {
     fn pdf(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         let cos_theta = si.shading_normal().dot(&wi);
         if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
-    }
-
-    fn gpu_node(&self, buf: &mut GpuMaterialBuffer) -> Option<u32> {
-        let params = vec![self.albedo.x, self.albedo.y, self.albedo.z];
-        let param_offset = buf.params.len() as u32;
-        buf.push_params(&params);
-        buf.nodes.push(GpuMaterialNode {
-            material_type: GpuMaterialType::Lambertian as u32,
-            param_offset,
-            child_a: GPU_NONE,
-            child_b: GPU_NONE,
-            texture_index: GPU_NONE,
-        });
-        Some(buf.nodes.len() as u32 - 1)
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {

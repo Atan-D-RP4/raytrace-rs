@@ -84,8 +84,12 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 let v_mat = sampler.next_sample();
                 let w_mat = sampler.next_sample();
                 let x_mat = sampler.next_sample();
+                let y_mat = sampler.next_sample();
+                let z_mat = sampler.next_sample();
 
-                if let Some(sample) = material.sample(wo, &si, u_mat, v_mat, w_mat, x_mat) {
+                if let Some(sample) =
+                    material.sample(wo, &si, u_mat, v_mat, w_mat, x_mat, y_mat, z_mat)
+                {
                     // Per-sample delta routing: composed materials (Coated/Mix) decide via PDFKind
                     // whether to continue the path or not. If the sample is a delta, continue path.
                     if matches!(sample.pdf_kind, crate::material::PdfKind::Delta) {

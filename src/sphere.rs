@@ -114,6 +114,7 @@ impl Intersectable for Sphere {
             hit: Hit {
                 time: root,
                 point,
+                mapping_point: outward_normal,
                 geometric_normal: outward_normal,
                 uv: Some((u, v)),
             },

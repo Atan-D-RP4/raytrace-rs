@@ -89,28 +89,6 @@ impl<'a, S: Sampler> PDF<S> for HittablePDF<'a, S> {
     }
 }
 
-pub struct DiracPDF {
-    direction: Vec3,
-}
-
-impl DiracPDF {
-    pub fn new(direction: Vec3) -> Self {
-        Self { direction }
-    }
-}
-
-impl<S: Sampler> PDF<S> for DiracPDF {
-    fn value(&self, _direction: Vec3) -> f64 {
-        // Dirac delta: the sampling PDF matches the material's delta distribution.
-        // In the MC estimator, both deltas cancel, leaving just the reflectance.
-        1.0
-    }
-
-    fn generate(&self, _dim_offset: &mut DimCursor<S>) -> Vec3 {
-        self.direction
-    }
-}
-
 pub struct MixturePDF<'a, S: Sampler, const N: usize> {
     pdfs: &'a [&'a dyn PDF<S>; N],
     /// Uniform weights — fully stack-allocated, no heap, no runtime len field.
