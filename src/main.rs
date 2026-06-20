@@ -319,6 +319,15 @@ fn init_tracing() {
         .init();
 }
 
+/// Initialize the rayon global thread pool. Must be called before any
+/// `rayon::current_num_threads()` query, otherwise the default pool
+/// (all cores) is created and this call becomes a no-op.
+pub fn init_thread_pool(num_threads: usize) {
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build_global();
+}
+
 /// Entry point for live-preview application mode.
 ///
 /// Flow:
@@ -334,7 +343,7 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get() / 2));
-    CpuRenderer::init_thread_pool(render_threads);
+    init_thread_pool(render_threads);
 
     init_tracing();
     info!(threads = rayon::current_num_threads(), "startup");
@@ -405,7 +414,7 @@ fn live_render(
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
     let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
-    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32);
+    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator);
     let (width, height) = camera.image_resolution();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new(width, height)));
 
@@ -447,7 +456,6 @@ fn live_render(
         profiling::scope!("render");
         renderer.render(
             &camera,
-            &integrator,
             &mut film,
             (&world, &light_objects),
             Some(framebuffer.clone()),
@@ -488,7 +496,7 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
     let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
-    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32);
+    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator);
     let (width, height) = camera.image_resolution();
 
     renderer.set_threshold_abs(1e-4);
@@ -518,7 +526,6 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
     profiling::scope!("render_cpu");
     renderer.render(
         &camera,
-        &integrator,
         &mut film,
         (&world, &light_objects),
         None,

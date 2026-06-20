@@ -5,15 +5,13 @@ pub use cpu::CpuRenderer;
 use crate::camera::Camera;
 use crate::film::{Film, SharedFramebuffer};
 use crate::hittable::{Intersectable, Sampleable};
-use crate::integrator::Integrator;
 use crate::sampler::Sampler;
 
-pub trait Renderer<S, W, L, I, C, F>: Send + Sync
+pub trait Renderer<S, W, L, C, F>: Send + Sync
 where
     S: Sampler,
     W: Intersectable,
     L: Sampleable<S>,
-    I: Integrator<S>,
     C: Camera,
     F: Film,
 {
@@ -25,7 +23,6 @@ where
     fn render(
         &self,
         camera: &C,
-        integrator: &I,
         film: &mut F,
         scene: (&W, &L),
         framebuffer: Option<SharedFramebuffer>,

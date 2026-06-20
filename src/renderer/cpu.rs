@@ -9,7 +9,7 @@ use crate::renderer::Renderer;
 use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::Color3;
 
-pub struct CpuRenderer {
+pub struct CpuRenderer<S: Sampler, I: Integrator<S>> {
     /// Number of samples to take per pixel. Higher values yield better quality but take longer.
     samples_per_pixel: u32,
     /// Absolute variance floor. Pixels with variance below this threshold are
@@ -23,15 +23,20 @@ pub struct CpuRenderer {
     /// Minimum number of samples to take before considering adaptive sampling.
     /// Ensures we have enough data to make a reliable variance estimate.
     min_samples_before_adapt: u32,
+
+    integrator: I,
+    sampler: std::marker::PhantomData<S>,
 }
 
-impl CpuRenderer {
-    pub fn new(samples_per_pixel: u32) -> Self {
+impl<S: Sampler, I: Integrator<S>> CpuRenderer<S, I> {
+    pub fn new(samples_per_pixel: u32, integrator: I) -> Self {
         Self {
             samples_per_pixel,
             threshold_abs: 1e-4,
             threshold_rel: 0.02,
             min_samples_before_adapt: 64,
+            integrator,
+            sampler: std::marker::PhantomData,
         }
     }
 
@@ -46,18 +51,9 @@ impl CpuRenderer {
     pub fn set_min_samples_before_adapt(&mut self, min_samples: u32) {
         self.min_samples_before_adapt = min_samples;
     }
-
-    /// Initialize the rayon global thread pool. Must be called before any
-    /// `rayon::current_num_threads()` query, otherwise the default pool
-    /// (all cores) is created and this call becomes a no-op.
-    pub fn init_thread_pool(num_threads: usize) {
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
-            .build_global();
-    }
 }
 
-impl<S, W, L, I, C, F> Renderer<S, W, L, I, C, F> for CpuRenderer
+impl<S, W, L, I, C, F> Renderer<S, W, L, C, F> for CpuRenderer<S, I>
 where
     S: Sampler,
     W: Intersectable,
@@ -69,7 +65,6 @@ where
     fn render(
         &self,
         camera: &C,
-        integrator: &I,
         film: &mut F,
         scene: (&W, &L),
         framebuffer: Option<SharedFramebuffer>,
@@ -193,8 +188,12 @@ where
                         };
 
                         if let Some(mut cam_ray) = camera.generate_ray(&camera_sampler) {
-                            let radiance =
-                                integrator.li(&mut cam_ray.ray, world, lights, &mut dim_cursor);
+                            let radiance = self.integrator.li(
+                                &mut cam_ray.ray,
+                                world,
+                                lights,
+                                &mut dim_cursor,
+                            );
                             let sample = radiance * cam_ray.weight;
                             // Guard against NaN/Inf poisoning the accumulation buffer.
                             if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite()
