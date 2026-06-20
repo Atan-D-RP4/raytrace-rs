@@ -94,7 +94,7 @@ where
         // Transform origin to object space via a dummy ray.
         let to_obj = self
             .transform
-            .ray(&Ray::new_with_time(origin, Vec3::ZERO, 0.0));
+            .ray(&Ray::new_with_time(origin, Vec3::X, 0.0));
 
         // Sample a direction in object space.
         let dir = self.object.random(to_obj.origin, dim_offset);

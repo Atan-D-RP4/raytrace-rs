@@ -27,7 +27,7 @@ impl Sphere {
     pub fn new(center: &Point3, radius: f64, mat: Material) -> Self {
         let rvec = Vec3::from(radius, radius, radius);
         Self {
-            center: Ray::new(*center, Vec3::from(0., 0., 0.)),
+            center: Ray::new_raw(*center, Vec3::ZERO, 0.0),
             radius: radius.max(0.0),
             material: Arc::new(mat),
             bbox: Aabb::from_points(&(*center - rvec), &(*center + rvec)),
