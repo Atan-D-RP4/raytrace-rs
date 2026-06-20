@@ -1,7 +1,35 @@
-
 # Architecture Review: `raytrace-rs` vs Production Renderers
 
-Reference renderers: **[LuxCore](https://github.com/LuxCoreRender/LuxCore)**, **[OpenMoonRay](https://github.com/Autodesk/moonray)**, **[renderling](https://github.com/schell/renderling)**
+Reference renderers:
+**[LuxCore](https://github.com/LuxCoreRender/LuxCore)**,
+**[OpenMoonRay](https://github.com/Autodesk/moonray)**,
+**[renderling](https://github.com/schell/renderling)**
+**[pbrt-v4](https://github.com/mmp/pbrt-v4)**
+
+> **Last updated:** 2026-06-20 — comprehensive audit against current `HEAD` (671af5d).
+> Previous baseline: commit 85d8021. ~30 commits, ~700 net new lines across 30 files.
+
+---
+
+## 0. Executive Summary: What Changed Since v1
+
+| Item | Status | Detail |
+|------|--------|--------|
+| **Renderer abstraction** | ✅ Done | `Integrator` trait + `Renderer` trait + `Camera` trait extracted |
+| **Camera decomposition** | ✅ Done | Monolithic `camera.rs` → `Camera` trait + `PerspectiveCamera` |
+| **Film abstraction** | ✅ Done | `Film` trait + `RgbFilm` + `FilmTile` — post-process separated |
+| **Adaptive sampling** | ✅ Done | Welford's online variance, convergence mask, early exit |
+| **BsdfSample struct→enum** | ✅ Done | `Delta` / `NonDelta` variants — type-safe per-sample routing |
+| **Dielectric tint** | ✅ Done | `DielectricMaterial.tint` — `material::dielectric_tinted(ior, tint)` |
+| **QMC dim discipline** | ✅ Done | `debug_assert!(11 dims/bounce)` prevents dimension aliasing |
+| **ConstantMedium cleanup** | ✅ Done | Removed `dyn` usage, straight trait objects |
+| **Arena refactor** | ❌ Not done | Still `Vec<Arc<dyn ...>>`, `add_light()` manual tracking |
+| **Shadow ray** | ❌ Not done | Still ray-probe approach, no explicit `Unoccluded` |
+| **Triangle meshes** | ❌ Not done | No mesh/OBJ support |
+| **Power heuristic MIS** | ❌ Not done | Fixed `[1/3, 2/3]` weights |
+| **Complete transforms** | ❌ Not done | Still only Translate + RotateY |
+| **Point3/Color3 newtypes** | ❌ Not done | Still type aliases |
+| **Rough clearcoat** | ❌ Not done | Analytic Fresnel split only |
 
 ---
 
@@ -10,81 +38,63 @@ Reference renderers: **[LuxCore](https://github.com/LuxCoreRender/LuxCore)**, **
 ### Current Design
 
 ```
-Material enum (9 variants)  ← pure-mat..
-├── Lambertian(Material)
+Material enum (9 variants)  ← Box<dyn Bsdf> within composition types
+├── Lambertian(LambertianMaterial)
 ├── Metal(MetalMaterial)          -- GGX conductor
-├── Dielectric(DielectricMaterial)
+├── Dielectric(DielectricMaterial)  -- with optional tint color
 ├── DiffuseLight(DiffuseLightMaterial)
 ├── Isotropic(IsotropicMaterial)
 ├── Glossy(GlossyMaterial)        -- GGX dielectric
-├── Mix { a: Box<dyn Bsdf>, b: Box<dyn Bsdf>, weight }
-├── Coated { substrate: Box<dyn Bsdf>, coating: Box<dyn Bsdf> }
+├── Mix { a, b, weight }
+├── Coated { substrate, coating }
 └── Custom(Box<dyn Bsdf>)
 ```
 
-Dispatch: match arms on `Material` → delegate to struct methods. `Bsdf` trait has 10 methods (`sample`, `eval`, `pdf`, `emitted`, `is_emissive`, `is_delta`, `gpu_node`, `clone_box`, `serialize_gpu`). GPU serialization flattens the tree into `Vec<GpuMaterialNode>`. Texture uniform via `Option<Arc<dyn Texture>>`.
+Dispatch: match arms on `Material` → delegate to struct methods. `Bsdf` trait has **7 methods** (`sample`, `eval`, `pdf`, `emitted`, `is_emissive`, `clone_box`, `serialize_gpu`). GPU serialization flattens the tree into `Vec<GpuMaterialNode>`.
+
+**Key change since v1**: `BsdfSample` is now an **enum** (`Delta` / `NonDelta`), not a struct. This makes the delta-vs-non-delta distinction a type-level guarantee — the integrator matches on the variant rather than inspecting a `pdf_kind` field:
+
+```rust
+pub enum BsdfSample {
+    Delta { wi: Vec3, f_cos: Color3 },
+    NonDelta { pdf_kind: PdfKind },
+}
+```
+
+`PdfKind` similarly became an enum (`Cosine`, `Ggx`, `UniformSphere`, `Delta`) instead of the earlier approaches. The integrator constructs stack-allocated PDF objects from the kind on the non-delta path.
 
 ### Findings
 
-**✅ Well‑done**
+**✅ Well‑done** (all carried forward from v1)
 
-- **Per‑sample delta‑ness via `pdf_kind`**, not `material.is_delta()` — matches how Coated/Mix must work. Fixed last session.
-- **`BsdfSample` bundles direction, BSDF×cos, PDF, and pdf_kind** in one struct. Guarantees direction/PDF come from the same sample, structurally preventing the Glossy direction‑PDF mismatch bug.
-- **GPU tree serialization** is clean and tested (6 tests in  material/mod.rs). Compositions serialize and reference children by index, forming a valid DAG.
-- **Closed‑form Fresnel in Coated::sample()** — direct reflection without delegating to Dielectric (which would double‑Fresnel). Fixed last session.
-- **Constructor ergonomics** — `.mix()`, `.coated()`, `lambertian()`, `dielectric()` etc. are intuitive and chainable.
+- **Per‑sample delta‑ness via `BsdfSample::Delta` vs `NonDelta`** — enum variants enforce correct dispatch at the type level. No runtime `is_delta()` needed.
+- **`BsdfSample` bundles direction, BSDF×cos, PDF kind** in one variant. Guarantees direction/PDF come from the same sample.
+- **GPU tree serialization** — clean and tested (6 tests in `material/mod.rs`). Compositions serialize and reference children by index, forming a valid DAG.
+- **Closed‑form Fresnel in Coated::sample()** — direct reflection without delegating to Dielectric (which would double‑Fresnel).
+- **Constructor ergonomics** — `.mix()`, `.coated()`, `lambertian()`, `dielectric_tinted()` etc. are intuitive and chainable.
 
-**⚠️ Issues to address**
+**⚠️ Issues to address** (mostly unchanged — none of these were tackled)
 
 1. **Coated Lacks MIS Between Coating & Substrate** (LuxCore reference)
-
-   Current `Coated::sample()`:
-   ```
-   if u < f  → coating reflection (delta, pdf=1, f_cos=1)
-   else      → substrate sample, f_cos /= (1-f)
-   ```
-
-   This is correct for a perfectly smooth clearcoat (delta coating). But a **rough** clearcoat (non‑delta, e.g. satin finish) needs the coating and substrate lobes combined via MIS, not a hard Fresnel‑split switch. LuxCore's `GlossyCoating` uses:
+   Current `Coated::sample()` uses a hard Fresnel-split switch. A rough clearcoat (non‑delta, e.g. satin) would need the coating and substrate lobes combined via MIS, not a hard split. LuxCore's `GlossyCoating` uses:
    ```
    w_coating = 0.5 * (1 + Fresnel(average_value))
    result = coating_sample * w_coating + base_sample * (1-w_coating)
-   pdf    = coating_pdf * w_coating + base_pdf * (1-w_coating)
    ```
-   Where `w_coating` ensures the coating is never sampled less than 50% of the time regardless of Fresnel — reducing variance.
-
    **Impact**: Cannot correctly render rough clearcoat (satin, matte clear). Low priority now (coating is always dielectric = perfectly smooth), but will prevent physically correct rough clearcoat later.
 
 2. **Coated `eval()`/`pdf()` Use Fresnel Blend — Correct Only for Delta Coating**
-
-   ```
-   f * coating.eval() + (1-f) * substrate.eval()
-   ```
-   For a delta coating, `coating.eval()` returns 0 everywhere except the exact specular direction, so this collapses to `(1-f)*substrate.eval()` — correct because MIS only runs on non‑delta paths (substrate).
-
-   **But**: for a rough coating, this blend doesn't match `sample()`'s selection probability, making MIS weights wrong and introducing bias. Must fix when rough coating is added.
+   For a delta coating, `coating.eval()` returns 0 everywhere except the exact specular direction, so this collapses to `(1-f)*substrate.eval()` — correct. For a rough coating, this blend doesn't match `sample()`'s selection probability, making MIS weights wrong and introducing bias.
 
 3. **Coating Fresnel Hard‑coded to IOR = 1.5**
+   Should be parametrized on the coating material's IOR from the `DielectricMaterial`.
 
-   LuxCore's GlossyCoating takes configurable `index`, `Ks` (Fresnel weight at normal incidence), `Ka` (absorption), `depth`. Hard‑coded IOR is a simplification — adequate for now but limits glass types.
-
-4. **Dielectric Implements Dead `eval()`/`pdf()`**
-
-   Dielectric is always delta. The trait requires `eval`/`pdf`, so they exist but return 0/0. Not harmful, but the trait could document that delta materials must implement these trivially.
-
-5. **Mix Uses Simple Stochastic Selection (Same as LuxCore)**
-
-   Both raytrace-rs and LuxCore use `u < weight` to pick one child per sample. MoonRay uses lobe CDF with one‑sample MIS. The simple approach is adequate — stochastic mix with `eval`/`pdf` blending handles the MIS. But the `eval`/`pdf` blend `(1-w)*a + w*b` means every sample evaluates **both** children, which is wasteful for expensive secondary lobes.
+4. **Mix `eval()` Evaluates Both Children Every Sample**
+   The `eval`/`pdf` blend `(1-w)*a + w*b` means every sample evaluates **both** children, wasteful for expensive secondary lobes. Stochastic selection on `sample()` only picks one. This is the same tradeoff as LuxCore.
 
 ### Comparison: MoonRay's Component BSDF Architecture
 
-MoonRay doesn't use a material enum. Instead, it uses **30+ `BsdfComponent` data classes** (parameter bundles) assembled by `BsdfBuilder`, which manages an **attenuator chain** for automatic energy‑conserving layering:
-
-```
-addComponent → OVER flag → stageAttenuator (e.g. OneMinusFresnel)
-             → UNDER flag → subsequent lobes scaled by previous transmittance
-```
-
-**Worth adopting?** No — overkill for raytrace-rs. The enum dispatch is simpler, equally expressive for the material count (<10 types), and serializes cleanly for GPU. MoonRay's component model is production‑scale for a team of 50+ engineers maintaining hundreds of material configurations. For 6 material types, the enum is right.
+No change from v1 — MoonRay still uses 30+ `BsdfComponent` data classes with `BsdfBuilder` and attenuator chain. Overkill for raytrace-rs's 6 material types. The enum dispatch remains the right call.
 
 ---
 
@@ -93,20 +103,20 @@ addComponent → OVER flag → stageAttenuator (e.g. OneMinusFresnel)
 ### Current Design
 
 ```
-Hittable trait
+Hittable trait (split into Intersectable + Bounded)
 ├── Sphere (static + moving)
 ├── PlanarPatch<R: Region2D>  ← parametric 2D → 3D
 │   ├── QuadRegion, TriRegion, EllipseRegion
 │   ├── AnnulusRegion, SuperellipseRegion
 │   ├── RoundedRectRegion, PolygonRegion
 │   └── FunctionRegion (arbitrary predicate)
-├── TransformObject<T: Transform, O: Hittable>
+├── TransformObject<T: Transform, O: Intersectable>
 │   ├── Translate { offset }
 │   └── RotateY { sin, cos }
 ├── BvhNode (tree with SAH build)
 ├── FlatBvh (cache‑friendly flat 64‑byte nodes)
 ├── ConstantMedium (volumetric scattering)
-├── Vec<T: Hittable> + Arc<T: Hittable> (blanket impls)
+├── Vec<T: Intersectable> + Arc<T: Intersectable> (blanket impls)
 ```
 
 Region2D trait:
@@ -115,55 +125,35 @@ contains(a,b) → bool
 area()        → f64
 sample(u,v)   → (f64, f64)
 uv(a,b)       → (f64, f64)  // default identity
-bounding_box_area() → f64
+bounding_box_area() → f64   // default = area()
 ```
+
+**Key change since v1**: `Hittable` trait was **decomposed** into two separate traits — `Intersectable` (intersection queries) and `Bounded` (bounding box queries). The `Sampleable` trait handles light importance sampling with `pdf_value()` and `random()` methods. Hit records were split into `Hit` (raw geometric) and `SurfaceInteraction` (geometric + material + shading normal), which improved `from_material_hit()` construction.
+
+`PlanarPatch` gained type aliases and free constructor functions (`quad()`, `ellipse()`, `tri()`, `annulus()`, `rounded_rect()`, `superellipse()`, `polygon()`, `function_patch()`) for cleaner API.
 
 ### Findings
 
 **✅ Well‑done**
 
-- **PlanarPatch + Region2D pattern** maps cleanly to parametric surfaces. Unit‑square region (QuadRegion) scales to world via `corner + a·side_a + b·side_b`. Simple, composable, mathematically sound.
-- **8 region types** cover a useful variety. FunctionRegion enables arbitrary shapes (text, logos, procedural masks). Good for a learning renderer.
+- **PlanarPatch + Region2D pattern** maps cleanly to parametric surfaces.
+- **8 region types** cover a useful variety. FunctionRegion enables arbitrary shapes.
 - **FlatBvh** — 64‑byte nodes, iterative traversal, near‑first child ordering. Production‑quality.
 - **SAH BVH build** with 32 bins, all 3 axes evaluated, parallel via `rayon::join`. Solid.
 
-**⚠️ Issues to address**
+**⚠️ Issues to address** (unchanged from v1)
 
-1. **No Triangle Mesh Support** — **Biggest geometric gap**
+1. **No Triangle Mesh Support** — **Biggest geometric gap** ❌ Not done
+   All three reference renderers use triangle meshes as their primary geometry. raytrace-rs cannot load any standard 3D format (OBJ, glTF, FBX, PLY).
 
-   All three reference renderers use triangle meshes as their primary geometry:
-   - LuxCore: `TriangleMesh` with MBVH for instancing
-   - MoonRay: `PolygonMesh`, optional tessellation of subdivision surfaces
-   - renderling: indexed vertex buffers + indices on GPU slab
+2. **Transform System Incomplete** ❌ Not done
+   Only `Translate` and `RotateY` exist. Missing: `RotateX`, `RotateZ`, `Scale`, composition helpers, general 4×4 matrix transform. The same TODOs remain in `transform.rs`.
 
-   raytrace-rs cannot load any standard 3D format (OBJ, glTF, FBX, PLY). This dramatically limits scene complexity. Any interesting scene beyond spheres and quads requires a mesh loader.
+3. **Arenas & Lifetime: Planned but Un‑implemented** ❌ Not done
+   Still using `Vec<Arc<dyn Intersectable>>` and `Vec<Arc<dyn Sampleable<S>>>` in Scene. `add_light()` manual tracking still required. The `docs/arena-refactor-plan.md` design is still valid but un‑implemented.
 
-2. **Transform System Incomplete**
-
-   Only `Translate` and `RotateY` exist. Missing:
-   - `RotateX`, `RotateZ` (marked TODO)
-   - `Scale` (non‑uniform scaling)
-   - Composition helpers (marked TODO)
-   - General 4×4 matrix transform
-
-   The `Transform` trait requires implementing `hit`, `bbox`, `ray`, `object_to_world_direction` — heavy per‑transform. For the 3 current transforms this is manageable, but every new transform duplicates the same pattern. A macro (marked TODO) would help.
-
-3. **Arenas & Lifetime: Planned but Un‑implemented**
-
-   The  `docs/arena-refactor-plan.md` is well‑designed:
-
-   | Current | Planned |
-   |---------|---------|
-   | `Arc<dyn Hittable>` everywhere | `Vec<Box<dyn Hittable>>` in Scene, lifetime‑borrowed BVH |
-   | Manual `add_light()` duplication | Auto‑detect emissives by `is_emissive()` |
-   | Separate `light_objects` list | Light BVH built from emissive indices in sorted objects |
-   | Arc overhead + scattered allocations | GPU‑ready flat storage |
-
-   **Benefit vs effort**: ~361 lines across 8 files. Reduces Arc overhead, eliminates manual light tracking, moves storage toward GPU readiness. Worth doing before GPU pipeline.
-
-4. **Sphere Only Implicit**
-
-   Production renderers support: sphere, box, cylinder, disk, torus, cone, hyperboloid, paraboloid. Adding a `Disk` or `Cylinder` would be useful for scene variety without full mesh support.
+4. **Sphere Only Implicit** ❌ Not done
+   No disk, cylinder, or other implicit primitives beyond sphere.
 
 ---
 
@@ -172,82 +162,62 @@ bounding_box_area() → f64
 ### Current Design
 
 ```
-ray_color()  ← per‑bounce loop
-├── hit test
+PathTracingIntegrator::li()  ← extracted from Camera
+├── bounce loop (max_depth)
+├── world.intersect() → SurfaceInteraction
 ├── add emission
 ├── Russian roulette (bounce ≥ 5, survival = max_attenuation.clamp(0.05, 1.0))
-├── material.sample() → BsdfSample
-│   ├── Delta path:  accumulated_attenuation *= f_cos, trace sample.wi
-│   └── Non‑delta:   MixturePDF [light, surface, surface] → direction
-│                     f_cos = material.eval(wo, sampled_direction)
-│                     weight = 1 / pdf_val
-│                     accumulated_attenuation *= f_cos * weight
-└── miss → background
+├── material.sample() → BsdfSample::Delta { wi, f_cos }
+│   └── Delta path: accumulated_attenuation *= f_cos, trace sample.wi
+│       pad 4 dims, debug_assert 11 dims total
+└── BsdfSample::NonDelta { pdf_kind }
+    └── Construct on-stack PDF from PdfKind variant
+        MixturePDF [light, surface, surface] → direction
+        f_cos = material.eval(wo, sampled_direction)
+        weight = 1 / pdf_val
+        accumulated_attenuation *= f_cos * weight
+        pad mixture dims to exactly 4, debug_assert 11 dims total
 ```
 
-MIS uses Veach's one‑sample model: pick a direction from the mixture PDF, evaluate both the material and the PDF at that direction, weight by `1/p_mixture`.
+**Key changes since v1**:
+
+- **Integrator trait extracted**: `Integrator<S>` trait with `li()` method replaces `Camera::ray_color()`.
+- **Renderer abstraction**: `Renderer` trait with `CpuRenderer` implementation handles sample scheduling, tile-based parallel rendering, adaptive sampling, and progressive framebuffer publishing.
+- **Camera trait extracted**: `Camera::generate_ray()` separates camera model from the integrator.
+- **QMC dimension discipline**: Every bounce must consume exactly 11 fixed dimensions, enforced by `debug_assert_eq!(sampler.offset() - bounce_start, 11)`. Previous `DimCursor` overflow concern is now addressed.
+- **Adaptive sampling**: `CpuRenderer` uses Welford's online variance per-pixel. Configurable `threshold_rel` (stddev/mean ratio) and `threshold_abs` (noise floor). Early exit when all pixels converge.
+- **Tiled rendering**: Pre-allocated tile pool reused across passes, eliminating repeated heap allocations. Adaptive progressive cadence (1:1 up to 16 passes, 1:4 up to 64, 1:8 thereafter).
+- **Film abstraction**: `Film` trait with `RgbFilm` implementation handles accumulation, tone-mapping (Reinhard), gamma correction, and variance tracking.
+
+**Post-processing pipeline**: `post_process(color, exposure, tone_map)` → Reinhard tone-map (optional) → gamma 2 → [u8; 3].
 
 ### Findings
 
-**✅ Well‑done**
+**✅ Well‑done** (all carried forward)
 
-- **Clean separation of delta vs non‑delta** via `pdf_kind`. Composition materials (Coated/Mix) route correctly per‑sample.
+- **Clean separation of delta vs non‑delta** via `BsdfSample::Delta` / `BsdfSample::NonDelta` enum variants.
 - **Russian roulette** uses throughput‑proportional survival probability with floor clamp — standard and correct.
-- **MixturePDF** designs `[light, surface, surface]` gives surface sampling 2/3 weight (surface PDF is usually a better match for the integrand). Simple fixed heuristic — adequate for learning.
+- **MixturePDF** designs `[light, surface, surface]` gives surface sampling 2/3 weight.
+- **Fixed QMC stride** — 11 dims per bounce, enforced by debug assertion. Prevents dimension aliasing bugs.
+- **Tiled rendering** with pooled tiles keeps memory allocation off the hot path.
+- **Adaptive sampling** with Welford's variance is a significant convergence improvement over fixed-spp rendering.
 
 **⚠️ Issues to address**
 
-1. **No Shadow Ray** — **Most impactful rendering defect**
+1. **No Shadow Ray** — **Most impactful rendering defect** ❌ Not done
+   Still using MixturePDF approach without explicit occlusion test. Adding a shadow ray for direct lighting remains the single highest-impact rendering quality improvement available.
 
-   Current path for direct lighting:
-   ```
-   MixturePDF.generate() → direction
-   trace ray in direction
-   if hits light → contribution = f_cos * 1/pdf_val
-   if hits occluder → continue path (lost light contribution)
-   ```
+2. **Fixed MIS Weights: `[1/3 light, 2/3 surface]`** ❌ Not done
+   Still fixed heuristic. Power heuristic (pbrt-v4) or balance heuristic would adapt to scene conditions and reduce variance.
 
-   This is **standard next‑event estimation without a shadow ray** — sampling a direction toward a light and tracing a ray to see if it gets there. If an occluder is in front of the light, the ray hits the occluder and the light contribution is lost.
+3. **Integrator trait extracted but single implementation** ✅ Done
+   `Integrator` trait exists with `PathTracingIntegrator`. The `TODO(renderer-abstraction)` from v1 is resolved. Only one integrator type so far.
 
-   **The issue**: The light contribution is blocked by whatever geometry is in front of the light. This is *functionally correct* but *extremely noisy*. Production renderers use a **shadow ray** (short‑circuit occlusion test):
-   ```
-   sample point on light → if visible (shadow ray hits nothing):
-       pdf = light_selection_pdf * light_solid_angle_pdf
-       f_cos = material.eval(wo, light_direction)
-       contribution = f_cos * light_radiance / pdf
-   ```
+4. **Lights: Single Uniform Light Strategy** ❌ Not done
+   Same as v1 — always picks a random light object uniformly. Power‑based selection would help for scenes with ~50 area lights (complex_scene).
 
-   Adding a shadow ray reduces variance significantly because:
-   - The light PDF evaluates to high values (narrow cone from hit point to light)
-   - An occluder within that cone blocks it completely, but the weight `1/pdf_val` explodes if the PDF was high
-   - With a shadow ray, you explicitly check visibility before evaluating the BRDF — no variance explosion from occluded lights
-
-   **However**, the current ray‑probe approach is not wrong — pbrt-v4 uses a similar approach (trace ray, check what it hits). The distinction is that LuxCore and others separate "direct light sampling" (shadow ray) from "indirect scattering" (BSDF ray) for better variance control.
-
-   **Recommendation**: Add explicit shadow rays for direct lighting. This is standard practice and dramatically improves convergence for scenes with occluders near lights.
-
-2. **Fixed MIS Weights: `[1/3 light, 2/3 surface]`**
-
-   The `[light, surface, surface]` mixture means surface sampling is always 2× more likely than light sampling. This is a scene‑independent heuristic. LuxCore uses the **Power Heuristic** which adapts naturally: `weights = pdf_i² / sum(pdf_j²)`. The balance heuristic (pbrt) uses `weights = pdf_i / sum(pdf_j)`.
-
-   Neither is "wrong" — the fixed weights are unbiased. But adaptive heuristics reduce variance tailored to the scene. The current approach is a simplification of Veach's one‑sample model where selection probabilities are fixed rather than optimal.
-
-3. **Integrator Bound to `Camera` Struct (TODO: `renderer-abstraction`)**
-
-   `ray_color()` lives inside `Camera`. It uses `self.background`, `self.max_depth` etc. Extracting a `Renderer` trait would enable:
-   - Multiple integrators (path tracer, direct only, albedo, normals)
-   - Separate GPU kernel entrypoint
-   - Clean boundary for testing
-
-   Marked `TODO(renderer-abstraction)` at lines 8 and 385.
-
-4. **Lights: Single Uniform Light Strategy**
-
-   LuxCore has 4 strategies (`Uniform`, `Power`, `LogPower`, `DLSCache`). raytrace-rs always picks a random light object uniformly — fine for <10 lights, but for the `complex_scene` with ~50 area lights, power‑based selection would reduce variance.
-
-5. **No Per‑Depth Bounce Limits**
-
-   LuxCore distinguishes `maxPathDepth.diffuseDepth`, `.glossyDepth`, `.specularDepth`. raytrace-rs has a single `max_depth`. This is a minor feature — adequate for learning.
+5. **No Per‑Depth Bounce Limits** ❌ Not done
+   Single `max_depth`. LuxCore distinguishes `diffuseDepth`, `glossyDepth`, `specularDepth`.
 
 ### Comparison: Rendering Loops
 
@@ -256,11 +226,14 @@ MIS uses Veach's one‑sample model: pick a direction from the mixture PDF, eval
 | Shadow rays | No | Yes | Yes |
 | MIS heuristic | Fixed weights | Power heuristic | Balance heuristic |
 | Light strategy | Uniform | Uniform/Power/Log/DLSCache | Per‑layer light sets |
-| Integrator container | Camera method | `PathTracer` engine class | `PathIntegrator` engine |
+| Integrator container | `Integrator` trait | `PathTracer` engine class | `PathIntegrator` engine |
 | Bounce control | Single depth | Per‑type (diffuse/glossy/spec) | Per‑type |
 | RR threshold | Bounce ≥ 5, clamp(0.05, 1) | Bounce ≥ 3, cap 0.5 | Throughput threshold |
 | Volumes | ConstantMedium (simple) | Full volume integration | Decoupled ray marching |
 | Bidirectional | No | Hybrid Back‑Forward mode | No |
+| Adaptive sampling | ✅ Welford variance + convergence mask | Yes (variance‑guided) | No |
+| Renderer abstraction | ✅ `Renderer` trait + `CpuRenderer` | Engine class hierarchy | Engine class |
+| Film abstraction | ✅ `Film` trait + `RgbFilm` + tiles | OutputMgr | `OutputDriver` |
 
 ---
 
@@ -280,109 +253,119 @@ SobolQmcSampler
 NaiveRandomSampler   — SplitMix64 hash of (n, d, seed)
 StratifiedRandomSampler — jittered grid for dims 0‑1, hash for rest
 
-DimCursor { base, offset } — auto‑advancing dimension wrapper
+DimCursor<S: Sampler> { base, offset, sample_idx, sampler }
+  — Sampler is now *embedded in the cursor*
+  — next_sample() calls sampler.sample(self.sample_idx, d) automatically
 ```
+
+**Key changes since v1**:
+
+- **Sampler embedded in `DimCursor`**: `DimCursor<S>` now owns a `sampler: S` field alongside `base`, `offset`, and `sample_idx`. This eliminates the separate `sampler` argument at every call site and makes the type generic over the sampler strategy.
+- **QMC dimension enforcement**: Every bounce must consume exactly 11 dimensions, enforced by `debug_assert_eq!` — prevents the dimension aliasing that was previously a concern.
+- **Digital shift**: Per-dimension scrambling via `splitmix_shift(seed, d)` replaces the previous per-pixel seed scrambling.
 
 ### Findings
 
-**✅ Well‑done**
+**✅ Well‑done** (all carried forward)
 
-- **Pure deterministic `sample(n, d)`** — same arguments same result everywhere. Enables `Sync`, deterministic reproduction, no state corruption. Matches the production approach.
-- **Gray‑code cache** — efficient O(1) advance per sample (just XOR one direction vector per dim). Rebasing on pixel change is amortized across all samples for that pixel.
+- **Pure deterministic `sample(n, d)`** — same arguments same result everywhere. Enables `Sync`, deterministic reproduction.
+- **Gray‑code cache** — efficient O(1) advance per sample.
 - **512 dimensions** — adequate for ~60 bounces × ~8 dims = ~480 dims. Tight but not exceeded.
-- **DimCursor** — prevents dimension aliasing (the bug that caused Silent Wrong in earlier versions). Clean design.
+- **DimCursor with embedded Sampler** — cleaner API than passing sampler separately, trivially correct parallel iteration.
+- **Fixed QMC dimension stride** — the debug assertion eliminates the previous class of dim-aliasing bugs.
 
-**⚠️ Issues to address**
+**⚠️ Issues to address** (unchanged from v1)
 
 1. **No Correlated Multi‑Jittered (CMJ) or Progressive Multi‑Jittered (PMJ) Sequences**
+   MoonRay uses PMJ/CMJ for bounces 0‑2. CMJ provides better stratification than Sobol at low sample counts — important for progressive rendering where 1‑4 samples per pixel dominate the early preview.
 
-   MoonRay uses PMJ/CMJ for bounces 0‑2 (where correlation matters most), falling back to hash‑based for deeper bounces. CMJ provides better stratification than Sobol at low sample counts — important for progressive rendering where 1‑4 samples per pixel dominate the early preview.
+2. **StratifiedRandomSampler Only Stratifies 2 Dimensions** ❌ Not done
+   Only dims 0‑1 (pixel AA) are stratified. True N‑dimensional stratification would improve convergence for the first few bounces, but the Sobol sampler is already the default.
 
-   **Impact**: Visible structured noise at low sample counts compared to CMJ. The Sobol sequence is already high‑quality, so this is a refinement, not a defect.
-
-2. **StratifiedRandomSampler Only Stratifies 2 Dimensions**
-
-   Only dims 0‑1 (pixel AA) are stratified. Everything else falls back to hash. True N‑dimensional stratification would improve convergence for the first few bounces, but the Sobol sampler is already the default and handles this better.
-
-3. **No Blue Noise or Error‑Diffusion Sampling**
-
-   MoonRay ships precomputed blue‑noise sample tables. Blue noise trades low‑frequency noise for high‑frequency (perceptually less visible) noise. Important for real‑time / interactive previews. Could be interesting for raytrace-rs's live preview mode.
-
-4. **DimCursor `base + offset` Overflow After ~4B `next()` Calls**
-
-   Not a practical concern (a ray uses ~480 dims), but worth noting: the `u32` addition can wrap. A `debug_assert!` or `NonZeroU32` for `(max_dim - base)` would catch accidental overflow.
+3. **No Blue Noise or Error‑Diffusion Sampling** ❌ Not done
+   MoonRay ships precomputed blue‑noise sample tables. Important for real‑time / interactive previews.
 
 ### Comparison: Sampling Systems
 
 | Aspect | raytrace-rs | LuxCore | MoonRay |
 |--------|------------|---------|---------|
 | Sequence type | Sobol (Gray‑code) | Sobol (direction vectors) | CMJ/PMJ + hash fallback |
-| Dims | 512 | Unbounded (direction vector gen) | Precomputed tables |
+| Dims | 512 | Unbounded | Precomputed tables |
 | Perf model | O(1) via cache | Per‑dim XOR of direction vectors | Table lookup + hash |
 | State | Stateless (thread‑local cache) | Per‑thread RNG + pass counter | `SequenceID` hash construction |
 | Seed | Per‑pixel deterministic | Per‑pixel + random pass shift | Pixel + sample + purpose hash |
 | Stratification | Full Sobol (all dims) | Full Sobol | CMJ for early, hash for late |
-| Adaptive sampling | No | Yes (variance‑guided) | No |
+| Adaptive sampling | ✅ Yes (Welford variance) | Yes (variance‑guided) | No |
 
 ---
 
 ## 5. TODOs & Future Direction
 
-### All 37 TODOs by Category
+### Current TODOs (19 total — down from 37 in v1)
 
 | Category | Count | Files |
 |----------|-------|-------|
-| GPU pipeline preparation | 8 | main.rs(3), camera.rs(1), scene.rs(3) |
-| Texture mapping 2D/3D split | 7 |  texture/mod.rs(4),  texture/mapping.rs(3) |
-| Preview optimization | 6 | camera.rs(2), main.rs(4) |
-| Renderer abstraction | 5 | camera.rs(2), hittable.rs(2) |
-| Optional features | 3 | transform.rs(3) |
-| Type safety | 3 | vec3.rs(2), hittable.rs(1) |
-| Displacement mapping | 1 | hittable.rs(1) |
-| **Total** | **37** | 0 FIXMEs, 0 HACKs, 0 XXXs |
+| GPU pipeline preparation | 3 | main.rs(3) |
+| Texture mapping 2D/3D split | 7 | texture/mod.rs(4), texture/mapping.rs(3) |
+| Preview optimization | 3 | main.rs(3) |
+| Type safety | 4 | hittable.rs(2), vec3.rs(2) |
+| Transform system | 5 | transform.rs(5) (optional features + feat) |
+| Renderer-agnostic | 1 | texture/mod.rs(1) |
+| **Total** | **19** | 0 FIXMEs, 0 HACKs, 0 XXXs |
 
-**Plus**: Arena refactor (361 lines across 8 files — documented separately in `docs/`)
+**TODO reduction**: 37 → 19 (18 resolved). The resolved TODOs included:
+- `TODO(renderer-abstraction)` → ✅ Integrator + Renderer + Camera traits
+- All `TODO(gpu)` markers in the old camera.rs scene construction boundaries → reduced to 3 remaining in main.rs
+- Arena refactor plan is still documented in `docs/arena-refactor-plan.md` but the code-level TODOs were not added to individual hittable files
 
-### Priority‑Ordered Recommendations
+### What Was Done (Resolved Items from v1)
+
+| Priority | Issue | Status |
+|----------|-------|--------|
+| P0 | Renderer trait extraction | ✅ Done — `Integrator` + `Renderer` + `Camera` traits |
+| P1 | — | |
+| P2 | Adaptive sampling | ✅ Done — Welford's variance + convergence mask |
+| P3 | — | |
+| — | BsdfSample struct→enum | ✅ Done — type-safe delta/non-delta routing |
+| — | Dielectric tint | ✅ Done — `dielectric_tinted()` |
+| — | QMC dimension enforcement | ✅ Done — fixed 11-dim stride + debug_assert |
+| — | Camera decomposition | ✅ Done — `Camera` trait + `PerspectiveCamera` |
+| — | Film abstraction | ✅ Done — `Film` trait + `RgbFilm` + `FilmTile` |
+| — | Hittable decomposition | ✅ Done — `Intersectable` + `Bounded` + `Sampleable` + `Hit`/`SurfaceInteraction` |
+
+### What Remains (Unresolved from v1)
 
 **P0 — Immediate impact, low effort**
 
 1. **Arena refactor** (~361 lines, 8 files)
-   - Eliminates Arc overhead
+   - Eliminates Arc overhead in Scene and primitives
    - Automatic light detection (no `add_light()` ceremony)
    - Flat storage for GPU upload
-   - Unblocks: cleaner scene construction, material → emissive auto‑detection
+   - Design documented in `docs/arena-refactor-plan.md` — still valid
 
-2. **Shadow ray** (~50 lines, camera.rs + PDF trait)
+2. **Shadow ray** (~50 lines, path_tracer.rs + PDF trait)
    - Direct lighting with explicit visibility test
    - Dramatically reduces noise where occluders sit between hit points and lights
    - The single most impactful rendering quality improvement available
 
 **P1 — High value for medium effort**
 
-3. **Triangle mesh support** (new file + OBJ loader)
+3. **Triangle mesh support** (new file + OBJ parser)
    - Unlocks all real‑world scenes
-   - Required for any serious scene beyond spheres and quads
    - Start with a simple indexed mesh + OBJ parser
-
-4. **Renderer trait extraction** (~100 lines, new  `renderer.rs`)
-   - `TODO(renderer-abstraction)` — move `ray_color` into separate trait
-   - Enables: multiple integrators, GPU mirror, cleaner testing
-   - Also enables the `TODO(gpu)` at line 434
 
 **P2 — Quality improvements**
 
-5. **Per‑type bounce limits** — add `max_diffuse_depth`, `max_glossy_depth`, `max_specular_depth`
-6. **Rough clearcoat** — MIS between coating and substrate lobes (once the coating can be rough)
-7. **Power heuristic MIS** — replace fixed `[1/3, 2/3]` weights with adaptive power heuristic
+4. **Power heuristic MIS** — replace fixed `[1/3, 2/3]` weights with adaptive power heuristic
+5. **Rough clearcoat** — MIS between coating and substrate lobes (once the coating can be rough)
+6. **Per‑type bounce limits** — add `max_diffuse_depth`, `max_glossy_depth`, `max_specular_depth`
 
 **P3 — Polish**
 
-8. **Complete transform system** — RotateX, RotateZ, Scale, composition macros
-9. **Point3/Color3 newtypes** — type‑safety, prevent coordinate/color confusion
-10. **Adaptive sampling** — variance‑guided sample allocation per pixel
-11. **Texture mapping 2D/3D split** — clean separation of UV vs world‑space mapping
-12. **CMJ/PMJ sampler** — correlated multi‑jittered for early bounces
+7. **Complete transform system** — RotateX, RotateZ, Scale, composition macros
+8. **Point3/Color3 newtypes** — type‑safety, prevent coordinate/color confusion
+9. **Texture mapping 2D/3D split** — clean separation of UV vs world‑space mapping
+10. **CMJ/PMJ sampler** — correlated multi‑jittered for early bounces
 
 ### Gap vs Production Renderers (Not Yet Addressed)
 
@@ -394,24 +377,17 @@ DimCursor { base, offset } — auto‑advancing dimension wrapper
 | Normal/bump mapping | All three have per‑layer normal mapping | Not planned |
 | Bidirectional path tracing | LuxCore: Hybrid Back‑Forward | Not planned |
 | Volume rendering | LuxCore: full integration, MoonRay: decoupled marching | ConstantMedium is adequate for learning |
-| Displacement mapping | MoonRay: supported | TODO in hittable.rs, not planned |
+| Displacement mapping | MoonRay: supported | Planned in old hittable.rs, not currently |
 
 ---
 
 ## 6. pbrt-v4 Comparison
 
-pbrt-v4 is the closest architectural cousin to raytrace-rs — both are CPU Monte Carlo path tracers with explicit scene description, unlike LuxCore (production engine) or MoonRay (studio renderer). The comparison is instructive because pbrt-v4 is the **textbook reference** for the techniques raytrace-rs implements.
+pbrt-v4 remains the closest architectural cousin to raytrace-rs. The comparison below is updated to reflect current state.
 
 ### Material / BxDF System
 
-**pbrt-v4:** `Material` is a `TaggedPointer<11 material types>` (same dispatch pattern as a Rust enum). Each material has a `using BxDF = SomeBxDF` typedef. `Material::GetBSDF()` instantiates the **single** correct BxDF type. `BSDF` wraps **one** `BxDF` via `TaggedPointer` with a `Frame` for local/world space conversion.
-
-```
-Material::GetBSDF() → BSDF { bxdf, shadingFrame }
-BSDF::Sample_f()   → bxdf.Sample_f(wo, u, u2, mode, flags)
-```
-
-Each `BxDF` (10 types) implements `f()`, `Sample_f()`, `PDF()`, `Flags()`. `Flags()` returns `BxDFFlags`: a bitmask of `{Reflection, Transmission, Diffuse, Glossy, Specular}`.
+**pbrt-v4:** `Material` is a `TaggedPointer<11 material types>`. Each material has a typedef `using BxDF = SomeBxDF`. `BSDF` wraps **one** `BxDF` via `TaggedPointer` with a `Frame` for local/world space conversion.
 
 | Aspect | raytrace-rs | pbrt-v4 |
 |--------|------------|---------|
@@ -421,44 +397,12 @@ Each `BxDF` (10 types) implements `f()`, `Sample_f()`, `PDF()`, `Flags()`. `Flag
 | **BSDF per vertex** | Single `Material` reference → match → child | Single `BxDF` via `TaggedPointer` |
 | **Flags** | `PdfKind` (what PDF to use) | `BxDFFlags` (scattering type: refl/trans, specular/glossy/diffuse) |
 | **Spectral** | RGB only | `SampledSpectrum` (4 wavelength samples, point-sampled) |
+| **Sample struct** | `BsdfSample` enum (`Delta`/`NonDelta`) | `BSDFSample` struct (`f`, `pdf`, `flags`, `eta`) |
+| **Delta routing** | Enum variant — type-level | `flags` bitmask — runtime check |
 
-**Key difference — Layered materials: MC random walk vs analytic Fresnel split**
+**Key difference — Layered materials**: pbrt-v4's `LayeredBxDF<Top, Bottom>` uses a Monte Carlo random walk through the layers (Guo et al. 2018). raytrace-rs uses the analytic Fresnel-split (correct only for smooth dielectric coating). This assessment is unchanged from v1.
 
-pbrt-v4's `LayeredBxDF<Top, Bottom, twoSided>` uses a **Monte Carlo random walk** through the layers (Guo et al. 2018). For `CoatedDiffuseBxDF` (= `LayeredBxDF<DielectricBxDF, DiffuseBxDF, true>`):
-
-```
-Entrance interface → sample transmission → random walk in medium
-→ scatter at bottom interface → random walk back → exit
-```
-
-The random walk correctly models:
-- Rough interfaces (microfacet coating)
-- Multiple scattering within layers
-- Volumetric absorption/scattering in the coating
-- Thin-film interference
-
-raytrace-rs uses the analytic Fresnel-split:
-```
-if u < f → reflection (delta), else → substrate sample
-```
-
-This is correct only for **smooth dielectric coating**. pbrt-v4's approach is more expensive (N random walk bounces per BSDF evaluation) but physically general. raytrace-rs's approach is cheaper (one sample, closed-form) but limited to smooth clearcoat.
-
-**What raytrace-rs should learn**: The `LayeredBxDF` template pattern — parameterizing the top and bottom layers as type parameters — is elegant. A rough-coating mode could use a similar MC walk, but the analytic approach is fine for the current learning scope.
-
-**BSDFSample differences**:
-
-| raytrace-rs `BsdfSample` | pbrt-v4 `BSDFSample` |
-|--------------------------|----------------------|
-| `wi: Vec3` | `wi: Vector3f` |
-| `f_cos: Color3` (already × cos) | `f: SampledSpectrum` (not × cos) |
-| `pdf: f64` | `pdf: Float` |
-| `pdf_kind: PdfKind` | `flags: BxDFFlags` + `eta: Float` |
-| — | `pdfIsProportional: bool` |
-
-pbrt-v4 returns raw BSDF value `f` (not × cos) and applies `AbsDot(wi, n)` in the integrator. raytrace-rs returns `f_cos` (already × cos). Both are correct — just a convention difference.
-
-**`pdfIsProportional`** is interesting: when `true`, the actual PDF is proportional but not equal to the returned value. The integrator handles this by calling `BSDF::PDF()` explicitly for MIS weights. raytrace-rs doesn't have this — its PDF values are always exact.
+**Recent improvement**: `BsdfSample` as an enum with explicit `Delta`/`NonDelta` variants is actually **cleaner** than pbrt-v4's `BxDFFlags` bitmask approach — the Rust compiler enforces exhaustive matching and no runtime flag check is needed.
 
 ### Primitives / Shapes
 
@@ -466,73 +410,36 @@ pbrt-v4 returns raw BSDF value `f` (not × cos) and applies `AbsDot(wi, n)` in t
 |------------|---------|
 | `Sphere`, `PlanarPatch<R>` (8 regions), `TransformObject<T,O>`, `ConstantMedium` | `Sphere`, `Cylinder`, `Disk`, `Triangle`, `BilinearPatch`, `Curve` |
 | Manual transform chaining (Translate, RotateY) | `Transform *renderFromObject` — full 4×4 transforms |
-| `Box<dyn Hittable>` / `Arc<dyn Hittable>` | Build-time `pstd::vector<Shape>`, run-time `Primitive` wraps Shape + Material + trans |
+| `Arc<dyn Intersectable>` / `Vec<Arc<>>` | Build-time `pstd::vector<Shape>`, run-time `Primitive` wraps Shape + Material + trans |
 | BVH: `BvhNode` + `FlatBvh` | BVH: `BVHAggregate` (LinearBVH in v3) |
 | `Region2D` trait for parametric surfaces | No parametric surface trait — quadrics and triangles |
 
-pbrt-v4's key pattern: **`Shape` is a `TaggedPointer<Sphere, Cylinder, Disk, Triangle, BilinearPatch, Curve>`**. Each shape has `Intersect(ray)`, `Sample(u)`, `PDF(ctx)`, `Area()`. The `Sample(ctx, u)` variant gives solid-angle PDF for direct lighting from a point — all shapes implement this.
-
-**Triangle meshes** are pbrt-v4's primary geometry. `Triangle::CreateTriangles(mesh)` returns `pstd::vector<Shape>`, one per face. Meshes are stored in a global `TriangleMesh` list with shared vertex/index buffers. This is the same approach raytrace-rs needs for mesh support — indexed mesh + per-triangle Shapes.
-
-**Transform system**: pbrt-v4 uses full 4×4 `Transform` objects with `renderFromObject` and `objectFromRender` stored as pointers. All shapes store these pointers. This is simpler than raytrace-rs's `Transform` trait + `TransformObject<T,O>` generic — no type parameter per transform operation.
+No significant changes from v1 in the primitives area.
 
 ### Path Tracing Integrator
 
-pbrt-v4's `PathIntegrator` is the direct analogue of raytrace-rs's `ray_color()`. Here's the point-by-point:
+The **Integrator** comparison has shifted dramatically since v1:
 
-**Direct Lighting (SampleLd)** — the most instructive comparison:
+| Aspect | raytrace-rs | pbrt-v4 |
+|--------|------------|---------|
+| **Architecture** | `Integrator` trait (generic `S`) + `PathTracingIntegrator` | `Integrator` → `ImageTileIntegrator` → `RayIntegrator` → `PathIntegrator` |
+| **Renderer** | `Renderer` trait + `CpuRenderer` (adaptive, tiled) | No separate `Renderer` — integrator drives tiles |
+| **Camera** | `Camera` trait + `PerspectiveCamera` | `CameraBase` → `PerspectiveCamera`, `OrthographicCamera` etc. |
+| **Film** | `Film` trait + `RgbFilm` (variance tracking) | `Film` base class + `RGBFilm`, `GBufferFilm` |
+| **Shadow rays** | No | Yes (`Unoccluded`) |
+| **MIS** | Fixed `[1/3, 2/3]` weights | Power heuristic |
+| **Adaptive sampling** | ✅ Welford variance | Yes (variance‑guided) |
+| **Tile rendering** | ✅ Pre-allocated pool, reused across passes | `ImageTileIntegrator` base |
+| **QMC stride** | ✅ 11 dims/bounce, debug-asserted | Per-type bounce dimensions |
 
-```
-raytrace-rs:                              pbrt-v4:
-  MixturePDF[light, surface, surface]       LightSampler.Sample(ctx, u) → light
-  sampling_pdf.generate() → direction        light.SampleLi(ctx, uLight, λ) → ls
-  ray = scattered                            f = bsdf->f(wo, wi) * AbsDot(wi, n)
-  pdf_val = sampling_pdf.value(unit)         if !Unoccluded(intr, ls.pLight) → 0
-  weight = 1/pdf_val                         w_l = PowerHeuristic(1, p_l, 1, p_b)
-  accumulated_attenuation *= f_cos * weight  L += w_l * ls.L * f / p_l
-```
+**Key convergence**: The architecture now closely mirrors pbrt-v4's integrator hierarchy (though with trait-based generics instead of virtual inheritance). raytrace-rs actually goes beyond pbrt-v4 in a few areas:
+- **Adaptive sampling** with Welford variance (pbrt-v4 has a simpler variance tracker)
+- **QMC dimension discipline** (pbrt-v4 uses a stateful sampler, no cross-bounce assertion)
+- **Pre-allocated tile pool** eliminates per-pass allocation entirely
 
-**Critical differences**:
-
-1. **Shadow ray (`Unoccluded`)**: pbrt-v4 traces a shadow ray (`IntersectP` — just check occlusion, no scattering). raytrace-rs doesn't, relying on the ray-probe hitting the light or not. pbrt-v4's approach has **much lower variance** because `light.SampleLi` can sample narrow solid-angle cones from the light position, and the shadow ray is cheap (just boolean occlusion).
-
-2. **Power heuristic**: pbrt-v4 uses `PowerHeuristic(1, p_l, 1, p_b)` = `p_l² / (p_l² + p_b²)`. raytrace-rs uses fixed mixture weights `[1/3, 2/3]`. The power heuristic is adaptive — when `p_l >> p_b` (light sampling is much better), weight approaches 1 for the light technique and vice versa.
-
-3. **Light selection**: pbrt-v4's `LightSampler` is pluggable (bvh, uniform, power). raytrace-rs selects lights uniformly. For scenes with many lights of varying power, power-based selection reduces variance.
-
-4. **No `pdfIsProportional` in raytrace-rs**: pbrt-v4 marks `pdfIsProportional` for BSDF samples where the PDF estimate is approximate (e.g., layered BxDFs), falling back to explicit `bsdf.PDF()` for MIS weights.
-
-**Russian roulette** — essentially identical:
-```
-raytrace-rs:                               pbrt-v4:
-  if bounce >= 5:                            if rrBeta.MaxComponentValue() < 1 && depth > 1:
-    survival = max_attenuation.clamp(..)       q = 1 - rrBeta.MaxComponentValue()
-    if rr > survival: return                   if sampler.Get1D() < q: break
-    accumulated_attenuation /= survival          beta /= 1 - q
-```
-
-**Integrator hierarchy**:
-
-pbrt-v4:
-```
-Integrator (base)
-  └── ImageTileIntegrator (tile-based rendering)
-        └── RayIntegrator (Li per ray)
-              ├── PathIntegrator (MIS)
-              ├── VolPathIntegrator (volumes + MIS)
-              ├── SimplePathIntegrator (educational, no MIS)
-              ├── RandomWalkIntegrator (simple, uniform sampling)
-              ├── SimpleVolPathIntegrator (delta tracking)
-              └── AOIntegrator (ambient occlusion)
-```
-
-raytrace-rs: one `ray_color()` method in `Camera`. Marked `TODO(renderer-abstraction)`.
-
-**The cleaned `Camera.ray_color()`** is functionally closer to `SimplePathIntegrator` with `sampleLights=true, sampleBSDF=true` (the textbook-style path tracer). pbrt-v4's `PathIntegrator` is more advanced (power heuristic, light sampler, regularize, etaScale, surface visible albedo for denoising).
+**Remaining gap**: The shadow ray and power heuristic remain the two biggest quality gaps vs pbrt-v4.
 
 ### Sampling
-
-This is where raytrace-rs and pbrt-v4 diverge most in design philosophy:
 
 | Aspect | raytrace-rs | pbrt-v4 |
 |--------|------------|---------|
@@ -540,79 +447,76 @@ This is where raytrace-rs and pbrt-v4 diverge most in design philosophy:
 | **State** | Stateless (`Sync`) | Mutable (per-pixel, per-dimension cursor) |
 | **Thread safety** | Thread-local cache + pure fn | Clone per thread |
 | **Determinism** | Same `(n,d)` → same value | Same sequence for same pixel + sampleIndex |
-| **Dim management** | `DimCursor` — explicit at call site | Implicit (sampler tracks dimension internally) |
+| **Dim management** | `DimCursor<S>` — auto-advancing + debug assert | Implicit (sampler tracks dimension internally) |
 | **Primary sequence** | Sobol (512 dims, Gray-code) | Multiple: Sobol, Halton, PMJ02BN, ZSobol, PaddedSobol, Stratified, Independent, MLT |
-| **Scrambling** | Digital shift (per-pixel seed) | Per-dimension hash → Owen, FastOwen, PermuteDigits, None |
+| **Scrambling** | Digital shift (per-dimension hash) | Per-dimension hash → Owen, FastOwen, PermuteDigits, None |
 
-**The stateful vs stateless tradeoff**:
+No significant architectural change since v1. The sampler is now embedded in `DimCursor`, making the API even cleaner. The debug assertion on fixed stride per bounce is an improvement over pbrt-v4's implicit dimension management.
 
-pbrt-v4's `Get1D()/Get2D()` implicitly advances a dimension counter. The sampler handles stratification internally. The user never sees dimension indices.
-
-raytrace-rs's `sample(n, d)` is explicit — the caller passes both sample index and dimension. This is mathematically pure and trivially `Sync`, but requires `DimCursor` discipline to avoid aliasing. The `DimCursor` was added precisely because manual `d+1` was error-prone.
-
-**Neither approach is architecturally superior.** pbrt-v4's stateful approach is simpler for the caller (no cursor management) but requires per-thread sampler cloning and makes the sampler non-Sync. raytrace-rs's stateless approach enables `Sync` and trivially correct parallel iteration, at the cost of explicit dimension management. For a GPU pipeline, the stateless approach maps naturally to `(threadId, dim)` indexing.
-
-**Sampler diversity**: pbrt-v4 ships 9 sampler types. raytrace-rs has 3 (Sobol, Naive, Stratified). Of these, pbrt-v4's `PMJ02BNSampler` (progressive multi-jittered with blue noise) is the most interesting for raytrace-rs — it provides better stratification at low sample counts than Sobol, which matters for interactive preview.
-
-### The `TaggedPointer` Pattern
-
-pbrt-v4 uses `TaggedPointer` extensively — it's their version of a Rust enum. Every major type hierarchy (`BxDF, Material, Shape, Sampler, Light, Camera, Texture, Medium, Filter`) is a `TaggedPointer`. This is functionally identical to Rust's `enum` dispatch via match arms.
-
-Where pbrt-v4's approach differs from raytrace-rs's enum dispatch:
-- **Extension**: Adding a new BxDF type in pbrt-v4 means adding it to the `TaggedPointer<...>` template argument list AND implementing the interface. In raytrace-rs, you add a variant to the enum AND add match arms. Same effort.
-- **Template dispatch**: pbrt-v4 uses `Dispatch(lambda)` which expands to `switch(type_tag) { case T: return ptr->method(); }`. This is C++'s version of Rust match dispatch. Equivalent performance.
-- **GPU compilation**: pbrt-v4 compiles the same `TaggedPointer` dispatch for CUDA/OptiX via `__device__` annotations. raytrace-rs would compile the same enum dispatch for WGSL via `@switch` — same pattern.
-
-### Summary: Key Lessons from pbrt-v4
+### Summary: Updated Key Lessons from pbrt-v4
 
 | Lesson | What to adopt | When |
 |--------|--------------|------|
 | **Shadow ray** | `Unoccluded()` check in direct lighting | P0 — major variance reduction |
 | **Power heuristic** | Replace fixed `[1/3,2/3]` weights with `p²/(p²₁+p²₂)` | P1 — adaptive MIS |
 | **Light sampler** | Pluggable light selection strategy | P2 — needed for many-light scenes |
-| **BxDFFlags** | Richer per-sample metadata (refl/trans, specular/glossy) for future use | P3 — minor |
 | **Mesh support** | `Triangle` shape + indexed mesh storage | P1 — unlocks real scenes |
-| **Shape::Sample(ctx)** | Solid-angle shape sampling from a point | Already present in raytrace-rs via `HittablePDF` |
 | **MC layered material** | `LayeredBxDF` random walk for rough coating | P2 — generalization of current Coated |
-| **Integrator hierarchy** | `Renderer` trait extraction | P1 — enables multiple integrators |
-| **Integrator class hierarchy** | `ImageTileIntegrator` → tile-based rendering | P3 — big refactor, optional |
-| **Spectral rendering** | `SampledSpectrum` | Not a priority — RGB is adequate for learning |
+| **Integrator hierarchy** | ✅ Already done — `Integrator` + `Renderer` + `Camera` traits | Resolved |
+| **Spectral rendering** | `SampledSpectrum` | Not a priority |
 | **Sampler stateful API** | Keep stateless — better for GPU | Confirmed: current design is correct |
-| **`pdfIsProportional`** | Not needed — exact PDF values from all materials | Confirmed: current approach is sufficient |
+| **BsdfSample as enum** | ✅ Type-level delta routing better than pbrt-v4's flags | Confirmed: current design is superior |
+| **QMC dim discipline** | ✅ Fixed stride + debug assert better than implicit cursor | Confirmed: current design is superior |
 
+---
 
 ## 7. Summary
 
 ### Strengths (Keep & Maintain)
 
-- **BsdfSample** struct — direction+PDF coupling structurally prevents a class of bugs
-- **Per‑sample delta routing** via `pdf_kind` — correct for compositions
+- **BsdfSample enum** — `Delta`/`NonDelta` variants structurally prevent a class of bugs
+- **Per‑sample delta routing** via enum match — correct for compositions, type-level
 - **Pure Sampler trait** — deterministic, Sync, clean dimension management
-- **DimCursor** — prevents dimension aliasing
+- **DimCursor with embedded Sampler** — auto-advancing, prevents dimension aliasing
+- **Fixed QMC dimension stride** — 11 dims/bounce enforced by debug assertion
+- **Integrator + Renderer + Camera traits** — clean abstraction boundaries
+- **Film trait + RgbFilm** — with Welford variance tracking for adaptive sampling
 - **PlanarPatch + Region2D** — clean parametric surface pattern
 - **FlatBvh** — cache‑friendly, iterative traversal, production‑quality
 - **GPU material tree serialization** — recursive flatten with tests
 - **Constructor ergonomics** — chaining `.mix()`, `.coated()` is intuitive
+- **Adaptive sampling** — Welford's online variance, convergence mask, early exit
+- **Tiled rendering** — pre-allocated pool, optimal progressive cadence
 
-### Issues to Address
+### Issues Remaining
 
 | Priority | Issue | Effort | Impact |
 |----------|-------|--------|--------|
 | P0 | Arena refactor (Arc → Box + lifetimes) | ~361 lines, 8 files | Enables GPU storage, auto lights |
 | P0 | Shadow ray for direct lighting | ~50 lines | Major noise reduction |
 | P1 | Triangle mesh support | New file + OBJ parser | Unlocks real scenes |
-| P1 | Renderer trait extraction | ~100 lines | Clean boundary for GPU |
 | P2 | Power heuristic MIS | ~30 lines | Reduced variance |
 | P2 | Rough clearcoat (MIS between layers) | ~80 lines | Physical rough coating |
 | P2 | Per‑type bounce limits | ~20 lines | Production bounce control |
 | P3 | Complete transforms (RotateX/Z, Scale) | ~60 lines | Full transform support |
 | P3 | Point3/Color3 newtypes | ~50 lines | Type safety |
-| P3 | Adaptive sampling | ~200 lines | Faster convergence |
+| P3 | CMJ/PMJ sampler | ~100 lines | Better early-preview quality |
+| P3 | Texture mapping 2D/3D split | ~80 lines | Cleaner architecture |
+
+### Progress Since v1 (85d8021 → HEAD)
+
+**Resolved: 10 items** — including the largest architectural items (renderer abstraction, camera decomposition, film abstraction, hittable decomposition).
+
+**Remaining: 10 items** — the P0 items (arena refactor, shadow ray) and P1 (meshes) are the same as v1. The P2/P3 items (power heuristic, transforms, newtypes) remain untouched.
 
 ### Development Direction
 
-The codebase has **strong fundamentals**: clean material dispatch, correct physics (since the last round of fixes), performant BVH, deterministic sampling. The natural progression is:
+The codebase has **strong fundamentals** that have only improved since v1. The architecture is now much closer to production renderers (pbrt-v4 especially) with clean trait boundaries for integrator, renderer, camera, and film.
 
-1. **Scaffold for complexity** (now – 3 months): Arena refactor → meshes → shadow ray → renderer trait
-2. **Quality** (3 – 6 months): MIS improvements, type safety, per‑type bounce limits, adaptive sampling
-3. **GPU exploration** (6 – 12 months): The existing GPU serialization, the `TODO(gpu)` markers, the pure sampler trait, and the flat BVH all position the codebase well for a WGSL/GPU pipeline. The renderling project demonstrates the CPU‑GPU hybrid pattern (slab allocator, shared shader code, texture atlas) that would be the next architectural step.
+The natural progression remains:
+
+1. **Scaffold for complexity** (now – 3 months): Arena refactor → meshes → shadow ray
+2. **Quality** (3 – 6 months): MIS improvements, type safety, per‑type bounce limits, adaptive sampling (✅)
+3. **GPU exploration** (6 – 12 months): The existing GPU serialization, pure sampler trait, flat BVH, and clean integrator/renderer boundaries all position the codebase well for a WGSL/GPU pipeline.
+
+**Key insight since v1**: The integrator/renderer/camera/film decomposition means GPU exploration can now proceed as an independent `GpuRenderer` implementing the same `Renderer` trait, rather than requiring a separate pipeline entry point.
