@@ -55,7 +55,7 @@ impl TextureMapping3D {
     }
 }
 
-/// 2D coordinate transform applied to the texture-space point.
+/// 2D coordinate transform applied to UV coordinates.
 ///
 /// These modify the `(u, v)` coordinates after UV generation but before
 /// the texture is sampled. Useful for adjusting tiling, mirroring, etc.

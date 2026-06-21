@@ -237,6 +237,6 @@ impl Transform for RotateY {
     }
 }
 
-// TODO(optional): implement RotateX / RotateY / RotateZ with cached sin/cos.
+// TODO(optional): implement RotateX / RotateZ with cached sin/cos.
 // TODO(optional): support transform composition helpers (e.g. nested wrappers or a chain type).
 // TODO(feat): add scene-builder helpers/macros that lower into `TransformObject<T, O>`.

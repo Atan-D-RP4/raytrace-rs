@@ -24,7 +24,9 @@ pub struct MappedTexture {
 }
 
 impl MappedTexture {
-    /// Creates a texture that applies `mapping` before sampling `texture`.
+    /// Creates a texture with identity mapping pipeline (3D identity, no UV gen, 2D identity).
+    /// Apply mappings via [`with_mapping3d`](Self::with_mapping3d),
+    /// [`with_uv_gen`](Self::with_uv_gen), and [`with_mapping2d`](Self::with_mapping2d).
     pub fn new(texture: Arc<dyn Texture>) -> Self {
         Self {
             mapping2d: TextureMapping2D::Identity,

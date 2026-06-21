@@ -10,10 +10,10 @@ use crate::ray::{ParametricCurve, Ray};
 use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 
-/// Sphere primitive (static or linearly moving over ray time).
+/// Sphere primitive (static or linearly moving over time).
 ///
-/// Motion is represented as a ray where `origin` is center at t=0 and
-/// `direction` is center delta to t=1.
+/// Motion is represented as a [`ParametricCurve`] where `origin` is center at t=0
+/// and `velocity` is center delta from t=0 to t=1.
 #[derive(Clone)]
 pub struct Sphere {
     center: ParametricCurve,

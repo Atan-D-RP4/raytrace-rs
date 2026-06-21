@@ -27,6 +27,10 @@ impl CameraSampler {
         }
     }
 
+    /// Samples all camera parameters from a QMC dimension cursor.
+    ///
+    /// Consumes dims 0–4 per pixel: 0–1 for pixel AA jitter, 2–3 for lens,
+    /// 4 for motion-blur time. The integrator must start at dim 5.
     pub fn new_sampled<S: Sampler>(pixel: (u32, u32), dim_cursor: &mut DimCursor<S>) -> Self {
         Self {
             pixel,

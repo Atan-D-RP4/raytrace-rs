@@ -2,7 +2,8 @@
 //!
 //! Pipeline:
 //! 1. Geometry writes hit data into [`TextureCoords`].
-//! 2. [`TextureMapping`] transforms coordinates (world/mapping/texture/uv).
+//! 2. Mappings transform coordinates ([`TextureMapping3D`] → point,
+//!    [`UvGen`] → UV, [`TextureMapping2D`] → UV).
 //! 3. [`Texture::value`] evaluates final color from the mapped context.
 //!
 //! The design keeps coordinate generation (geometry), coordinate transformation
@@ -74,8 +75,8 @@ pub struct TextureDerivatives {
 /// Full texture evaluation context passed to mappings and textures.
 ///
 /// Built by [`HitRecord::texture_coords`](crate::hittable::HitRecord::texture_coords)
-/// from geometry hit data. Flows through [`TextureMapping::map`] then into
-/// [`Texture::value`].
+/// from geometry hit data. Flows through 3D mapping → UV generation → 2D mapping
+/// then into [`Texture::value`].
 #[derive(Debug, Clone, Copy)]
 pub struct TextureCoords {
     /// Surface U coordinate in [0, 1] from primitive parameterization.
@@ -127,7 +128,7 @@ impl TextureCoords {
 /// Textures are the leaf nodes in the material tree — they provide spatially
 /// varying color (albedo, emission, etc.) that materials sample during
 /// shading. The pipeline is: geometry → [`TextureCoords`] →
-/// [`TextureMapping::map`] → `Texture::value` → [`Color3`].
+/// `MappedTexture` (3D mapping → UV generation → 2D mapping) → `Texture::value` → [`Color3`].
 pub trait Texture: Send + Sync {
     /// Evaluate the texture at the given coordinate context.
     ///
