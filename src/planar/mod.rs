@@ -74,7 +74,7 @@ impl<R: Region2D> PlanarPatch<R> {
             side_b,
             w: n / n.dot(&n),
             material: Arc::new(material),
-            bbox: bbox_diagonal1.merge(bbox_diagonal2),
+            bbox: bbox_diagonal1.merge(&bbox_diagonal2),
             normal,
             d: normal.dot(&corner),
             area: n.length(),

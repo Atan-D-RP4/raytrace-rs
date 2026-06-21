@@ -9,28 +9,61 @@ use std::sync::Arc;
 
 use image::Rgba32FImage;
 
-use super::{Texture, TextureCoords, TextureMapping};
 use crate::interval::Interval;
 use crate::perlin::Perlin;
+use crate::texture::mapping::{TextureMapping2D, TextureMapping3D, UvGen};
+use crate::texture::{Texture, TextureCoords};
 use crate::vec3::Color3;
 
 /// Compositional wrapper for mapping coordinates first, then evaluating the wrapped texture.
 pub struct MappedTexture {
-    mapping: TextureMapping,
+    mapping2d: TextureMapping2D,
+    mapping3d: TextureMapping3D,
+    uv_gen: UvGen,
     texture: Arc<dyn Texture>,
 }
 
 impl MappedTexture {
     /// Creates a texture that applies `mapping` before sampling `texture`.
-    pub fn new(mapping: TextureMapping, texture: Arc<dyn Texture>) -> Self {
-        Self { mapping, texture }
+    pub fn new(texture: Arc<dyn Texture>) -> Self {
+        Self {
+            mapping2d: TextureMapping2D::Identity,
+            mapping3d: TextureMapping3D::Identity,
+            uv_gen: UvGen::None,
+            texture,
+        }
+    }
+
+    pub fn with_mapping2d(mut self, mapping: TextureMapping2D) -> Self {
+        self.mapping2d = mapping;
+        self
+    }
+
+    pub fn with_mapping3d(mut self, mapping: TextureMapping3D) -> Self {
+        self.mapping3d = mapping;
+        self
+    }
+
+    pub fn with_uv_gen(mut self, uv_gen: UvGen) -> Self {
+        self.uv_gen = uv_gen;
+        self
     }
 }
 
 impl Texture for MappedTexture {
     fn value(&self, coords: &TextureCoords) -> Color3 {
-        let mapped_coords = self.mapping.map(*coords);
-        self.texture.value(&mapped_coords)
+        // Apply 3D point mapping first (transforms the texture space).
+        let tex_point = self.mapping3d.map_point(coords.tex_points.texture);
+
+        let (u, v) = self
+            .uv_gen
+            .map_to_uv(coords.tex_points.mapping)
+            .unwrap_or((coords.u, coords.v));
+
+        let (su, sv) = self.mapping2d.map_uv(u, v);
+
+        let mapped = coords.with_texture_point(tex_point).with_uv(su, sv);
+        self.texture.value(&mapped)
     }
 }
 

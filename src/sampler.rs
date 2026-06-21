@@ -275,8 +275,7 @@ impl<S: Sampler> DimCursor<S> {
     /// Returns next sample and advances dimension.
     #[inline(always)]
     pub fn next_sample(&mut self) -> f64 {
-        let d = self.base + self.offset;
-        self.offset += 1;
+        let d = self.next_dim();
         self.sampler.sample(self.sample_idx, d)
     }
 

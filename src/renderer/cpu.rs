@@ -180,12 +180,7 @@ where
 
                         // Generate a camera sample for the pixel from sampler dimensions
                         // Dims 0-1: AA jitter, dims 2-3: lens (defocus)
-                        let camera_sampler = CameraSampler {
-                            pixel: (x, y),
-                            jitter: (dim_cursor.next_sample(), dim_cursor.next_sample()),
-                            lens: (dim_cursor.next_sample(), dim_cursor.next_sample()),
-                            time: 0.,
-                        };
+                        let camera_sampler = CameraSampler::new_sampled((x, y), &mut dim_cursor);
 
                         if let Some(mut cam_ray) = camera.generate_ray(&camera_sampler) {
                             let radiance = self.integrator.li(

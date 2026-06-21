@@ -53,7 +53,7 @@ impl Aabb {
     }
 
     /// Returns the union of two AABBs.
-    pub fn merge(&self, other: Aabb) -> Self {
+    pub fn merge(&self, other: &Aabb) -> Self {
         Self {
             x: Interval::from_intervals(&self.x, &other.x),
             y: Interval::from_intervals(&self.y, &other.y),

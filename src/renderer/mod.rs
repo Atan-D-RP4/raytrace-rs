@@ -28,4 +28,8 @@ where
         framebuffer: Option<SharedFramebuffer>,
         make_sampler: impl Fn(i32, i32) -> S + Sync,
     );
+
+    fn resize(&mut self, _width: u32, _height: u32) {}
+
+    fn reset(&mut self) {}
 }

@@ -135,7 +135,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
 
                             // Pad mixture dims to exactly 4 (1 selection + 3 direction).
                             for _ in mix_consumed..4 {
-                                let _ = sampler.next_sample();
+                                let _ = sampler.next_dim();
                             }
                         }
                     }

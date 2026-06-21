@@ -1,36 +1,36 @@
-//! Coordinate transformations applied before texture evaluation.
+//! Texture coordinate transformations and UV generation.
 //!
-//! A mapping converts the raw hit coordinates into the space expected by
-//! the texture. For example, [`TextureMapping::Spherical`] converts a
-//! unit-sphere position into UV coordinates for image textures.
+//! These are applied to the texture-space point and UV coordinates before sampling a texture.
+//! They are composable and can be used together to achieve various effects like scaling, tiling,
+//! mirroring, etc.
+//!
+//! The 3D mappings modify the texture-space point used for procedural textures, while the 2D
+//! mappings modify the UV coordinates used for image textures.
+//!
+//! The UV generation converts a 3D point in mapping space to UV coordinates, which is useful for
+//! procedural textures that need UVs but the geometry doesn't provide them.
 
-use std::f64::consts::PI;
+use crate::texture::TextureCoords;
+use crate::vec3::{Point3, Vec3};
 
-use super::TextureCoords;
-use crate::vec3::Vec3;
-
-/// Coordinate mappings applied before evaluating an underlying texture.
-/// TODO(mapping-2d3d): split this enum into `TextureMapping2D` and
-/// `TextureMapping3D` to make UV remaps vs 3D point remaps explicit.
-pub enum TextureMapping {
-    /// No coordinate change.
+/// 3D coordinate transform applied to the texture-space point.
+///
+/// These modify `tex_points.texture` (the mutable 3D coordinate for
+/// procedural textures). They do NOT affect UV coordinates.
+pub enum TextureMapping3D {
+    /// No transformation — use the texture point as-is.
     Identity,
-    /// Uniform scale in 3D texture space.
+    /// Scale the texture-space point by the inverse of a uniform scale factor.
     ///
-    /// TODO(mapping-2d3d): this currently has only a uniform constructor.
-    /// Either add `point_scale_nonuniform(x, y, z)` or simplify `inv_scale`
-    /// to `f64` if non-uniform scale stays unused.
+    /// Smaller `scale` values → higher frequency (more detail).
+    /// This is equivalent to dividing the point by `scale`.
     PointScale { inv_scale: Vec3 },
-    /// Converts mapping-space unit-sphere position into UVs.
-    Spherical,
 }
 
-impl TextureMapping {
+impl TextureMapping3D {
     /// Builds a uniform point-scale mapping.
     ///
     /// `scale` is cell size; smaller values increase frequency.
-    /// TODO(mapping-2d3d): if non-uniform point scale is ever needed, add a
-    /// separate constructor instead of widening this uniform-only API.
     pub fn point_scale_uniform(scale: f64) -> Self {
         assert!(scale > 0.0, "texture scale must be positive");
         let inv_scale = 1.0 / scale;
@@ -41,30 +41,95 @@ impl TextureMapping {
     }
 
     /// Applies this mapping to a texture context and returns the mapped copy.
-    /// TODO(mapping-2d3d): return distinct mapped outputs for 2D and 3D paths
-    /// instead of mutating a single mixed context.
     pub fn map(&self, coords: TextureCoords) -> TextureCoords {
+        let mapped_point = self.map_point(coords.tex_points.texture);
+        coords.with_texture_point(mapped_point)
+    }
+
+    /// Applies this mapping to a 3D point and returns the mapped copy.
+    pub fn map_point(&self, point: Vec3) -> Vec3 {
         match self {
-            TextureMapping::Identity => coords,
-            TextureMapping::PointScale { inv_scale } => {
-                coords.with_texture_point(coords.tex_points.texture * *inv_scale)
+            TextureMapping3D::Identity => point,
+            TextureMapping3D::PointScale { inv_scale } => point * *inv_scale,
+        }
+    }
+}
+
+/// 2D coordinate transform applied to the texture-space point.
+///
+/// These modify the `(u, v)` coordinates after UV generation but before
+/// the texture is sampled. Useful for adjusting tiling, mirroring, etc.
+pub enum TextureMapping2D {
+    /// No transformation — use the UV coordinates as-is.
+    Identity,
+    ScaleUV {
+        su: f64,
+        sv: f64,
+    },
+}
+
+impl TextureMapping2D {
+    /// Builds a uniform UV scale mapping.
+    ///
+    /// `scale` is cell size; smaller values increase frequency (more detail).
+    pub fn scale_uv_uniform(scale: f64) -> Self {
+        assert!(scale > 0.0, "texture scale must be positive");
+        let inv_scale = 1.0 / scale;
+
+        Self::ScaleUV {
+            su: inv_scale,
+            sv: inv_scale,
+        }
+    }
+
+    /// Applies this mapping to a texture context and returns the mapped copy.
+    pub fn map(&self, coords: TextureCoords) -> TextureCoords {
+        let (u, v) = self.map_uv(coords.u, coords.v);
+        coords.with_uv(u, v)
+    }
+
+    /// Applies this mapping to a pair of UV coordinates and returns the mapped copy.
+    pub fn map_uv(&self, u: f64, v: f64) -> (f64, f64) {
+        match self {
+            TextureMapping2D::Identity => (u, v),
+            TextureMapping2D::ScaleUV { su, sv } => {
+                debug_assert!(*su > 0.0 && *sv > 0.0, "UV scale factors must be positive");
+                (u * su, v * sv)
             }
-            TextureMapping::Spherical => {
-                // p: point on unit sphere centered at origin (mapping space).
-                let p = coords.tex_points.mapping.unit_vector();
-                let theta = (-p.y).acos();
-                let phi = -p.z.atan2(p.x) + PI;
+        }
+    }
+}
 
-                let u = phi / (2.0 * PI); // u: angle around +Y axis from X = -1.
-                let v = theta / PI; // v: angle from Y = -1 to Y = +1.
-                //
-                // Examples:
-                //  <p, u, v>
-                //  <1, 0, 0> -> (0.50, 0.50), <-1, 0, 0> -> (0.00, 0.50)
-                //  <0, 1, 0> -> (0.50, 1.00), < 0,-1, 0> -> (0.50, 0.00)
-                //  <0, 0, 1> -> (0.25, 0.50), < 0, 0,-1> -> (0.75, 0.50)
+/// Converts a 3D point in mapping space to UV coordinates.
+///
+/// Reads from `tex_points.mapping` (the immutable canonical geometry coordinate)
+/// and writes to `(u, v)`. When set to `None`, the geometry-provided UVs are used
+pub enum UvGen {
+    /// Use the geometry-provided UV coordinates — no UV generation.
+    None,
 
-                coords.with_uv(u, v)
+    /// Spherical projection: maps a unit-sphere direction to (u, v).
+    ///
+    /// Input: a unit vector from sphere center to hit point (mapping space).
+    /// Output: u ∈ [0,1) (longitude), v ∈ [0,1] (latitude).
+    /// (1,0,0) → (0.50, 0.50),  (-1,0,0) → (0.00, 0.50)
+    /// (0,1,0) → (0.50, 1.00),  (0,-1,0) → (0.50, 0.00)
+    Spherical,
+    // Cylindrical,
+}
+
+impl UvGen {
+    /// Converts a 3D point in mapping space to UV coordinates according to this UV generation method.
+    pub fn map_to_uv(&self, point: Point3) -> Option<(f64, f64)> {
+        match self {
+            UvGen::None => None,
+            UvGen::Spherical => {
+                let point = point.unit_vector();
+                let theta = (-point.y).acos();
+                let phi = (-point.z).atan2(point.x) + std::f64::consts::PI;
+                let u = phi / (2.0 * std::f64::consts::PI);
+                let v = theta / std::f64::consts::PI;
+                Some((u, v))
             }
         }
     }

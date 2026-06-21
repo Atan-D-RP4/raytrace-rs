@@ -48,7 +48,7 @@ impl BvhNode {
 
         for object in objects.iter() {
             let object_bbox = object.bounding_box();
-            bbox = bbox.merge(object_bbox);
+            bbox = bbox.merge(&object_bbox);
             centroids.push((object.clone(), object_bbox.centroid()));
         }
 
@@ -108,7 +108,7 @@ impl BvhNode {
                             .clamp(0., BVH_BIN_SIZE as f64 - 1.)
                             as usize;
                         bin_count[b] += 1;
-                        bin_bbox[b] = bin_bbox[b].merge(object.bounding_box());
+                        bin_bbox[b] = bin_bbox[b].merge(&object.bounding_box());
                     }
 
                     // Precompute suffix AABBs and counts.
@@ -118,7 +118,7 @@ impl BvhNode {
                         let mut bbox = Aabb::new();
                         let mut count = 0;
                         for b in (0..BVH_BIN_SIZE).rev() {
-                            bbox = bbox.merge(bin_bbox[b]);
+                            bbox = bbox.merge(&bin_bbox[b]);
                             count += bin_count[b];
                             suffix_bbox[b] = bbox;
                             suffix_count[b] = count;
@@ -129,7 +129,7 @@ impl BvhNode {
                     let mut left_bbox = Aabb::new();
                     let mut left_count = 0;
                     for b in 0..BVH_BIN_SIZE - 1 {
-                        left_bbox = left_bbox.merge(bin_bbox[b]);
+                        left_bbox = left_bbox.merge(&bin_bbox[b]);
                         left_count += bin_count[b];
                         let right_bbox = suffix_bbox[b + 1];
                         let right_count = suffix_count[b + 1];

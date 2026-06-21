@@ -10,18 +10,16 @@ use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
 use crate::sampler::Sampler;
 use crate::sphere::Sphere;
-use crate::texture::{
-    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Texture, TextureMapping,
-};
+use crate::texture::mapping::TextureMapping3D;
+use crate::texture::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Texture};
 use crate::transform::{RotateY, TransformObject, Translate};
 use crate::vec3::{Color3, Point3, Vec3};
 use tracing::{info, trace};
 
 fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
-    Arc::new(MappedTexture::new(
-        TextureMapping::point_scale_uniform(scale),
-        Arc::new(CheckerTexture::from_color(even, odd)),
-    ))
+    let mapped_tex = MappedTexture::new(Arc::new(CheckerTexture::from_color(even, odd)));
+    let mapped_tex = mapped_tex.with_mapping3d(TextureMapping3D::point_scale_uniform(scale));
+    Arc::new(mapped_tex)
 }
 
 pub struct Scene<S: Sampler> {
@@ -247,7 +245,10 @@ impl<S: Sampler + 'static> Scene<S> {
         )));
 
         let emat: Arc<dyn Texture> = match ImageTexture::new("./earthmap.png") {
-            Ok(tex) => Arc::new(MappedTexture::new(TextureMapping::Identity, Arc::new(tex))),
+            Ok(tex) => {
+                let mapped_tex = MappedTexture::new(Arc::new(tex));
+                Arc::new(mapped_tex)
+            }
             Err(e) => panic!("Failed to load earthmap.png for complex_scene: {e:?}"),
         };
         scene.add_sphere(
@@ -256,10 +257,10 @@ impl<S: Sampler + 'static> Scene<S> {
             Material::lambertian(emat),
         );
 
-        let pertext: Arc<dyn Texture> = Arc::new(MappedTexture::new(
-            TextureMapping::point_scale_uniform(0.2),
-            Arc::new(NoiseTexture::new()),
-        ));
+        let pertext: Arc<dyn Texture> = Arc::new(
+            MappedTexture::new(Arc::new(NoiseTexture::new()))
+                .with_mapping3d(TextureMapping3D::point_scale_uniform(0.2)),
+        );
         scene.add_sphere(
             Point3::from(220., 280., 300.),
             80.,
@@ -565,10 +566,10 @@ impl<S: Sampler + 'static> Scene<S> {
     pub fn noisy_spheres() -> Self {
         let mut scene = Self::new();
 
-        let perlin_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(
-            TextureMapping::point_scale_uniform(1. / 4.),
-            Arc::new(NoiseTexture::new()),
-        ));
+        let perlin_tex: Arc<dyn Texture> = Arc::new(
+            MappedTexture::new(Arc::new(NoiseTexture::new()))
+                .with_mapping3d(TextureMapping3D::point_scale_uniform(1. / 4.)),
+        );
 
         scene.add_sphere(
             Point3::from(0., -1000., 0.),
@@ -603,10 +604,7 @@ impl<S: Sampler + 'static> Scene<S> {
             Ok(tex) => tex,
             Err(e) => panic!("Failed to load to image as Texture: {:?}", e),
         };
-        let image_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(
-            TextureMapping::Identity,
-            Arc::new(image_tex),
-        ));
+        let image_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(Arc::new(image_tex)));
         let checker = Material::lambertian(image_tex);
 
         scene.add_sphere(Point3::from(0., 0., 0.), 2., checker);

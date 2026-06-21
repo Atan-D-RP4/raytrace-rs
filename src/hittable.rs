@@ -178,7 +178,7 @@ pub trait Bounded: Send + Sync {
 impl<T: Bounded> Bounded for Vec<T> {
     fn bounding_box(&self) -> Aabb {
         self.iter()
-            .fold(Aabb::new(), |acc, obj| acc.merge(obj.bounding_box()))
+            .fold(Aabb::new(), |acc, obj| acc.merge(&obj.bounding_box()))
     }
 }
 

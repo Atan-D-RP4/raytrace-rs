@@ -429,7 +429,7 @@ mod tests {
 
         let bbox1 = s1.bounding_box();
         let bbox2 = s2.bounding_box();
-        let merged_bbox = bbox1.merge(bbox2);
+        let merged_bbox = bbox1.merge(&bbox2);
 
         let interior: BvhNode = BvhNode::Interior {
             left: Box::new(BvhNode::Leaf {

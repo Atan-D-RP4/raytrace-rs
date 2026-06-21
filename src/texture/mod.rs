@@ -10,16 +10,13 @@
 //!
 //! TODO(renderer-agnostic): replace direct path-tracer handoff with
 //! `SurfaceInteraction` so rasterizer/GPU/hybrid/SDF backends share this API.
-//! TODO(mapping-2d3d): split mapping APIs into explicit 2D/3D channels
-//! (e.g. `TextureMapping2D` for UV generation and `TextureMapping3D` for point transforms).
 
 mod gpu;
 mod impls;
-mod mapping;
+pub mod mapping;
 
 pub use gpu::{GPU_TEX_NONE, GpuTextureBuffer, GpuTextureNode, GpuTextureType};
 pub use impls::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor};
-pub use mapping::TextureMapping;
 
 use crate::vec3::{Color3, Point3, Vec3};
 
@@ -79,9 +76,6 @@ pub struct TextureDerivatives {
 /// Built by [`HitRecord::texture_coords`](crate::hittable::HitRecord::texture_coords)
 /// from geometry hit data. Flows through [`TextureMapping::map`] then into
 /// [`Texture::value`].
-///
-/// TODO(mapping-2d3d): when 2D/3D mapping channels are split, move UV-only and
-/// point-only fields into dedicated sub-contexts to prevent accidental cross-use.
 #[derive(Debug, Clone, Copy)]
 pub struct TextureCoords {
     /// Surface U coordinate in [0, 1] from primitive parameterization.
@@ -121,8 +115,6 @@ impl TextureCoords {
     }
 
     /// Returns a copy with remapped UV coordinates.
-    /// TODO(mapping-2d3d): move to a UV-specific mapping context once 2D and 3D
-    /// mappings are represented by separate types.
     pub fn with_uv(mut self, u: f64, v: f64) -> Self {
         self.u = u;
         self.v = v;

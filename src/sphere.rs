@@ -6,7 +6,7 @@ use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::onb::Onb;
-use crate::ray::Ray;
+use crate::ray::{ParametricCurve, Ray};
 use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 
@@ -16,7 +16,7 @@ use crate::vec3::{Point3, Vec3};
 /// `direction` is center delta to t=1.
 #[derive(Clone)]
 pub struct Sphere {
-    center: Ray,
+    center: ParametricCurve,
     pub radius: f64,
     pub material: Arc<Material>,
     bbox: Aabb,
@@ -27,7 +27,7 @@ impl Sphere {
     pub fn new(center: &Point3, radius: f64, mat: Material) -> Self {
         let rvec = Vec3::from(radius, radius, radius);
         Self {
-            center: Ray::new_raw(*center, Vec3::ZERO, 0.0),
+            center: ParametricCurve::new(*center, Vec3::ZERO),
             radius: radius.max(0.0),
             material: Arc::new(mat),
             bbox: Aabb::from_points(&(*center - rvec), &(*center + rvec)),
@@ -42,14 +42,14 @@ impl Sphere {
         mat: Material,
     ) -> Self {
         let rvec = Vec3::from(radius, radius, radius);
-        let center = Ray::new(*center_start, *center_end - *center_start);
+        let center = ParametricCurve::new(*center_start, *center_end - *center_start);
         let box1 = Aabb::from_points(&(center.at(0.) - rvec), &(center.at(0.) + rvec));
         let box2 = Aabb::from_points(&(center.at(1.) - rvec), &(center.at(1.) + rvec));
         Self {
             center,
             radius: radius.max(0.0),
             material: Arc::new(mat),
-            bbox: box1.merge(box2),
+            bbox: box1.merge(&box2),
         }
     }
 

@@ -10,17 +10,30 @@ use crate::vec3::{Point3, Vec3};
 /// TODO(optional): add rotation/scale variants once needed by scene builders.
 /// TODO(feat): add a macro DSL for ergonomic transform chaining.
 pub trait Transform: Send + Sync {
+    /// Transform a ray from world space to object space. This is the inverse of the forward transform.
     fn ray(&self, ray: &Ray) -> Ray;
 
+    /// Transform a hit record from object space to world space. This is the forward transform.
     fn hit(&self, hit: &mut Hit);
 
+    /// Transform an axis-aligned bounding box from object space to world space.
     fn bbox(&self, bbox: Aabb) -> Aabb;
 
     /// Transform a direction vector from object space to world space.
     /// For rigid transforms this is the inverse rotation applied to the direction.
     /// Default assumes identity (direction unchanged), which is correct for Translate.
+    /// For non-rigid transforms (e.g. scale, shear), this may not be correct and should be overridden.
     fn object_to_world_direction(&self, dir: Vec3) -> Vec3 {
         dir
+    }
+
+    /// Transform a point from world space to object space.
+    ///
+    /// Default implementation uses a ray to map the point, which is correct for rigid transforms (rotation + translation).
+    /// For non-rigid transforms (e.g. scale, shear), this may not be correct and should be overridden.
+    fn world_to_object_point(&self, point: Point3) -> Point3 {
+        let ray = Ray::new_with_time(point, Vec3::X, 0.0);
+        self.ray(&ray).origin
     }
 }
 
@@ -91,13 +104,10 @@ where
     }
 
     fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        // Transform origin to object space via a dummy ray.
-        let to_obj = self
-            .transform
-            .ray(&Ray::new_with_time(origin, Vec3::X, 0.0));
+        let to_obj_origin = self.transform.world_to_object_point(origin);
 
         // Sample a direction in object space.
-        let dir = self.object.random(to_obj.origin, dim_offset);
+        let dir = self.object.random(to_obj_origin, dim_offset);
         // Transform direction back to world space using the inverse rotation.
         self.transform.object_to_world_direction(dir)
     }
@@ -126,6 +136,10 @@ impl Transform for Translate {
 
     fn bbox(&self, bbox: Aabb) -> Aabb {
         bbox.translate(self.offset)
+    }
+
+    fn world_to_object_point(&self, point: Point3) -> Point3 {
+        point - self.offset
     }
 }
 
@@ -210,6 +224,15 @@ impl Transform for RotateY {
             (self.cos_theta * dir.x) + (self.sin_theta * dir.z),
             dir.y,
             (-self.sin_theta * dir.x) + (self.cos_theta * dir.z),
+        )
+    }
+
+    fn world_to_object_point(&self, point: Point3) -> Point3 {
+        // Inverse of the forward rotation: transpose the matrix (negate sin_theta).
+        Point3::from(
+            (self.cos_theta * point.x) - (self.sin_theta * point.z),
+            point.y,
+            (self.sin_theta * point.x) + (self.cos_theta * point.z),
         )
     }
 }

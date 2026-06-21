@@ -3,6 +3,7 @@ pub mod perspective;
 pub use perspective::PerspectiveCamera;
 
 use crate::ray::Ray;
+use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::Color3;
 
 pub struct CameraSampler {
@@ -14,6 +15,26 @@ pub struct CameraSampler {
     pub lens: (f64, f64),
     /// Time for motion blur (0.0 to 1.0, where 0.0 is the start of the shutter and 1.0 is the end).
     pub time: f64,
+}
+
+impl CameraSampler {
+    pub fn new(pixel: (u32, u32), jitter: (f64, f64), lens: (f64, f64), time: f64) -> Self {
+        Self {
+            pixel,
+            jitter,
+            lens,
+            time,
+        }
+    }
+
+    pub fn new_sampled<S: Sampler>(pixel: (u32, u32), dim_cursor: &mut DimCursor<S>) -> Self {
+        Self {
+            pixel,
+            jitter: (dim_cursor.next_sample(), dim_cursor.next_sample()),
+            lens: (dim_cursor.next_sample(), dim_cursor.next_sample()),
+            time: dim_cursor.next_sample(),
+        }
+    }
 }
 
 pub struct CameraRay {

@@ -1,3 +1,4 @@
+use crate::aabb::Aabb;
 use crate::vec3::{Point3, Vec3};
 
 #[derive(Debug, Clone, Copy)]
@@ -37,21 +38,48 @@ impl Ray {
         }
     }
 
-    /// Construct without direction validation — for non-intersection uses
-    /// (parametric curves, transform stubs) where zero direction is valid.
-    #[inline(always)]
-    pub fn new_raw(origin: Point3, direction: Vec3, time: f64) -> Self {
-        Self {
-            origin,
-            direction,
-            time,
-            inverse_direction: Vec3::from(1. / direction.x, 1. / direction.y, 1. / direction.z),
-        }
-    }
-
     pub fn at(&self, t: f64) -> Point3 {
         let origin: Vec3 = self.origin;
         let direction = self.direction;
         origin + direction * t
+    }
+}
+
+/// A linearly-interpolated point over time: at(t) = origin + velocity * t
+///
+/// Used for moving primitives (sphere center interpolation).
+/// Unlike Ray, this has no direction validation or inverse_direction garbage.
+/// When velocity is zero, the point is stationary (no motion).
+#[derive(Debug, Clone, Copy)]
+pub struct ParametricCurve {
+    /// Starting point of the curve (e.g., ray origin).
+    pub origin: Point3,
+    /// Velocity vector of the curve (e.g., ray direction). Can be zero for stationary curves.
+    pub velocity: Vec3,
+}
+
+impl ParametricCurve {
+    pub fn new(origin: Point3, velocity: Vec3) -> Self {
+        Self { origin, velocity }
+    }
+
+    /// Evaluate the curve at time t ∈ [0, 1]
+    pub fn at(&self, t: f64) -> Point3 {
+        self.origin + self.velocity * t
+    }
+
+    /// Compute the AABB swept by `bbox` moving along this curve from t=0 to t=1.
+    ///
+    /// For stationary curves (velocity = 0), returns the original bbox translated
+    /// to origin. For moving curves, merges the AABB at both endpoints.
+    pub fn sweep_aabb(&self, bbox: &Aabb) -> Aabb {
+        let box0 = bbox.translate(self.origin);
+        let box1 = bbox.translate(self.origin + self.velocity);
+
+        box0.merge(&box1)
+    }
+
+    pub fn is_moving(&self) -> bool {
+        self.velocity.length_squared() > 0.0
     }
 }
