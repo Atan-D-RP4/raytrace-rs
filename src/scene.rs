@@ -9,7 +9,7 @@ use crate::hittable::{Intersectable, Sampleable};
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
 use crate::sampler::Sampler;
-use crate::sphere::Sphere;
+use crate::shape::{moving_sphere, sphere};
 use crate::texture::mapping::TextureMapping3D;
 use crate::texture::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Texture};
 use crate::transform::{RotateY, TransformObject, Translate};
@@ -107,10 +107,10 @@ impl<S: Sampler + 'static> Scene<S> {
         trace!(?center, radius, "add sphere");
         if material.is_emissive() {
             self.light_objects
-                .push(Arc::new(Sphere::new(&center, radius, material.clone())));
+                .push(Arc::new(sphere(center, radius, material.clone())));
         }
         self.objects
-            .push(Arc::new(Sphere::new(&center, radius, material)));
+            .push(Arc::new(sphere(center, radius, material)));
     }
 
     #[allow(non_snake_case)]
@@ -133,16 +133,16 @@ impl<S: Sampler + 'static> Scene<S> {
     ) {
         trace!(?center_start, ?center_end, radius, "add moving sphere");
         if material.is_emissive() {
-            self.light_objects.push(Arc::new(Sphere::new_moving(
-                &center_start,
-                &center_end,
+            self.light_objects.push(Arc::new(moving_sphere(
+                center_start,
+                center_end,
                 radius,
                 material.clone(),
             )));
         }
-        self.objects.push(Arc::new(Sphere::new_moving(
-            &center_start,
-            &center_end,
+        self.objects.push(Arc::new(moving_sphere(
+            center_start,
+            center_end,
             radius,
             material,
         )));
@@ -228,8 +228,8 @@ impl<S: Sampler + 'static> Scene<S> {
         );
 
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
-            Sphere::new(
-                &Point3::from(360., 150., 145.),
+            sphere(
+                Point3::from(360., 150., 145.),
                 70.,
                 Material::dielectric(1.5),
             ),
@@ -238,7 +238,7 @@ impl<S: Sampler + 'static> Scene<S> {
         )));
 
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
-            Sphere::new(&Point3::from(0., 0., 0.), 5000., Material::dielectric(1.5)),
+            sphere(Point3::from(0., 0., 0.), 5000., Material::dielectric(1.5)),
             0.0001,
             // Color3::from(1., 1., 1.), // Pure white
             Color3::from(0.7, 0.1, 0.1), // A faint red tint to visualize the volume better
@@ -270,8 +270,8 @@ impl<S: Sampler + 'static> Scene<S> {
         let white = Material::lambertian_color(0.73, 0.73, 0.73);
         let mut boxes2: Vec<Arc<dyn Intersectable>> = Vec::with_capacity(1000);
         for _ in 0..1000 {
-            boxes2.push(Arc::new(Sphere::new(
-                &Point3::random_range(0., 165.),
+            boxes2.push(Arc::new(sphere(
+                Point3::random_range(0., 165.),
                 10.,
                 white.clone(),
             )));
@@ -732,8 +732,8 @@ impl<S: Sampler + 'static> Scene<S> {
             1.,
             Material::metal_with_ior(Color3::from(0.7, 0.6, 0.5), 0.0, 2.5),
         );
-        scene.add_light(Arc::new(Sphere::new(
-            &Point3::from(0., 4.5, 0.),
+        scene.add_light(Arc::new(sphere(
+            Point3::from(0., 4.5, 0.),
             1.5,
             Material::light_textured(Arc::new(ImageTexture::new("./earthmap.png").unwrap())),
         )));

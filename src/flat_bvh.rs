@@ -361,7 +361,7 @@ mod tests {
     use super::*;
     use crate::hittable::{Bounded, Intersectable};
     use crate::material::Material;
-    use crate::sphere::Sphere;
+    use crate::shape::sphere;
     use crate::vec3::Vec3;
 
     /// Number of bytes per flat BVH node. Chosen to fit one cache line (64B).
@@ -385,8 +385,8 @@ mod tests {
 
     #[test]
     fn flat_bvh_single_sphere() {
-        let sphere: Arc<dyn Intersectable> = Arc::new(Sphere::new(
-            &Vec3::from(0., 0., -2.),
+        let sphere: Arc<dyn Intersectable> = Arc::new(sphere(
+            Vec3::from(0., 0., -2.),
             0.5,
             Material::lambertian_color(0.8, 0.2, 0.2),
         ));
@@ -416,13 +416,13 @@ mod tests {
 
     #[test]
     fn flat_bvh_two_spheres() {
-        let s1: Arc<dyn Intersectable> = Arc::new(Sphere::new(
-            &Vec3::from(-1., 0., -2.),
+        let s1: Arc<dyn Intersectable> = Arc::new(sphere(
+            Vec3::from(-1., 0., -2.),
             0.5,
             Material::lambertian_color(1.0, 0.0, 0.0),
         ));
-        let s2: Arc<dyn Intersectable> = Arc::new(Sphere::new(
-            &Vec3::from(1., 0., -2.),
+        let s2: Arc<dyn Intersectable> = Arc::new(sphere(
+            Vec3::from(1., 0., -2.),
             0.5,
             Material::lambertian_color(0.0, 1.0, 0.0),
         ));

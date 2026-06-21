@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
@@ -71,17 +72,33 @@ pub trait Region2D: Send + Sync {
     fn sample(&self, u: f64, v: f64) -> (f64, f64);
 }
 
+/// A planar patch with an associated 2D region test, UV mapping, area, and sampling.
+///
+/// The caller chooses how to store the material: owned (`Material`),
+/// reference-counted (`Arc<Material>`), or borrowed (`&Material`).
+/// Default is `Arc<Material>`.
 #[derive(Clone)]
-pub struct PlanarPatch<R: Region2D> {
+pub struct PlanarPatch<R: Region2D, M: Borrow<Material> = Arc<Material>> {
+    /// The corner point of the planar patch, corresponding to (a, b) = (0, 0).
     corner: Point3,
+    /// The side vector corresponding to the (a, b) = (1, 0) direction.
     side_a: Vec3,
+    /// The side vector corresponding to the (a, b) = (0, 1) direction.
     side_b: Vec3,
+
+    /// Precomputed reciprocal of the squared length of the normal vector (side_a × side_b).
     w: Vec3,
-    material: Arc<Material>,
+    /// The material of the planar patch.
+    material: M,
+    /// The axis-aligned bounding box of the planar patch, used for acceleration structures.
     bbox: Aabb,
+    /// The unit normal vector of the planar patch, precomputed for efficiency.
     normal: Vec3,
+    /// The plane constant `d` in the plane equation `normal . P = d`, precomputed for efficiency.
     d: f64,
+    /// The area of the planar patch in world space, precomputed for efficiency.
     area: f64,
+    /// The 2D region that defines the shape of the patch (e.g. quad, ellipse, triangle).
     region: R,
 }
 
@@ -93,14 +110,8 @@ pub(crate) struct PlanarHit {
     b: f64,
 }
 
-impl<R: Region2D> PlanarPatch<R> {
-    pub(crate) fn new(
-        corner: Point3,
-        side_a: Vec3,
-        side_b: Vec3,
-        material: Material,
-        region: R,
-    ) -> Self {
+impl<R: Region2D, M: Borrow<Material>> PlanarPatch<R, M> {
+    pub(crate) fn new(corner: Point3, side_a: Vec3, side_b: Vec3, material: M, region: R) -> Self {
         let bbox_diagonal1 = Aabb::from_points(&corner, &(corner + side_a + side_b));
         let bbox_diagonal2 = Aabb::from_points(&(corner + side_a), &(corner + side_b));
 
@@ -112,7 +123,7 @@ impl<R: Region2D> PlanarPatch<R> {
             side_a,
             side_b,
             w: n / n.dot(&n),
-            material: Arc::new(material),
+            material,
             bbox: bbox_diagonal1.merge(&bbox_diagonal2),
             normal,
             d: normal.dot(&corner),
@@ -147,11 +158,11 @@ impl<R: Region2D> PlanarPatch<R> {
     }
 
     pub(crate) fn material(&self) -> &Material {
-        self.material.as_ref()
+        self.material.borrow()
     }
 }
 
-impl<R: Region2D> Intersectable for PlanarPatch<R> {
+impl<R: Region2D, M: Borrow<Material> + Send + Sync> Intersectable for PlanarPatch<R, M> {
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         let hit = self.hit_plane(ray, ray_t)?;
 
@@ -172,13 +183,15 @@ impl<R: Region2D> Intersectable for PlanarPatch<R> {
     }
 }
 
-impl<R: Region2D> Bounded for PlanarPatch<R> {
+impl<R: Region2D, M: Borrow<Material> + Send + Sync> Bounded for PlanarPatch<R, M> {
     fn bounding_box(&self) -> Aabb {
         self.bbox
     }
 }
 
-impl<R: Region2D, S: Sampler> Sampleable<S> for PlanarPatch<R> {
+impl<R: Region2D, M: Borrow<Material> + Send + Sync, S: Sampler> Sampleable<S>
+    for PlanarPatch<R, M>
+{
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         // Back-face culling - if the ray is coming from behind the patch, it cannot hit the
         // emitting side, so return 0 PDF.
@@ -229,54 +242,67 @@ impl<R: Region2D, S: Sampler> Sampleable<S> for PlanarPatch<R> {
 }
 
 /// A full parallelogram region — the most common shape (walls, light quads, etc.).
-pub type Quad = PlanarPatch<QuadRegion>;
+pub type Quad<M> = PlanarPatch<QuadRegion, M>;
 /// A unit-disk ellipse region.
-pub type Ellipse = PlanarPatch<EllipseRegion>;
+pub type Ellipse<M> = PlanarPatch<EllipseRegion, M>;
 /// A triangular region.
-pub type Tri = PlanarPatch<TriRegion>;
+pub type Tri<M> = PlanarPatch<TriRegion, M>;
 /// An annular (ring) region with configurable inner radius.
-pub type Annulus = PlanarPatch<AnnulusRegion>;
+pub type Annulus<M> = PlanarPatch<AnnulusRegion, M>;
 /// A rounded rectangle region with configurable corner radius.
-pub type RoundedRect = PlanarPatch<RoundedRectRegion>;
+pub type RoundedRect<M> = PlanarPatch<RoundedRectRegion, M>;
 /// A superellipse region `|a|ⁿ + |b|ⁿ ≤ 1` with configurable exponent.
-pub type Superellipse = PlanarPatch<SuperellipseRegion>;
+pub type Superellipse<M> = PlanarPatch<SuperellipseRegion, M>;
 /// An arbitrary polygon (N-gon) region.
-pub type Polygon = PlanarPatch<PolygonRegion>;
+pub type Polygon<M> = PlanarPatch<PolygonRegion, M>;
 /// A region defined by an arbitrary `(a, b) -> bool` predicate.
-pub type FunctionPatch = PlanarPatch<FunctionRegion>;
-
-// Free constructor functions (type aliases don't carry inherent methods).
+pub type FunctionPatch<M> = PlanarPatch<FunctionRegion, M>;
 
 #[allow(non_snake_case)]
-pub fn quad(Q: Point3, u: Vec3, v: Vec3, material: Material) -> Quad {
+pub fn quad<M: Borrow<Material>>(
+    Q: Point3,
+    u: Vec3,
+    v: Vec3,
+    material: M,
+) -> PlanarPatch<QuadRegion, M> {
     PlanarPatch::new(Q, u, v, material, QuadRegion)
 }
 
-pub fn ellipse(center: Point3, side_a: Vec3, side_b: Vec3, material: Material) -> Ellipse {
+pub fn ellipse<M: Borrow<Material>>(
+    center: Point3,
+    side_a: Vec3,
+    side_b: Vec3,
+    material: M,
+) -> PlanarPatch<EllipseRegion, M> {
     PlanarPatch::new(center, side_a, side_b, material, EllipseRegion)
 }
 
-pub fn tri(corner: Point3, side_a: Vec3, side_b: Vec3, material: Material) -> Tri {
+pub fn tri<M: Borrow<Material>>(
+    corner: Point3,
+    side_a: Vec3,
+    side_b: Vec3,
+    material: M,
+) -> PlanarPatch<TriRegion, M> {
     PlanarPatch::new(corner, side_a, side_b, material, TriRegion)
 }
 
-pub fn annulus(
+pub fn annulus<M: Borrow<Material>>(
     center: Point3,
     side_a: Vec3,
     side_b: Vec3,
     inner: f64,
-    material: Material,
-) -> Annulus {
+    material: M,
+) -> PlanarPatch<AnnulusRegion, M> {
     PlanarPatch::new(center, side_a, side_b, material, AnnulusRegion { inner })
 }
 
-pub fn rounded_rect(
+pub fn rounded_rect<M: Borrow<Material>>(
     corner: Point3,
     side_a: Vec3,
     side_b: Vec3,
     radius: f64,
-    material: Material,
-) -> RoundedRect {
+    material: M,
+) -> PlanarPatch<RoundedRectRegion, M> {
     PlanarPatch::new(
         corner,
         side_a,
@@ -286,23 +312,23 @@ pub fn rounded_rect(
     )
 }
 
-pub fn superellipse(
+pub fn superellipse<M: Borrow<Material>>(
     corner: Point3,
     side_a: Vec3,
     side_b: Vec3,
     n: f64,
-    material: Material,
-) -> Superellipse {
+    material: M,
+) -> PlanarPatch<SuperellipseRegion, M> {
     PlanarPatch::new(corner, side_a, side_b, material, SuperellipseRegion::new(n))
 }
 
-pub fn polygon(
+pub fn polygon<M: Borrow<Material>>(
     corner: Point3,
     side_a: Vec3,
     side_b: Vec3,
     vertices: Vec<(f64, f64)>,
-    material: Material,
-) -> Polygon {
+    material: M,
+) -> PlanarPatch<PolygonRegion, M> {
     PlanarPatch::new(
         corner,
         side_a,
@@ -312,12 +338,12 @@ pub fn polygon(
     )
 }
 
-pub fn function_patch(
+pub fn function_patch<M: Borrow<Material>>(
     corner: Point3,
     side_a: Vec3,
     side_b: Vec3,
     region: FunctionRegion,
-    material: Material,
-) -> FunctionPatch {
+    material: M,
+) -> PlanarPatch<FunctionRegion, M> {
     PlanarPatch::new(corner, side_a, side_b, material, region)
 }

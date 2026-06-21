@@ -16,7 +16,7 @@ pub mod ray;
 pub mod renderer;
 pub mod sampler;
 pub mod scene;
-pub mod sphere;
+pub mod shape;
 pub mod texture;
 pub mod transform;
 pub mod vec3;
