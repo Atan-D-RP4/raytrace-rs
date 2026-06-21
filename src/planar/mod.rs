@@ -32,6 +32,45 @@ pub use rounded_rect::RoundedRectRegion;
 pub use superellipse::SuperellipseRegion;
 pub use tri::TriRegion;
 
+/// Defines the 2D region test, UV mapping, area, and sampling for a planar shape.
+///
+/// Methods take `&self` so that per-instance data (e.g. annulus inner radius)
+/// can be stored in the region type.
+pub trait Region2D: Send + Sync {
+    /// Returns true if the given `(a, b)` coordinates are inside the region.
+    ///
+    /// The `(a, b)` coordinates are in the parametric space defined by the planar patch's `side_a`
+    /// and `side_b` vectors.
+    /// The specific interpretation of `(a, b)` depends on the shape defined by the region.
+    fn contains(&self, a: f64, b: f64) -> bool;
+
+    /// Maps `(a, b)` coordinates to UV space for texture mapping.
+    ///
+    /// The default implementation maps `(a, b)` directly to `(u, v)`.
+    /// The specific mapping can be overridden by region types to achieve different texture
+    /// coordinate layouts.
+    fn uv(&self, a: f64, b: f64) -> (f64, f64) {
+        (a, b)
+    }
+
+    /// Area of the region in (a,b) parametric space.
+    ///
+    /// Used to compute the world-space area (= |side_a × side_b| × area)
+    /// for correct PDF computation in light importance sampling.
+    fn area(&self) -> f64;
+
+    /// Area of the bounding-box that `sample()` draws from.
+    ///
+    /// For bbox-based samplers (superellipse, rounded rect, etc.) this is larger
+    /// than `area()` — the PDF uses this to stay unbiased.  Default: `area()`.
+    fn bounding_box_area(&self) -> f64 {
+        self.area()
+    }
+
+    /// Samples `(a, b)` within the region from `(u, v)` ∈ [0,1]².
+    fn sample(&self, u: f64, v: f64) -> (f64, f64);
+}
+
 #[derive(Clone)]
 pub struct PlanarPatch<R: Region2D> {
     corner: Point3,
@@ -43,7 +82,7 @@ pub struct PlanarPatch<R: Region2D> {
     normal: Vec3,
     d: f64,
     area: f64,
-    pub region: R,
+    region: R,
 }
 
 #[derive(Clone, Copy)]
@@ -112,34 +151,6 @@ impl<R: Region2D> PlanarPatch<R> {
     }
 }
 
-/// Defines the 2D region test, UV mapping, area, and sampling for a planar shape.
-///
-/// Methods take `&self` so that per-instance data (e.g. annulus inner radius)
-/// can be stored in the region type.
-pub trait Region2D: Send + Sync {
-    fn contains(&self, a: f64, b: f64) -> bool;
-
-    fn uv(&self, a: f64, b: f64) -> (f64, f64) {
-        (a, b)
-    }
-
-    /// Area of the region in (a,b) parametric space.
-    ///
-    /// Used to compute the world-space area (= |side_a × side_b| × area)
-    /// for correct PDF computation in light importance sampling.
-    fn area(&self) -> f64;
-
-    /// Area of the bounding-box that `sample()` draws from.
-    ///
-    /// For bbox-based samplers (superellipse, rounded rect, etc.) this is larger
-    /// than `area()` — the PDF uses this to stay unbiased.  Default: `area()`.
-    fn bounding_box_area(&self) -> f64 {
-        self.area()
-    }
-
-    /// Samples `(a, b)` within the region from `(u, v)` ∈ [0,1]².
-    fn sample(&self, u: f64, v: f64) -> (f64, f64);
-}
 impl<R: Region2D> Intersectable for PlanarPatch<R> {
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         let hit = self.hit_plane(ray, ray_t)?;

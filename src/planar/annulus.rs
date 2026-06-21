@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use super::Region2D;
+use crate::planar::Region2D;
 
 /// Region type for an annular (ring) region with configurable inner radius.
 #[derive(Clone)]
