@@ -4,9 +4,33 @@ use crate::hittable::Sampleable;
 use crate::material::ggx_d;
 use crate::onb::Onb;
 use crate::sampler::{DimCursor, Sampler};
-use crate::vec3::cosine_hemisphere_direction;
-use crate::vec3::reflect;
-use crate::vec3::{Point3, Vec3};
+use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
+
+/// Cosine-weighted hemisphere direction via concentric disk mapping.
+///
+/// Takes two uniform random values `(u, v)` in `[0, 1)` and returns a direction
+/// on the unit hemisphere with PDF `cos(θ) / π`. The concentric disk mapping
+/// avoids the rejection sampling of `sampler_cosine_direction`.
+///
+/// Reference: Shirley & Chiu, "A Low Distortion Map Between Disk and Square", 1997.
+#[inline(always)]
+pub fn cosine_hemisphere_direction(u: f64, v: f64) -> Vec3 {
+    // Concentric disk mapping: map (u,v) in [0,1)^2 to (x,y) on the unit disk.
+    let (x, y) = concentric_disk(u, v);
+    Vec3::from(x, y, (1.0 - x * x - y * y).max(0.0).sqrt())
+}
+
+/// Uniform hemisphere direction via spherical coordinates.
+///
+/// Takes two uniform random values `(u, v)` in `[0, 1)` and
+/// returns a direction on the unit hemisphere with PDF `1 / (2π)`.
+#[inline(always)]
+pub fn uniform_hemisphere_direction(u: f64, v: f64) -> Vec3 {
+    let phi = 2.0 * PI * u;
+    let z = v;
+    let r = (1.0 - z * z).max(0.0).sqrt();
+    Vec3::from(r * phi.cos(), r * phi.sin(), z)
+}
 
 pub trait PDF<S: Sampler> {
     /// Evaluates the PDF value for a given direction.
@@ -18,8 +42,8 @@ pub trait PDF<S: Sampler> {
 
 pub struct UniformSpherePDF;
 
-#[allow(clippy::new_without_default)]
 impl UniformSpherePDF {
+    #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self
     }
@@ -38,6 +62,50 @@ impl<S: Sampler> PDF<S> for UniformSpherePDF {
         let z = 1.0 - 2.0 * v;
         let r = (1.0 - z * z).max(0.0).sqrt();
         Vec3::from(r * phi.cos(), r * phi.sin(), z)
+    }
+}
+
+/// Uniformly distributed directions over the hemisphere.
+///
+/// `value(d) = 1 / 2π` for directions in the hemisphere above `normal`, zero otherwise.
+/// `generate()` produces uniform directions via ONB around the surface normal.
+///
+/// Geometric sampling primitive — no weighting, no texture, just
+/// the hemisphere.  Used in mixture PDFs to give scattered rays a
+/// controlled probability of escaping to background illumination.
+pub struct UniformHemispherePDF {
+    /// The normal vector defining the hemisphere for uniform sampling.
+    pub uvw: Onb,
+}
+
+impl UniformHemispherePDF {
+    pub fn new(normal: Vec3) -> Self {
+        Self {
+            uvw: Onb::build_from_normal(normal),
+        }
+    }
+}
+
+impl<S: Sampler> PDF<S> for UniformHemispherePDF {
+    fn value(&self, direction: Vec3) -> f64 {
+        let cos_theta = direction.unit_vector().dot(&self.uvw.w);
+        if cos_theta > 0.0 {
+            1.0 / (2.0 * PI)
+        } else {
+            0.0
+        }
+    }
+
+    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        let u = dim_offset.next_sample();
+        let v = dim_offset.next_sample();
+
+        let phi = 2.0 * PI * u;
+        let z = v;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        let local_dir = Vec3::from(r * phi.cos(), r * phi.sin(), z);
+
+        self.uvw.local_to_world(local_dir)
     }
 }
 

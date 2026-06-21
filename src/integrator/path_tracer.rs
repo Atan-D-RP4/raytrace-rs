@@ -10,7 +10,9 @@ use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::{BsdfSample, PdfKind};
-use crate::pdf::{CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformSpherePDF};
+use crate::pdf::{
+    CosinePDF, GgxSamplePDF, HittablePDF, MixturePDF, PDF, UniformHemispherePDF, UniformSpherePDF,
+};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::Color3;
@@ -102,6 +104,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             }
                         }
                         BsdfSample::NonDelta { pdf_kind } => {
+                            // Build surface-PDF matching the material's sampling distribution.
                             let surface_pdf: &dyn PDF<_> = match pdf_kind {
                                 PdfKind::Cosine { normal } => &CosinePDF::new(normal),
                                 PdfKind::Ggx { wo, normal, alpha } => {
@@ -111,9 +114,58 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                                 PdfKind::Delta => unreachable!(),
                             };
 
+                            // Mixture: env + light + surface PDFs. Multiple sampling strategies
+                            // per bounce reduces noise for difficult paths.
+                            let env_pdf = UniformHemispherePDF::new(si.shading_normal());
                             let light_pdf = HittablePDF::new(lights, si.point());
-                            let pdfs = &[&light_pdf, surface_pdf, surface_pdf];
-                            let sampling_pdf = MixturePDF::new(pdfs);
+
+                            // Dynamic mixture size — adapt env slot count to background
+                            // luminance so dark scenes don't waste samples on uniform
+                            // hemisphere directions.
+                            let bg_lum = 0.2126 * self.background.x
+                                + 0.7152 * self.background.y
+                                + 0.0722 * self.background.z;
+
+                            // Mixture components are duplicated to give them more weight in the sampling distribution.
+                            let pdfs_8: &[&dyn PDF<S>; 8] = &[
+                                &env_pdf,
+                                &light_pdf,
+                                surface_pdf,
+                                surface_pdf,
+                                surface_pdf,
+                                surface_pdf,
+                                &env_pdf,
+                                &env_pdf,
+                            ];
+                            let pdfs_6: &[&dyn PDF<S>; 6] = &[
+                                &env_pdf,
+                                &light_pdf,
+                                surface_pdf,
+                                surface_pdf,
+                                surface_pdf,
+                                &env_pdf,
+                            ];
+                            let pdfs_5: &[&dyn PDF<S>; 5] =
+                                &[&env_pdf, &light_pdf, surface_pdf, surface_pdf, surface_pdf];
+                            let pdfs_3: &[&dyn PDF<S>; 3] =
+                                &[&light_pdf as &dyn PDF<S>, surface_pdf, surface_pdf];
+
+                            let mix_6 = MixturePDF::new(pdfs_6);
+                            let mix_5 = MixturePDF::new(pdfs_5);
+                            let mix_3 = MixturePDF::new(pdfs_3);
+                            let mix_8 = MixturePDF::new(pdfs_8);
+
+                            // More env slots for bright backgrounds, fewer for dark — avoids
+                            // wasting samples on hemisphere directions that don't carry energy.
+                            let sampling_pdf: &dyn PDF<S> = if bg_lum > 0.3 {
+                                &mix_8
+                            } else if bg_lum > 0.1 {
+                                &mix_6
+                            } else if bg_lum > 0.01 {
+                                &mix_5
+                            } else {
+                                &mix_3
+                            };
 
                             // Track mixture consumption for fixed-dim stride padding.
                             let mix_start = sampler.offset();
@@ -142,13 +194,18 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     // QMC invariant: every completed bounce must consume exactly 11 dims.
                     debug_assert_eq!(sampler.offset() - bounce_start, 11);
                 } else {
+                    // Emissive materials return None — no scattering. Emission already added
+                    // to accumulated_color via emitted() above.
                     return accumulated_color;
                 }
             } else {
+                // Ray missed the world geometry — accumulate background and terminate.
                 return accumulated_color + accumulated_attenuation * self.background;
             }
         }
 
+        // Max bounce count reached — terminate the path. This can still contribute to the final
+        // image if the last bounce was a non-delta and the accumulated attenuation is non-zero.
         accumulated_color
     }
 }

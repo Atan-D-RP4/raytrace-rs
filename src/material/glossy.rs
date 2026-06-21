@@ -44,6 +44,10 @@ pub struct GlossyMaterial {
 impl Bsdf for GlossyMaterial {
     /// Importance-sample the GGX NDF: draw half-vector H, reflect `wo` about it.
     /// Returns `None` if the reflected direction is below the surface.
+    ///
+    /// When `roughness` is effectively zero (below 1e-4), the surface is a
+    /// perfect mirror — returns `BsdfSample::Delta` so the integrator skips
+    /// the mixture PDF and uses the reflected direction directly.
     fn sample(
         &self,
         wo: Vec3,
@@ -55,6 +59,25 @@ impl Bsdf for GlossyMaterial {
         _y: f64,
         _z: f64,
     ) -> Option<BsdfSample> {
+        // Near-mirror: delta path bypasses the mixture PDF entirely.
+        if self.roughness < 1e-4 {
+            let wi = reflect(&-wo, &si.shading_normal());
+            if wi.dot(&si.shading_normal()) <= 0.0 {
+                return None;
+            }
+            let cos_o = wo.dot(&si.shading_normal()).max(0.0);
+            let f = fresnel_schlick(cos_o, self.ior);
+            let albedo_ = self
+                .tex
+                .as_ref()
+                .map(|t| t.value(&si.texture_coords()))
+                .unwrap_or(self.albedo);
+            return Some(BsdfSample::Delta {
+                wi,
+                f_cos: albedo_ * f,
+            });
+        }
+
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         // Sample H from GGX NDF.
         let u1 = u;

@@ -334,24 +334,10 @@ pub fn random_cosine_direction2<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     Vec3::from(u, v, (1.0 - u.powi(2) - v.powi(2)).sqrt())
 }
 
-/// Cosine-weighted hemisphere direction via concentric disk mapping.
-///
-/// Takes two uniform random values `(u, v)` in `[0, 1)` and returns a direction
-/// on the unit hemisphere with PDF `cos(θ) / π`. The concentric disk mapping
-/// avoids the rejection sampling of `sampler_cosine_direction`.
-///
-/// Reference: Shirley & Chiu, "A Low Distortion Map Between Disk and Square", 1997.
-#[inline(always)]
-pub fn cosine_hemisphere_direction(u: f64, v: f64) -> Vec3 {
-    // Concentric disk mapping: map (u,v) in [0,1)^2 to (x,y) on the unit disk.
-    let (x, y) = concentric_disk(u, v);
-    Vec3::from(x, y, (1.0 - x * x - y * y).max(0.0).sqrt())
-}
-
 /// Shirley concentric disk mapping: maps `(u, v)` in `[0, 1)²` to a point on the
 /// unit disk. Zero rejection, minimal distortion.
 #[inline(always)]
-fn concentric_disk(u: f64, v: f64) -> (f64, f64) {
+pub fn concentric_disk(u: f64, v: f64) -> (f64, f64) {
     // Map to [-1, 1]²
     let sx = 2.0 * u - 1.0;
     let sy = 2.0 * v - 1.0;
