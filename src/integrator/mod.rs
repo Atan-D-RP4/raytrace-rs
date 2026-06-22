@@ -2,9 +2,12 @@ pub mod path_tracer;
 
 pub use path_tracer::PathTracingIntegrator;
 
+use std::sync::Arc;
+
 use crate::hittable::{Intersectable, Sampleable};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, Sampler};
+use crate::vec3::Color3;
 
 pub trait Integrator<S: Sampler>: Send + Sync {
     // Computes the radiance along a ray by tracing it through the scene, accounting for light
@@ -13,7 +16,7 @@ pub trait Integrator<S: Sampler>: Send + Sync {
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
-        lights: &dyn Sampleable<S>,
+        lights: &[Arc<dyn Sampleable>],
         sampler: &mut DimCursor<S>,
-    ) -> crate::vec3::Color3;
+    ) -> Color3;
 }

@@ -2,7 +2,6 @@ use crate::aabb::Aabb;
 use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 
 /// A geometric transform that can map rays, hit records, and bounds.
@@ -88,10 +87,10 @@ where
     }
 }
 
-impl<T, O, S: Sampler> Sampleable<S> for TransformObject<T, O>
+impl<T, O> Sampleable for TransformObject<T, O>
 where
     T: Transform,
-    O: Sampleable<S>,
+    O: Sampleable,
 {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         // Transform the ray into object space and delegate to the inner object.
@@ -103,11 +102,11 @@ where
             .pdf_value(transformed.origin, transformed.direction)
     }
 
-    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
         let to_obj_origin = self.transform.world_to_object_point(origin);
 
         // Sample a direction in object space.
-        let dir = self.object.random(to_obj_origin, dim_offset);
+        let dir = self.object.random_direction(to_obj_origin, u, v);
         // Transform direction back to world space using the inverse rotation.
         self.transform.object_to_world_direction(dir)
     }

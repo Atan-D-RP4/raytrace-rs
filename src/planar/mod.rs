@@ -10,7 +10,6 @@ use crate::hittable::Sampleable;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 
 mod annulus;
@@ -189,9 +188,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Bounded for PlanarPatch<R, 
     }
 }
 
-impl<R: Region2D, M: Borrow<Material> + Send + Sync, S: Sampler> Sampleable<S>
-    for PlanarPatch<R, M>
-{
+impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<R, M> {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         // Back-face culling - if the ray is coming from behind the patch, it cannot hit the
         // emitting side, so return 0 PDF.
@@ -231,10 +228,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync, S: Sampler> Sampleable<S>
         distance_squared / (cosine * world_area)
     }
 
-    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        let u = dim_offset.next_sample();
-        let v = dim_offset.next_sample();
-
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
         let (a, b) = self.region.sample(u, v);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
         random_point - origin

@@ -1,4 +1,5 @@
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 use crate::hittable::Sampleable;
 use crate::material::ggx_d;
@@ -136,24 +137,41 @@ impl<S: Sampler> PDF<S> for CosinePDF {
     }
 }
 
-pub struct HittablePDF<'a, S: Sampler> {
-    objects: &'a dyn Sampleable<S>,
+pub struct HittablePDF<'a> {
+    objects: &'a [Arc<dyn Sampleable>],
     origin: Point3,
 }
 
-impl<'a, S: Sampler> HittablePDF<'a, S> {
-    pub fn new(objects: &'a dyn Sampleable<S>, origin: Point3) -> Self {
+impl<'a> HittablePDF<'a> {
+    pub fn new(objects: &'a [Arc<dyn Sampleable>], origin: Point3) -> Self {
         HittablePDF { objects, origin }
     }
 }
 
-impl<'a, S: Sampler> PDF<S> for HittablePDF<'a, S> {
+impl<'a, S: Sampler> PDF<S> for HittablePDF<'a> {
     fn value(&self, direction: Vec3) -> f64 {
-        self.objects.pdf_value(self.origin, direction)
+        if self.objects.is_empty() {
+            return 0.0;
+        }
+        let inv_len = 1.0 / self.objects.len() as f64;
+        self.objects
+            .iter()
+            .map(|o| o.pdf_value(self.origin, direction) * inv_len)
+            .sum()
     }
 
     fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        self.objects.random(self.origin, dim_offset)
+        if self.objects.is_empty() {
+            return Vec3::ZERO;
+        }
+        // Selection: 1 QMC sample to pick a light
+        let u_select = dim_offset.next_sample();
+        let index =
+            (u_select * self.objects.len() as f64).min(self.objects.len() as f64 - 1e-15) as usize;
+        // Direction: 2 QMC samples for (u, v)
+        let u = dim_offset.next_sample();
+        let v = dim_offset.next_sample();
+        self.objects[index].random_direction(self.origin, u, v)
     }
 }
 

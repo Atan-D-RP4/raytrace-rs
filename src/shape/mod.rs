@@ -6,7 +6,6 @@ use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3};
 
 mod sphere;
@@ -123,16 +122,12 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Intersectable for ShapeObje
     }
 }
 
-impl<S: Sampler, Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable<S>
-    for ShapeObject<Sh, M>
-{
+impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<Sh, M> {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         self.shape.pdf_direction(origin, direction)
     }
 
-    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        let u = dim_offset.next_sample();
-        let v = dim_offset.next_sample();
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
         self.shape.sample_direction(origin, u, v)
     }
 }

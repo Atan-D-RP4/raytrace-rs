@@ -6,6 +6,8 @@
 /// TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
 /// The `li()` method is the natural split point: it takes a ray and returns radiance.
 ///
+use std::sync::Arc;
+
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
@@ -36,15 +38,15 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
-        lights: &dyn Sampleable<S>,
-        sampler: &mut DimCursor<S>,
+        lights: &[Arc<dyn Sampleable>],
+        dim_cursor: &mut DimCursor<S>,
     ) -> Color3 {
         let mut accumulated_attenuation = Color3::ONE;
         let mut accumulated_color = Color3::ZERO;
         let mut ray = *initial_ray;
 
         for bounce in 0..self.max_depth {
-            let bounce_start = sampler.checkpoint();
+            let bounce_start = dim_cursor.checkpoint();
             if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f64::INFINITY)) {
                 // Create a SurfaceInteraction from the material hit and the ray
                 let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
@@ -67,7 +69,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 }
 
                 // Sample a random number for Russian Roulette
-                let rr = sampler.next_sample();
+                let rr = dim_cursor.next_sample();
 
                 // Russian Roulette: survival probability proportional to current
                 // path throughput.  The 0.05 floor bounds variance from low-throughput paths.
@@ -83,12 +85,12 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 let wo = -ray.direction.unit_vector();
 
                 // Sample the material to get the next ray and attenuation
-                let u_mat = sampler.next_sample();
-                let v_mat = sampler.next_sample();
-                let w_mat = sampler.next_sample();
-                let x_mat = sampler.next_sample();
-                let y_mat = sampler.next_sample();
-                let z_mat = sampler.next_sample();
+                let u_mat = dim_cursor.next_sample();
+                let v_mat = dim_cursor.next_sample();
+                let w_mat = dim_cursor.next_sample();
+                let x_mat = dim_cursor.next_sample();
+                let y_mat = dim_cursor.next_sample();
+                let z_mat = dim_cursor.next_sample();
 
                 if let Some(sample) =
                     material.sample(wo, &si, u_mat, v_mat, w_mat, x_mat, y_mat, z_mat)
@@ -100,7 +102,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             // Pad to fixed 9-dim stride so subsequent bounces use consistent
                             // Sobol dimensions regardless of this bounce's path structure.
                             for _ in 0..4 {
-                                let _ = sampler.next_sample();
+                                let _ = dim_cursor.next_sample();
                             }
                         }
                         BsdfSample::NonDelta { pdf_kind } => {
@@ -170,12 +172,12 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             };
 
                             // Track mixture consumption for fixed-dim stride padding.
-                            let mix_start = sampler.offset();
+                            let mix_start = dim_cursor.offset();
 
                             // PlanarPatch::random() returns a non-unit vector (distance to light);
                             // BRDFs expect unit length so call .unit_vector().
-                            let direction = sampling_pdf.generate(sampler).unit_vector();
-                            let mix_consumed = sampler.offset() - mix_start;
+                            let direction = sampling_pdf.generate(dim_cursor).unit_vector();
+                            let mix_consumed = dim_cursor.offset() - mix_start;
 
                             let scattered_ray = Ray::new_with_time(si.point(), direction, ray.time);
                             let pdf_val = sampling_pdf.value(direction);
@@ -189,12 +191,12 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
 
                             // Pad mixture dims to exactly 4 (1 selection + 3 direction).
                             for _ in mix_consumed..4 {
-                                let _ = sampler.next_dim();
+                                let _ = dim_cursor.next_dim();
                             }
                         }
                     }
                     // QMC invariant: every completed bounce must consume exactly 11 dims.
-                    debug_assert_eq!(sampler.offset() - bounce_start, 11);
+                    debug_assert_eq!(dim_cursor.offset() - bounce_start, 11);
                 } else {
                     // Emissive materials return None — no scattering. Emission already added
                     // to accumulated_color via emitted() above.

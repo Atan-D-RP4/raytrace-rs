@@ -4,7 +4,6 @@ use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::Vec3;
 
 /// Represents a ray-object intersection hit, containing geometric information about the
@@ -207,7 +206,7 @@ impl<T: Bounded + ?Sized> Bounded for Arc<T> {
     }
 }
 
-pub trait Sampleable<S: Sampler>: Intersectable {
+pub trait Sampleable: Intersectable + Send + Sync {
     /// Returns the PDF value for sampling this hittable from a given origin and direction.
     /// Default returns 0.0 (no contribution to the PDF).
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
@@ -216,41 +215,19 @@ pub trait Sampleable<S: Sampler>: Intersectable {
     }
 
     /// Samples a random direction toward this hittable from a given origin.
-    /// Default returns (1, 0, 0) as a placeholder.
-    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        let _ = (origin, dim_offset);
-        Vec3::from(1., 0., 0.)
+    /// Takes `(u, v)` in `[0, 1)` for sampling. Default returns Vec3::ZERO.
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
+        let _ = (origin, u, v);
+        Vec3::ZERO
     }
 }
 
-impl<S: Sampler, T: Sampleable<S>> Sampleable<S> for Vec<T> {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        if self.is_empty() {
-            return 0.0;
-        }
-        let inv_len = 1.0 / self.len() as f64;
-        self.iter()
-            .map(|obj| obj.pdf_value(origin, direction) * inv_len)
-            .fold(0.0, |acc, val| acc + val)
-    }
-
-    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        if self.is_empty() {
-            return Vec3::ZERO;
-        }
-        let len = self.len();
-        let u = dim_offset.next_sample();
-        let index = (u * len as f64).min(len as f64 - 1e-15) as usize;
-        self[index].random(origin, dim_offset)
-    }
-}
-
-impl<S: Sampler, T: Sampleable<S> + ?Sized> Sampleable<S> for Arc<T> {
+impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
         (**self).pdf_value(origin, direction)
     }
 
-    fn random(&self, origin: Vec3, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        (**self).random(origin, dim_offset)
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
+        (**self).random_direction(origin, u, v)
     }
 }

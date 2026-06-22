@@ -15,7 +15,6 @@ use winit::{
 };
 
 use raytrace_rs::renderer::Renderer;
-use raytrace_rs::sampler::SobolQmcSampler;
 use raytrace_rs::scene::Scene;
 use raytrace_rs::{bvh::BvhNode, camera::PerspectiveCamera};
 use raytrace_rs::{camera::Camera, film::RgbFilm};
@@ -388,10 +387,7 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 }
 
 #[profiling::function]
-fn live_render(
-    scene: Scene<SobolQmcSampler>,
-    scene_name: &str,
-) -> Result<(), winit::error::EventLoopError> {
+fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::EventLoopError> {
     // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
     profiling::scope!("scene_build");
 
@@ -459,7 +455,6 @@ fn live_render(
             &mut film,
             (&world, &light_objects),
             Some(framebuffer.clone()),
-            SobolQmcSampler::for_pixel,
         );
 
         save_framebuffer(&framebuffer, &scene_name);
@@ -471,7 +466,7 @@ fn live_render(
 }
 
 #[profiling::function]
-fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
+fn headless_render(scene: Scene, scene_name: &str) {
     // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
     profiling::scope!("scene_build");
 
@@ -524,13 +519,7 @@ fn headless_render(scene: Scene<SobolQmcSampler>, scene_name: &str) {
 
     let start = std::time::Instant::now();
     profiling::scope!("render_cpu");
-    renderer.render(
-        &camera,
-        &mut film,
-        (&world, &light_objects),
-        None,
-        SobolQmcSampler::for_pixel,
-    );
+    renderer.render(&camera, &mut film, (&world, &light_objects), None);
     info!(
         elapsed = format!("{:.4}", start.elapsed().as_secs_f64()),
         width, height, "render complete"

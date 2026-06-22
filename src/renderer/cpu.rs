@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rayon::prelude::*;
 use tracing::info;
 
@@ -6,10 +8,10 @@ use crate::film::{Film, FilmTile, SharedFramebuffer};
 use crate::hittable::{Intersectable, Sampleable};
 use crate::integrator::Integrator;
 use crate::renderer::Renderer;
-use crate::sampler::{DimCursor, Sampler};
+use crate::sampler::{DimCursor, SobolQmcSampler};
 use crate::vec3::Color3;
 
-pub struct CpuRenderer<S: Sampler, I: Integrator<S>> {
+pub struct CpuRenderer<I: Integrator<SobolQmcSampler>> {
     /// Number of samples to take per pixel. Higher values yield better quality but take longer.
     samples_per_pixel: u32,
     /// Absolute variance floor. Pixels with variance below this threshold are
@@ -25,10 +27,9 @@ pub struct CpuRenderer<S: Sampler, I: Integrator<S>> {
     min_samples_before_adapt: u32,
 
     integrator: I,
-    sampler: std::marker::PhantomData<S>,
 }
 
-impl<S: Sampler, I: Integrator<S>> CpuRenderer<S, I> {
+impl<I: Integrator<SobolQmcSampler>> CpuRenderer<I> {
     pub fn new(samples_per_pixel: u32, integrator: I) -> Self {
         Self {
             samples_per_pixel,
@@ -36,7 +37,6 @@ impl<S: Sampler, I: Integrator<S>> CpuRenderer<S, I> {
             threshold_rel: 0.02,
             min_samples_before_adapt: 64,
             integrator,
-            sampler: std::marker::PhantomData,
         }
     }
 
@@ -53,12 +53,10 @@ impl<S: Sampler, I: Integrator<S>> CpuRenderer<S, I> {
     }
 }
 
-impl<S, W, L, I, C, F> Renderer<S, W, L, C, F> for CpuRenderer<S, I>
+impl<W, I, C, F> Renderer<W, C, F> for CpuRenderer<I>
 where
-    S: Sampler,
     W: Intersectable,
-    L: Sampleable<S>,
-    I: Integrator<S>,
+    I: Integrator<SobolQmcSampler>,
     C: Camera,
     F: Film,
 {
@@ -66,9 +64,8 @@ where
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &L),
+        scene: (&W, &[Arc<dyn Sampleable>]),
         framebuffer: Option<SharedFramebuffer>,
-        make_sampler: impl Fn(i32, i32) -> S + Sync,
     ) {
         let (width, height) = camera.image_resolution();
         let (world, lights) = scene;
@@ -173,8 +170,8 @@ where
                             continue; // Skip pixels that have already converged
                         }
 
-                        // Sample the pixel using the sampler and camera
-                        let sampler = make_sampler(x as i32, y as i32);
+                        // Create sampler internally — SobolQmcSampler per pixel
+                        let sampler = SobolQmcSampler::for_pixel(x as i32, y as i32);
                         let mut dim_cursor = DimCursor::new(0, sampler);
                         dim_cursor.sample_idx = sample_idx;
 

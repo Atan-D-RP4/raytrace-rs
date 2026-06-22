@@ -2,16 +2,15 @@ pub mod cpu;
 
 pub use cpu::CpuRenderer;
 
+use std::sync::Arc;
+
 use crate::camera::Camera;
 use crate::film::{Film, SharedFramebuffer};
 use crate::hittable::{Intersectable, Sampleable};
-use crate::sampler::Sampler;
 
-pub trait Renderer<S, W, L, C, F>: Send + Sync
+pub trait Renderer<W, C, F>: Send + Sync
 where
-    S: Sampler,
     W: Intersectable,
-    L: Sampleable<S>,
     C: Camera,
     F: Film,
 {
@@ -24,9 +23,8 @@ where
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &L),
+        scene: (&W, &[Arc<dyn Sampleable>]),
         framebuffer: Option<SharedFramebuffer>,
-        make_sampler: impl Fn(i32, i32) -> S + Sync,
     );
 
     fn resize(&mut self, _width: u32, _height: u32) {}

@@ -8,7 +8,6 @@ use crate::const_medium::ConstantMedium;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
-use crate::sampler::Sampler;
 use crate::shape::{moving_sphere, sphere};
 use crate::texture::mapping::TextureMapping3D;
 use crate::texture::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Texture};
@@ -22,15 +21,15 @@ fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
     Arc::new(mapped_tex)
 }
 
-pub struct Scene<S: Sampler> {
+pub struct Scene {
     config: CameraConfig,
     objects: Vec<Arc<dyn Intersectable>>,
     /// Geometry-only copies of emitting objects, used by the integrator
     /// for light importance sampling (HittablePDF).
-    light_objects: Vec<Arc<dyn Sampleable<S>>>,
+    light_objects: Vec<Arc<dyn Sampleable>>,
 }
 
-impl<S: Sampler + 'static> Scene<S> {
+impl Scene {
     pub fn new() -> Self {
         Self {
             config: CameraConfig::new(),
@@ -52,7 +51,7 @@ impl<S: Sampler + 'static> Scene<S> {
     ///
     /// `light_objects` are geometry-only copies of emitting primitives,
     /// used by the integrator for importance sampling (HittablePDF).
-    pub fn into_objects(self) -> (Vec<Arc<dyn Intersectable>>, Vec<Arc<dyn Sampleable<S>>>) {
+    pub fn into_objects(self) -> (Vec<Arc<dyn Intersectable>>, Vec<Arc<dyn Sampleable>>) {
         (self.objects, self.light_objects)
     }
 
@@ -102,7 +101,7 @@ impl<S: Sampler + 'static> Scene<S> {
     }
 }
 
-impl<S: Sampler + 'static> Scene<S> {
+impl Scene {
     pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
         trace!(?center, radius, "add sphere");
         if material.is_emissive() {
@@ -166,14 +165,9 @@ impl<S: Sampler + 'static> Scene<S> {
     pub fn add_object(&mut self, object: Arc<dyn Intersectable>) {
         self.objects.push(object);
     }
-
-    pub fn add_light(&mut self, light: Arc<dyn Sampleable<S>>) {
-        self.objects.push(light.clone());
-        self.light_objects.push(light);
-    }
 }
 
-impl<S: Sampler + 'static> Scene<S> {
+impl Scene {
     pub fn complex_scene() -> Self {
         profiling::scope!("complex_scene_build");
         let mut scene = Self::new();
@@ -747,11 +741,11 @@ impl<S: Sampler + 'static> Scene<S> {
             1.,
             Material::metal_with_ior(Color3::from(0.7, 0.6, 0.5), 0.0, 2.5),
         );
-        scene.add_light(Arc::new(sphere(
+        scene.add_sphere(
             Point3::from(0., 4.5, 0.),
             1.5,
             Material::light_textured(Arc::new(ImageTexture::new("./earthmap.png").unwrap())),
-        )));
+        );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
         scene.config.image_width = 800;
@@ -857,7 +851,7 @@ impl<S: Sampler + 'static> Scene<S> {
     }
 }
 
-impl<S: Sampler + 'static> Default for Scene<S> {
+impl Default for Scene {
     fn default() -> Self {
         Self::new()
     }
