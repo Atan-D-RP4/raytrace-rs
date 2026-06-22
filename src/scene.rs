@@ -106,11 +106,15 @@ impl<S: Sampler + 'static> Scene<S> {
     pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
         trace!(?center, radius, "add sphere");
         if material.is_emissive() {
+            let material = Arc::new(material);
             self.light_objects
                 .push(Arc::new(sphere(center, radius, material.clone())));
+            self.objects
+                .push(Arc::new(sphere(center, radius, material)));
+        } else {
+            self.objects
+                .push(Arc::new(sphere(center, radius, material)));
         }
-        self.objects
-            .push(Arc::new(sphere(center, radius, material)));
     }
 
     #[allow(non_snake_case)]
@@ -118,10 +122,13 @@ impl<S: Sampler + 'static> Scene<S> {
         trace!(?Q, ?u, ?v, "add quad");
         // Auto-detect emitters: add geometry-only copy for light importance sampling.
         if material.is_emissive() {
+            let material = Arc::new(material);
             self.light_objects
                 .push(Arc::new(quad(Q, u, v, material.clone())));
+            self.objects.push(Arc::new(quad(Q, u, v, material)));
+        } else {
+            self.objects.push(Arc::new(quad(Q, u, v, material)));
         }
-        self.objects.push(Arc::new(quad(Q, u, v, material)));
     }
 
     pub fn add_sphere_moving(
@@ -133,19 +140,27 @@ impl<S: Sampler + 'static> Scene<S> {
     ) {
         trace!(?center_start, ?center_end, radius, "add moving sphere");
         if material.is_emissive() {
+            let material = Arc::new(material);
             self.light_objects.push(Arc::new(moving_sphere(
                 center_start,
                 center_end,
                 radius,
                 material.clone(),
             )));
+            self.objects.push(Arc::new(moving_sphere(
+                center_start,
+                center_end,
+                radius,
+                material,
+            )));
+        } else {
+            self.objects.push(Arc::new(moving_sphere(
+                center_start,
+                center_end,
+                radius,
+                material,
+            )));
         }
-        self.objects.push(Arc::new(moving_sphere(
-            center_start,
-            center_end,
-            radius,
-            material,
-        )));
     }
 
     pub fn add_object(&mut self, object: Arc<dyn Intersectable>) {

@@ -50,8 +50,8 @@ fn linear_to_gamma(linear_component: f64) -> f64 {
 }
 
 pub trait Film: Send + Sync {
-    /// Add a sample to the film at pixel (x, y) with the given color and weight.
-    fn add_sample(&mut self, x: u32, y: u32, color: Color3, weight: f64);
+    /// Add a sample to the film at pixel (x, y). Samples are equal-weight.
+    fn add_sample(&mut self, x: u32, y: u32, color: Color3);
 
     /// Read the current image data as a packed RGB8 vector.
     fn read_image(&self) -> Vec<u8>;

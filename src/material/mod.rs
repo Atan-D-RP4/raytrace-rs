@@ -173,6 +173,13 @@ pub trait Bsdf: Send + Sync {
         false
     }
 
+    /// Returns `true` if this BSDF is a delta distribution (perfect specular
+    /// that scatters in a single determined direction). The integrator skips
+    /// MIS weighting for delta materials.
+    fn is_delta(&self) -> bool {
+        false
+    }
+
     /// Clone this material into a boxed trait object.
     ///
     /// Required for `Material` to be `Clone` when it contains
@@ -284,11 +291,10 @@ impl Material {
             Material::Custom(inner) => inner.sample(wo, si, u, v, w, x, y, z),
             Material::Mix { a, b, weight } => {
                 let chosen: &dyn Bsdf = if u < *weight { b.as_ref() } else { a.as_ref() };
-                // Note: `v` is recycled as the child's 5th dim since Mix consumed
-                // `u` for selection. No current material reads the 5th dim, so
-                // this is safe. When a material needs 5 independent dims, Mix
-                // will need a 6th sampler draw.
-                chosen.sample(wo, si, v, w, x, y, z, v)
+                // Dims: `u` consumed for selection, pass v-w for child directional
+                // sampling, x-y-z as padding. `z` is recycled for child's z — no
+                // material reads z, so the dependency is semantically harmless.
+                chosen.sample(wo, si, v, w, x, y, z, z)
             }
             Material::Coated {
                 substrate,
@@ -320,9 +326,7 @@ impl Material {
                 } else {
                     // Transmit through coating; importance-sample substrate with
                     // transmission probability (1-f) weight.
-                    // Same dim recycling as Mix: `v` is reused as the substrate's
-                    // 5th dim since `u` was consumed by the Fresnel branch decision.
-                    let mut bsdf = substrate.sample(wo, si, v, w, x, y, z, v)?;
+                    let mut bsdf = substrate.sample(wo, si, v, w, x, y, z, z)?;
                     match &mut bsdf {
                         BsdfSample::Delta { f_cos, .. } => {
                             *f_cos /= 1.0 - f;
@@ -418,6 +422,24 @@ impl Material {
             _ => false,
         }
     }
+
+    /// Returns `true` if this material is a pure delta distribution.
+    ///
+    /// Delta materials (perfect speculars) scatter in a single determined
+    /// direction — MIS weighting must be skipped. Recursively checks
+    /// composition variants: `Mix` is delta only if both children are
+    /// delta; `Coated` is delta only if both substrate and coating are delta.
+    pub fn is_delta(&self) -> bool {
+        match self {
+            Material::Dielectric(_) => true,
+            Material::Metal(inner) => inner.fuzz < 1e-4,
+            Material::Glossy(inner) => inner.roughness < 1e-4,
+            Material::Mix { a, b, .. } => a.is_delta() && b.is_delta(),
+            Material::Coated { substrate, coating } => substrate.is_delta() && coating.is_delta(),
+            Material::Custom(inner) => inner.is_delta(),
+            _ => false,
+        }
+    }
 }
 
 impl Bsdf for Material {
@@ -449,6 +471,10 @@ impl Bsdf for Material {
 
     fn is_emissive(&self) -> bool {
         Material::is_emissive(self)
+    }
+
+    fn is_delta(&self) -> bool {
+        Material::is_delta(self)
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {

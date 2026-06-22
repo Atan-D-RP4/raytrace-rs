@@ -23,7 +23,7 @@ impl CameraSampler {
             pixel,
             jitter,
             lens,
-            time,
+            time: time.clamp(0.0, 1.0),
         }
     }
 

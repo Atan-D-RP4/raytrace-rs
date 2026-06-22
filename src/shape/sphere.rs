@@ -94,13 +94,13 @@ impl Shape3D for SphereShape {
         let outward_normal = (point - current_center) / self.radius;
         let (u, v) = Self::get_sphere_uv(&outward_normal);
 
-        Some(Hit {
-            time: root,
+        Some(Hit::new(
+            root,
             point,
-            mapping_point: outward_normal,
-            geometric_normal: outward_normal,
-            uv: Some((u, v)),
-        })
+            outward_normal,
+            outward_normal,
+            Some((u, v)),
+        ))
     }
 
     fn bounding_box(&self) -> Aabb {

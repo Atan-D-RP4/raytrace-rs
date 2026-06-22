@@ -76,6 +76,10 @@ impl Bsdf for DielectricMaterial {
         0.0
     }
 
+    fn is_delta(&self) -> bool {
+        true
+    }
+
     fn clone_box(&self) -> Box<dyn Bsdf> {
         Box::new(self.clone())
     }

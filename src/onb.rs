@@ -11,6 +11,10 @@ pub struct Onb {
 
 impl Onb {
     pub fn build_from_normal(normal: Vec3) -> Self {
+        debug_assert!(
+            !normal.near_zero(),
+            "ONB from zero normal produces NaN basis"
+        );
         let normal = normal.unit_vector();
         let a = if normal.x.abs() < 0.9 {
             Vec3::from(1.0, 0.0, 0.0)

@@ -26,7 +26,8 @@ pub struct Hit {
     /// so this decouples world-space translation from the texture coordinate frame.
     pub mapping_point: Vec3,
     /// Outward geometric normal before face-orientation or shading adjustments.
-    pub geometric_normal: Vec3,
+    /// Must be unit length — set_face_normal depends on it.
+    geometric_normal: Vec3,
     /// Optional UV coordinates for the hit point. `None` for Volume or other primitives that may not have UVs.
     pub uv: Option<(f64, f64)>,
 }
@@ -39,6 +40,10 @@ impl Hit {
         geometric_normal: Vec3,
         uv: Option<(f64, f64)>,
     ) -> Self {
+        debug_assert!(
+            (geometric_normal.length_squared() - 1.0).abs() < 1e-6,
+            "geometric_normal must be unit length"
+        );
         Self {
             time,
             point,
@@ -46,6 +51,20 @@ impl Hit {
             geometric_normal,
             uv,
         }
+    }
+
+    /// Sets the geometric normal (must be unit length).
+    pub(crate) fn set_geometric_normal(&mut self, n: Vec3) {
+        debug_assert!(
+            (n.length_squared() - 1.0).abs() < 1e-6,
+            "geometric_normal must be unit length"
+        );
+        self.geometric_normal = n;
+    }
+
+    /// Returns the geometric normal.
+    pub fn geometric_normal(&self) -> Vec3 {
+        self.geometric_normal
     }
 }
 
@@ -206,8 +225,12 @@ pub trait Sampleable<S: Sampler>: Intersectable {
 
 impl<S: Sampler, T: Sampleable<S>> Sampleable<S> for Vec<T> {
     fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+        if self.is_empty() {
+            return 0.0;
+        }
+        let inv_len = 1.0 / self.len() as f64;
         self.iter()
-            .map(|obj| obj.pdf_value(origin, direction) * (1.0 / self.len() as f64))
+            .map(|obj| obj.pdf_value(origin, direction) * inv_len)
             .fold(0.0, |acc, val| acc + val)
     }
 

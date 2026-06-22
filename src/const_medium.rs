@@ -137,14 +137,13 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         let new_time = t_min + hit_dist / ray_length;
         let point = ray.at(new_time);
 
+        // Volume boundaries have no intrinsic normal; set to the ray direction
+        // (pointing inward) so set_face_normal produces front_face=true and the
+        // shading normal points toward the ray origin, giving isotropic phase
+        // functions the correct orientation.
+        let geometric_normal = -ray.direction.unit_vector();
         Some(MaterialHit {
-            hit: Hit {
-                time: new_time,
-                point,
-                mapping_point: point,
-                geometric_normal: Vec3::from(0., 0., 0.),
-                uv: None,
-            },
+            hit: Hit::new(new_time, point, point, geometric_normal, None),
             material: &self.phase_fn,
         })
     }

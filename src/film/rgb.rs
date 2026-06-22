@@ -73,23 +73,22 @@ impl RgbFilm {
 }
 
 impl Film for RgbFilm {
-    fn add_sample(&mut self, x: u32, y: u32, color: Color3, weight: f64) {
+    fn add_sample(&mut self, x: u32, y: u32, color: Color3) {
         let index = (y * self.width + x) as usize;
-        let c = color * weight;
         let n_prev = self.sample_counts[index];
 
         if n_prev == 0 {
-            self.pixels[index] = c;
+            self.pixels[index] = color;
             self.sample_counts[index] = 1;
             // m_2 stays 0 — variance undefined for a single sample
         } else {
             let n_prev_f = n_prev as f64;
             let mean_prev = self.pixels[index] / n_prev_f;
-            let delta = c - mean_prev;
+            let delta = color - mean_prev;
             let n_new_f = n_prev_f + 1.0;
 
-            self.pixels[index] += c;
-            // Welford's online M2 update (algebraically equivalent form):
+            self.pixels[index] += color;
+            // Welford's online M2 update:
             //   M2 += delta² * n_prev / (n_prev + 1)
             self.m_2[index] += delta * delta * (n_prev_f / n_new_f);
             self.sample_counts[index] = n_prev + 1;
@@ -138,9 +137,7 @@ impl Film for RgbFilm {
             }
             let tx = x_min + (tile_idx as u32 % tile_width);
             let ty = y_min + (tile_idx as u32 / tile_width);
-            // Tile pixels are already premultiplied by camera ray weight,
-            // so pass weight=1.0 to delegate the full Welford update to add_sample.
-            self.add_sample(tx, ty, color, 1.0);
+            self.add_sample(tx, ty, color);
         }
     }
 

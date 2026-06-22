@@ -149,6 +149,10 @@ impl Bsdf for GlossyMaterial {
         ggx_d(cos_h_n, alpha) * cos_h_n / (4.0 * cos_h_o)
     }
 
+    fn is_delta(&self) -> bool {
+        self.roughness < 1e-4
+    }
+
     fn clone_box(&self) -> Box<dyn Bsdf> {
         Box::new(self.clone())
     }

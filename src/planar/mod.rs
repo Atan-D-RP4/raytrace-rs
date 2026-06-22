@@ -171,13 +171,13 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Intersectable for PlanarPat
         }
 
         Some(MaterialHit {
-            hit: Hit {
-                time: hit.time,
-                point: hit.point,
-                mapping_point: hit.point,
-                geometric_normal: self.normal,
-                uv: Some(self.region.uv(hit.a, hit.b)),
-            },
+            hit: Hit::new(
+                hit.time,
+                hit.point,
+                hit.point,
+                self.normal,
+                Some(self.region.uv(hit.a, hit.b)),
+            ),
             material: self.material(),
         })
     }

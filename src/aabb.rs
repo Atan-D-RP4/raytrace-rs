@@ -59,6 +59,7 @@ impl Aabb {
             y: Interval::from_intervals(&self.y, &other.y),
             z: Interval::from_intervals(&self.z, &other.z),
         }
+        .pad_to_minimums()
     }
 
     /// Returns the interval for the selected axis (0=x, 1=y, 2=z).

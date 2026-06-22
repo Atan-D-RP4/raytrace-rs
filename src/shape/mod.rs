@@ -38,8 +38,9 @@ pub trait Shape3D: Send + Sync {
 
     /// Sample a direction toward this shape from `origin`.
     ///
-    /// Default uses uniform area sampling via [`sample()`]. Override for
-    /// shape-specific solid-angle sampling (less noise for small shapes).
+    /// Default fallback: uniform area sampling via [`sample()`]. Non-uniform
+    /// direction PDF for most shapes — override with solid-angle-uniform
+    /// sampling (less noise for small shapes like spheres).
     fn sample_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
         let (point, _normal) = self.sample(u, v);
         (point - origin).unit_vector()
@@ -47,16 +48,17 @@ pub trait Shape3D: Send + Sync {
 
     /// PDF of sampling `direction` from `origin` toward this shape.
     ///
-    /// Default uses area-to-solid-angle conversion:
+    /// Default fallback: area-to-solid-angle conversion via [`intersect_shape`]:
     ///   p(ω) = distance² / (area · |cos θ|)
-    /// Override for shape-specific solid-angle PDF (e.g. sphere uniform-cone).
+    /// Only accurate for uniform area sampling — override for solid-angle-uniform
+    /// PDF (e.g. sphere uniform-cone).
     fn pdf_direction(&self, origin: Vec3, direction: Vec3) -> f64 {
         let ray = Ray::new_with_time(origin, direction, 0.0);
         let ray_t = Interval::from(0.001, f64::INFINITY);
         match self.intersect_shape(&ray, ray_t) {
             Some(hit) => {
                 let dist2 = (hit.point - origin).length_squared();
-                let cos_theta = hit.geometric_normal.dot(&(-direction)).abs();
+                let cos_theta = hit.geometric_normal().dot(&(-direction)).abs();
                 if cos_theta > 0.0 {
                     dist2 / (self.area() * cos_theta)
                 } else {

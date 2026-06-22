@@ -119,9 +119,11 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             let env_pdf = UniformHemispherePDF::new(si.shading_normal());
                             let light_pdf = HittablePDF::new(lights, si.point());
 
-                            // Dynamic mixture size — adapt env slot count to background
-                            // luminance so dark scenes don't waste samples on uniform
-                            // hemisphere directions.
+                            // Mixture size adapts to background luminance — dark scenes
+                            // skip env slots to avoid wasting samples on hemisphere
+                            // directions that carry no energy. Scene-level heuristic
+                            // (bright sky illuminates dark interiors just fine).
+                            // Thresholds: 0.3=bright sky, 0.1=overcast, 0.01=near-black.
                             let bg_lum = 0.2126 * self.background.x
                                 + 0.7152 * self.background.y
                                 + 0.0722 * self.background.z;
