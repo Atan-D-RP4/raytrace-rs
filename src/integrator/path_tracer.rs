@@ -120,7 +120,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             // Mixture: env + light + surface PDFs. Multiple sampling strategies
                             // per bounce reduces noise for difficult paths.
                             let env_pdf = UniformHemispherePDF::new(si.shading_normal());
-                            let light_pdf = HittablePDF::new(lights, si.point());
+                            let light_pdf = HittablePDF::new(lights, si.point(), ray.time);
 
                             // Mixture size adapts to background luminance — dark scenes
                             // skip env slots to avoid wasting samples on hemisphere

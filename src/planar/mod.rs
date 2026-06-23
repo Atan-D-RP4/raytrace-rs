@@ -189,7 +189,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Bounded for PlanarPatch<R, 
 }
 
 impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<R, M> {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+    fn pdf_value(&self, origin: Vec3, direction: Vec3, _time: f64) -> f64 {
         // Back-face culling - if the ray is coming from behind the patch, it cannot hit the
         // emitting side, so return 0 PDF.
         // This avoids the mismatch where `.abs()` would return a positive PDF but `emitted()`
@@ -223,12 +223,12 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         // The normal is constant for a planar patch; .abs() gives the Jacobian
         // factor for the area-to-solid-angle measure conversion.
         let cosine = self.normal.dot(&(-direction.unit_vector())).abs();
-        let world_area = self.area * self.region.bounding_box_area();
+        let world_area = self.area * self.region.area();
 
         distance_squared / (cosine * world_area)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64, _time: f64) -> Vec3 {
         let (a, b) = self.region.sample(u, v);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
         random_point - origin

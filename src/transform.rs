@@ -92,21 +92,21 @@ where
     T: Transform,
     O: Sampleable,
 {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
+    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
         // Transform the ray into object space and delegate to the inner object.
         // For rigid transforms (rotation + translation), the Jacobian of the
         // area mapping is 1, so the solid-angle PDF is preserved.
-        let ray = Ray::new_with_time(origin, direction, 0.0);
+        let ray = Ray::new_with_time(origin, direction, time);
         let transformed = self.transform.ray(&ray);
         self.object
-            .pdf_value(transformed.origin, transformed.direction)
+            .pdf_value(transformed.origin, transformed.direction, time)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
         let to_obj_origin = self.transform.world_to_object_point(origin);
 
         // Sample a direction in object space.
-        let dir = self.object.random_direction(to_obj_origin, u, v);
+        let dir = self.object.random_direction(to_obj_origin, u, v, time);
         // Transform direction back to world space using the inverse rotation.
         self.transform.object_to_world_direction(dir)
     }

@@ -209,25 +209,25 @@ impl<T: Bounded + ?Sized> Bounded for Arc<T> {
 pub trait Sampleable: Intersectable + Send + Sync {
     /// Returns the PDF value for sampling this hittable from a given origin and direction.
     /// Default returns 0.0 (no contribution to the PDF).
-    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        let _ = (origin, direction);
+    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
+        let _ = (origin, direction, time);
         0.0
     }
 
     /// Samples a random direction toward this hittable from a given origin.
     /// Takes `(u, v)` in `[0, 1)` for sampling. Default returns Vec3::ZERO.
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
-        let _ = (origin, u, v);
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
+        let _ = (origin, u, v, time);
         Vec3::ZERO
     }
 }
 
 impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        (**self).pdf_value(origin, direction)
+    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
+        (**self).pdf_value(origin, direction, time)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
-        (**self).random_direction(origin, u, v)
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
+        (**self).random_direction(origin, u, v, time)
     }
 }

@@ -36,8 +36,17 @@ impl Region2D for RoundedRectRegion {
     }
 
     fn sample(&self, u: f64, v: f64) -> (f64, f64) {
-        let a = u * 2.0 - 1.0;
-        let b = v * 2.0 - 1.0;
-        (a, b)
+        let mut u = u;
+        let mut v = v;
+        for _ in 0..32 {
+            let a = u * 2.0 - 1.0;
+            let b = v * 2.0 - 1.0;
+            if self.contains(a, b) {
+                return (a, b);
+            }
+            u = (u + 0.618033988749895).fract();
+            v = (v + 0.618033988749895).fract();
+        }
+        (0.0, 0.0)
     }
 }

@@ -188,8 +188,7 @@ where
                             );
                             let sample = radiance * cam_ray.weight;
                             // Guard against NaN/Inf poisoning the accumulation buffer.
-                            if sample.x.is_finite() && sample.y.is_finite() && sample.z.is_finite()
-                            {
+                            if sample.is_finite() {
                                 tile.add_sample(x, y, sample);
                             }
                         }

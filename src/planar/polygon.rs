@@ -85,8 +85,18 @@ impl Region2D for PolygonRegion {
 
     fn sample(&self, u: f64, v: f64) -> (f64, f64) {
         let (a_min, a_max, b_min, b_max) = self.bbox;
-        let a = u * (a_max - a_min) + a_min;
-        let b = v * (b_max - b_min) + b_min;
-        (a, b)
+        let mut u = u;
+        let mut v = v;
+        for _ in 0..32 {
+            let a = u * (a_max - a_min) + a_min;
+            let b = v * (b_max - b_min) + b_min;
+            if self.contains(a, b) {
+                return (a, b);
+            }
+            u = (u + 0.618033988749895).fract();
+            v = (v + 0.618033988749895).fract();
+        }
+        // Fallback: centroid of bounding box
+        ((a_min + a_max) * 0.5, (b_min + b_max) * 0.5)
     }
 }

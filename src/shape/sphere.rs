@@ -113,10 +113,10 @@ impl Shape3D for SphereShape {
         4.0 * PI * self.radius * self.radius
     }
 
-    fn sample(&self, u: f64, v: f64) -> (Point3, Vec3) {
+    fn sample(&self, u: f64, v: f64, time: f64) -> (Point3, Vec3) {
         // Uniform area sampling on the sphere surface at t=0 center.
         // Standard z = 1 - 2v, θ = 2πu parameterization.
-        let center = self.center.at(0.0);
+        let center = self.center.at(time);
         let theta = 2.0 * PI * u;
         let z = 1.0 - 2.0 * v;
         let r = (1.0 - z * z).sqrt();
@@ -124,20 +124,20 @@ impl Shape3D for SphereShape {
         (center + normal * self.radius, normal)
     }
 
-    fn sample_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
+    fn sample_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
         // Sphere-specific solid-angle-uniform sampling via cone projection.
         // Less noisy for small spheres than the default area-based sampling.
-        let center = self.center.at(0.0);
+        let center = self.center.at(time);
         let direction_to_center = center - origin;
         let distance_squared = direction_to_center.length_squared();
         let uvw = Onb::build_from_normal(direction_to_center);
         uvw.local_to_world(self.random_to_sphere(distance_squared, u, v))
     }
 
-    fn pdf_direction(&self, origin: Vec3, direction: Vec3) -> f64 {
+    fn pdf_direction(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
         // Sphere-specific: uniform solid-angle PDF = 1 / Ω where
         // Ω = 2π(1 - cos θ_max) is the solid angle subtended by the sphere.
-        let current_center = self.center.at(0.0);
+        let current_center = self.center.at(time);
         let oc = current_center - origin;
         let a = direction.length_squared();
         let h = direction.dot(&oc);

@@ -140,11 +140,16 @@ impl<S: Sampler> PDF<S> for CosinePDF {
 pub struct HittablePDF<'a> {
     objects: &'a [Arc<dyn Sampleable>],
     origin: Point3,
+    time: f64,
 }
 
 impl<'a> HittablePDF<'a> {
-    pub fn new(objects: &'a [Arc<dyn Sampleable>], origin: Point3) -> Self {
-        HittablePDF { objects, origin }
+    pub fn new(objects: &'a [Arc<dyn Sampleable>], origin: Point3, time: f64) -> Self {
+        HittablePDF {
+            objects,
+            origin,
+            time,
+        }
     }
 }
 
@@ -156,7 +161,7 @@ impl<'a, S: Sampler> PDF<S> for HittablePDF<'a> {
         let inv_len = 1.0 / self.objects.len() as f64;
         self.objects
             .iter()
-            .map(|o| o.pdf_value(self.origin, direction) * inv_len)
+            .map(|o| o.pdf_value(self.origin, direction, self.time) * inv_len)
             .sum()
     }
 
@@ -171,7 +176,7 @@ impl<'a, S: Sampler> PDF<S> for HittablePDF<'a> {
         // Direction: 2 QMC samples for (u, v)
         let u = dim_offset.next_sample();
         let v = dim_offset.next_sample();
-        self.objects[index].random_direction(self.origin, u, v)
+        self.objects[index].random_direction(self.origin, u, v, self.time)
     }
 }
 
@@ -209,11 +214,16 @@ impl<'a, S: Sampler, const N: usize> PDF<S> for MixturePDF<'a, S, N> {
         for (pdf, &weight) in self.pdfs.iter().zip(&self.weights) {
             cumulative += weight;
             if u < cumulative {
-                return pdf.generate(dim_offset);
+                let wi = pdf.generate(dim_offset);
+                if wi.is_finite() {
+                    return wi;
+                }
+                // Degenerate PDF returned NaN/inf — fall through to next.
             }
         }
 
-        self.pdfs[N - 1].generate(dim_offset)
+        // Fallback: no PDF matched (rounding) or all were degenerate.
+        self.pdfs.last().unwrap().generate(dim_offset)
     }
 }
 

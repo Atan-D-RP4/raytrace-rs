@@ -33,15 +33,15 @@ pub trait Shape3D: Send + Sync {
     /// Sample a point on the surface, returning `(point, unit_normal)`.
     ///
     /// `u` and `v` are uniformly distributed in `[0, 1)`.
-    fn sample(&self, u: f64, v: f64) -> (Point3, Vec3);
+    fn sample(&self, u: f64, v: f64, time: f64) -> (Point3, Vec3);
 
     /// Sample a direction toward this shape from `origin`.
     ///
     /// Default fallback: uniform area sampling via [`sample()`]. Non-uniform
     /// direction PDF for most shapes — override with solid-angle-uniform
     /// sampling (less noise for small shapes like spheres).
-    fn sample_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
-        let (point, _normal) = self.sample(u, v);
+    fn sample_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
+        let (point, _normal) = self.sample(u, v, time);
         (point - origin).unit_vector()
     }
 
@@ -51,8 +51,8 @@ pub trait Shape3D: Send + Sync {
     ///   p(ω) = distance² / (area · |cos θ|)
     /// Only accurate for uniform area sampling — override for solid-angle-uniform
     /// PDF (e.g. sphere uniform-cone).
-    fn pdf_direction(&self, origin: Vec3, direction: Vec3) -> f64 {
-        let ray = Ray::new_with_time(origin, direction, 0.0);
+    fn pdf_direction(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
+        let ray = Ray::new_with_time(origin, direction, time);
         let ray_t = Interval::from(0.001, f64::INFINITY);
         match self.intersect_shape(&ray, ray_t) {
             Some(hit) => {
@@ -123,11 +123,11 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Intersectable for ShapeObje
 }
 
 impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<Sh, M> {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3) -> f64 {
-        self.shape.pdf_direction(origin, direction)
+    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
+        self.shape.pdf_direction(origin, direction, time)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64) -> Vec3 {
-        self.shape.sample_direction(origin, u, v)
+    fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
+        self.shape.sample_direction(origin, u, v, time)
     }
 }
