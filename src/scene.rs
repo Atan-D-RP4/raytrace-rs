@@ -672,59 +672,78 @@ impl Scene {
         for a in -21..21 {
             for b in -21..21 {
                 let world_seed = rand::random::<u8>();
-                let center = Point3::from(
-                    a as f64 + 0.9 * rand::random::<f64>(),
+                let mut center = Point3::from(
+                    a as f64 + 1.4 * rand::random::<f64>(),
                     0.2,
-                    b as f64 + 0.9 * rand::random::<f64>(),
+                    b as f64 + 1.4 * rand::random::<f64>(),
                 );
 
-                if (center - Point3::from(4., 0.2, 0.)).length() > 0.9 {
+                if (center - Point3::from(4., 0.2, 0.)).length() > 1.4 {
                     let rand_albedo = || Color3::random() * Color3::random();
-                    let material = match world_seed % 7 {
-                        0 => Material::Lambertian(LambertianMaterial {
-                            albedo: rand_albedo(),
-                            tex: None,
-                        }),
-                        1 => Material::metal_with_ior(
-                            Color3::random_range(0.5, 1.0),
-                            rand::random::<f64>() * 0.5,
-                            2.5,
-                        ),
-                        2 => Material::dielectric(1.5),
-                        3 => Material::Isotropic(IsotropicMaterial {
-                            albedo: Color3::random(),
-                            tex: None,
-                        }),
-                        4 => Material::glossy(Color3::random(), rand::random::<f64>(), 1.5),
-                        5 => Material::coated(
+                    let (material, radius) = match world_seed % 7 {
+                        0 => (
                             Material::Lambertian(LambertianMaterial {
                                 albedo: rand_albedo(),
                                 tex: None,
                             }),
-                            Material::metal(
-                                Color3::random_range(0.5, 1.0),
-                                rand::random::<f64>() * 0.5,
-                            ),
+                            0.15,
                         ),
-                        _ => Material::Lambertian(LambertianMaterial {
-                            albedo: rand_albedo(),
-                            tex: None,
-                        })
-                        .mix(
-                            Material::metal(
+                        1 => (
+                            Material::metal_with_ior(
                                 Color3::random_range(0.5, 1.0),
                                 rand::random::<f64>() * 0.5,
+                                2.5,
                             ),
-                            rand::random::<f64>(),
+                            0.175,
+                        ),
+                        2 => (Material::dielectric(1.5), 0.2),
+                        3 => (
+                            Material::Isotropic(IsotropicMaterial {
+                                albedo: Color3::random(),
+                                tex: None,
+                            }),
+                            0.225,
+                        ),
+                        4 => (
+                            Material::glossy(Color3::random(), rand::random::<f64>(), 1.5),
+                            0.25,
+                        ),
+                        5 => (
+                            Material::coated(
+                                Material::Lambertian(LambertianMaterial {
+                                    albedo: rand_albedo(),
+                                    tex: None,
+                                }),
+                                Material::metal(
+                                    Color3::random_range(0.5, 1.0),
+                                    rand::random::<f64>() * 0.5,
+                                ),
+                            ),
+                            0.275,
+                        ),
+                        _ => (
+                            Material::Lambertian(LambertianMaterial {
+                                albedo: rand_albedo(),
+                                tex: None,
+                            })
+                            .mix(
+                                Material::metal(
+                                    Color3::random_range(0.5, 1.0),
+                                    rand::random::<f64>() * 0.5,
+                                ),
+                                rand::random::<f64>(),
+                            ),
+                            0.3,
                         ),
                     };
+                    center.y = radius;
 
                     if world_seed.is_multiple_of(2) {
                         let target_center =
                             center + Vec3::from(0., rand::rng().random_range(-0.5..0.5), 0.);
-                        scene.add_sphere_moving(center, target_center, 0.2, material);
+                        scene.add_sphere_moving(center, target_center, radius, material);
                     } else {
-                        scene.add_sphere(center, 0.2, material);
+                        scene.add_sphere(center, radius, material);
                     }
                 }
             }
@@ -734,7 +753,8 @@ impl Scene {
         scene.add_sphere(
             Point3::from(-4., 1., 0.),
             1.,
-            Material::lambertian_color(0.4, 0.2, 0.1),
+            Material::lambertian_color(0.4, 0.2, 0.1)
+                .mix(Material::light(Color3::from(0.4, 0.2, 0.1)), 0.5),
         );
         scene.add_sphere(
             Point3::from(4., 1., 0.),
@@ -742,16 +762,24 @@ impl Scene {
             Material::metal_with_ior(Color3::from(0.7, 0.6, 0.5), 0.0, 2.5),
         );
         scene.add_sphere(
-            Point3::from(0., 4.5, 0.),
+            Point3::from(-2., 4., 2.),
             1.5,
             Material::light_textured(Arc::new(ImageTexture::new("./earthmap.png").unwrap())),
         );
+        scene.add_sphere(
+            Point3::from(2., 4., -2.),
+            1.5,
+            Material::light_textured(Arc::new(
+                MappedTexture::new(Arc::new(NoiseTexture::new()))
+                    .with_mapping3d(TextureMapping3D::point_scale_uniform(1. / 4.)),
+            )),
+        );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
-        scene.config.image_width = 800;
+        scene.config.image_width = 1280;
         scene.config.samples_per_pixel = 50;
         scene.config.max_depth = 50;
-        scene.config.vfov = 40.0;
+        scene.config.vfov = 30.0;
         scene.config.look_from = Point3::from(13., 2., 6.);
         scene.config.look_at = Point3::from(0., 1., 0.);
         scene.config.vup = Vec3::from(0., 1., 0.);
@@ -797,51 +825,97 @@ impl Scene {
     pub fn composition_demo() -> Self {
         let mut scene = Self::new();
 
-        // Ground plane (Lambertian).
+        // Ground plane (Lambertian), spans full z-range of the scene.
         let ground = Material::lambertian_color(0.5, 0.5, 0.5);
         scene.add_quad(
             Point3::from(-5., 0., 0.),
             Vec3::from(10., 0., 0.),
-            Vec3::from(0., 0., 10.),
+            Vec3::from(0., 0., 12.),
             ground,
         );
 
-        // Sphere 1: plain glossy (roughness 0.2 — tight highlight).
-        let glossy = Material::glossy(Color3::from(0.9, 0.9, 0.9), 0.2, 1.5);
-        scene.add_sphere(Point3::from(-2.5, 1.0, 4.0), 1.0, glossy);
+        // Three rows of three spheres, evenly spaced. All spheres have radius 1.0,
+        // so center-to-center distance is 2.05 (0.05 gap avoids precision overlap).
+        const SPHERE_GAP: f64 = 2.05;
+        const ROW_Z: [f64; 3] = [3.0, 7.0, 11.0];
+        const COL_X: [f64; 3] = [-SPHERE_GAP, 0.0, SPHERE_GAP];
 
-        // Sphere 2: rough glossy (roughness 0.7 — broad highlight).
-        let rough_glossy = Material::glossy(Color3::from(0.7, 0.3, 0.3), 0.7, 1.5);
-        scene.add_sphere(Point3::from(0.0, 1.0, 4.0), 1.0, rough_glossy);
+        // Row 1 (z=3, front): glossy, rough glossy, mixed Lambertian+metal.
+        //   Demonstrates specular highlights at different roughnesses and material blending.
+        scene.add_sphere(
+            Point3::from(COL_X[0], 1.0, ROW_Z[0]),
+            1.0,
+            Material::glossy(Color3::from(0.9, 0.9, 0.9), 0.2, 1.5),
+        );
+        scene.add_sphere(
+            Point3::from(COL_X[1], 1.0, ROW_Z[0]),
+            1.0,
+            Material::glossy(Color3::from(0.7, 0.3, 0.3), 0.7, 1.5),
+        );
+        scene.add_sphere(
+            Point3::from(COL_X[2], 1.0, ROW_Z[0]),
+            1.0,
+            Material::lambertian_color(0.8, 0.2, 0.2)
+                .mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0), 0.5),
+        );
 
-        // Sphere 3: 50/50 mix of red Lambertian and silver metal.
-        let mixed = Material::lambertian_color(0.8, 0.2, 0.2)
-            .mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0), 0.5);
-        scene.add_sphere(Point3::from(2.5, 1.0, 4.0), 1.0, mixed);
+        // Row 2 (z=7, middle): clear-coated green, coated glossy, clear-coated blue.
+        //   Dielectric shell over diffuse/glossy — secondary specular highlight from the coat.
+        scene.add_sphere(
+            Point3::from(COL_X[0], 1.0, ROW_Z[1]),
+            1.0,
+            Material::lambertian_color(0.2, 0.7, 0.2).coated(Material::dielectric(1.5)),
+        );
+        scene.add_sphere(
+            Point3::from(COL_X[1], 1.0, ROW_Z[1]),
+            1.0,
+            Material::glossy(Color3::from(0.8, 0.2, 0.8), 0.3, 1.5)
+                .coated(Material::dielectric(1.5)),
+        );
+        scene.add_sphere(
+            Point3::from(COL_X[2], 1.0, ROW_Z[1]),
+            1.0,
+            Material::lambertian_color(0.2, 0.2, 0.8).coated(Material::dielectric(1.5)),
+        );
 
-        // Sphere 4: clear-coated red (dielectric coat over red Lambertian).
-        let coated = Material::lambertian_color(0.2, 0.7, 0.2).coated(Material::dielectric(1.5));
-        scene.add_sphere(Point3::from(-1.25, 1.0, 6.0), 1.0, coated);
+        // Row 3 (z=11, back): coated metal, perlin noise, mixed metal+glossy.
+        //   Complex materials: shell over specular, 3D texture, dual-material blend.
+        scene.add_sphere(
+            Point3::from(COL_X[0], 1.0, ROW_Z[2]),
+            1.0,
+            Material::metal(Color3::from(0.8, 0.8, 0.2), 0.1).coated(Material::dielectric(1.5)),
+        );
+        let perlin_tex: Arc<dyn Texture> = Arc::new(
+            MappedTexture::new(Arc::new(NoiseTexture::new()))
+                .with_mapping3d(TextureMapping3D::point_scale_uniform(1. / 4.)),
+        );
+        scene.add_sphere(
+            Point3::from(COL_X[1], 1.0, ROW_Z[2]),
+            1.0,
+            Material::lambertian(perlin_tex),
+        );
+        scene.add_sphere(
+            Point3::from(COL_X[2], 1.0, ROW_Z[2]),
+            1.0,
+            Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0)
+                .mix(Material::glossy(Color3::from(0.2, 0.8, 0.2), 0.5, 1.5), 0.5),
+        );
 
-        // Sphere 5: clear-coated blue.
-        let coated = Material::lambertian_color(0.2, 0.2, 0.8).coated(Material::dielectric(1.5));
-        scene.add_sphere(Point3::from(1.25, 1.0, 6.0), 1.0, coated);
-
-        // Area light above.
+        // Area light above, spanning the full z-range of the scene.
         scene.add_quad(
-            Point3::from(-3., 8., 2.),
-            Vec3::from(6., 0., 0.),
-            Vec3::from(0., 0., 6.),
-            Material::light(Color3::from(8.0, 8.0, 8.0)),
+            Point3::from(-4., 8., 0.),
+            Vec3::from(8., 0., 0.),
+            Vec3::from(0., 0., 12.),
+            Material::light(Color3::from(6.0, 6.0, 6.0)),
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
         scene.config.image_width = 800;
         scene.config.samples_per_pixel = 100;
         scene.config.max_depth = 50;
-        scene.config.vfov = 40.0;
-        scene.config.look_from = Point3::from(0., 4., 10.);
-        scene.config.look_at = Point3::from(0., 1., 4.);
+        scene.config.vfov = 38.0;
+        scene.config.look_from = Point3::from(0., 3.5, 16.);
+        scene.config.look_at = Point3::from(0., 1., 7.);
         scene.config.vup = Vec3::from(0., 1., 0.);
         scene.config.focus_distance = 10.0;
         scene.config.defocus_angle = 0.0;

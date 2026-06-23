@@ -7,6 +7,12 @@ use crate::vec3::Color3;
 
 use crate::film::FilmTile;
 
+pub const LUMINANCE: Color3 = Color3 {
+    x: 0.2126,
+    y: 0.7152,
+    z: 0.0722,
+};
+
 #[derive(Default, Clone)]
 pub struct RgbFilm {
     width: u32,
@@ -167,12 +173,19 @@ impl Film for RgbFilm {
     ) -> Vec<bool> {
         (0..self.pixels.len())
             .map(|idx| {
+                let sample_count = self.sample_counts[idx];
                 let variance = self.pixel_variance(idx);
+                let var_rms = if sample_count > 0 {
+                    (variance * variance / (sample_count as f64)).sqrt()
+                } else {
+                    f64::INFINITY
+                };
                 let mean = self.pixels[idx] / (self.sample_counts[idx] as f64);
-                let luminance = 0.2126 * mean.x + 0.7152 * mean.y + 0.0722 * mean.z;
+                let luminance = LUMINANCE * mean;
+                let luminance = luminance.x + luminance.y + luminance.z;
 
                 self.sample_counts[idx] >= min_samples
-                    && (variance < threshold_abs || variance / luminance.max(1e-6) < threshold_rel)
+                    && (var_rms < threshold_abs || var_rms / luminance.max(1e-6) < threshold_rel)
             })
             .collect()
     }
@@ -185,11 +198,18 @@ impl Film for RgbFilm {
         out: &mut [bool],
     ) {
         for (idx, entry) in out.iter_mut().enumerate() {
+            let sample_count = self.sample_counts[idx];
             let variance = self.pixel_variance(idx);
+            let var_rms = if sample_count > 0 {
+                (variance * variance / (sample_count as f64)).sqrt()
+            } else {
+                f64::INFINITY
+            };
             let mean = self.pixels[idx] / (self.sample_counts[idx] as f64);
-            let luminance = 0.2126 * mean.x + 0.7152 * mean.y + 0.0722 * mean.z;
+            let luminance = LUMINANCE * mean;
+            let luminance = luminance.x + luminance.y + luminance.z;
             *entry = self.sample_counts[idx] >= min_samples
-                && (variance < threshold_abs || variance / luminance.max(1e-6) < threshold_rel);
+                && (var_rms < threshold_abs || var_rms / luminance.max(1e-6) < threshold_rel);
         }
     }
 }

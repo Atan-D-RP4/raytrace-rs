@@ -290,11 +290,27 @@ impl Material {
             Material::Glossy(inner) => inner.sample(wo, si, u, v, w, x, y, z),
             Material::Custom(inner) => inner.sample(wo, si, u, v, w, x, y, z),
             Material::Mix { a, b, weight } => {
-                let chosen: &dyn Bsdf = if u < *weight { b.as_ref() } else { a.as_ref() };
+                let (chosen, selection_prob) = if u < *weight {
+                    (b.as_ref() as &dyn Bsdf, *weight)
+                } else {
+                    (a.as_ref() as &dyn Bsdf, 1.0 - *weight)
+                };
                 // Dims: `u` consumed for selection, pass v-w for child directional
                 // sampling, x-y-z as padding. `z` is recycled for child's z — no
                 // material reads z, so the dependency is semantically harmless.
-                chosen.sample(wo, si, v, w, x, y, z, z)
+                let mut result = chosen.sample(wo, si, v, w, x, y, z, z)?;
+                // The child was selected with probability `selection_prob`. For Delta
+                // paths the direction comes directly from the child (no MIS mixture),
+                // so f_cos must be divided by the selection probability. NonDelta paths
+                // are sampled from the integrator's mixture PDF, which doesn't depend
+                // on the Mix's internal selection — eval() handles the blend.
+                match &mut result {
+                    BsdfSample::Delta { f_cos, .. } => {
+                        *f_cos /= selection_prob;
+                    }
+                    BsdfSample::NonDelta { .. } => {}
+                }
+                Some(result)
             }
             Material::Coated {
                 substrate,

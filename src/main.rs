@@ -414,9 +414,9 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
     let (width, height) = camera.image_resolution();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new(width, height)));
 
-    renderer.set_threshold_abs(1e-4);
-    renderer.set_threshold_rel(0.02);
-    renderer.set_min_samples_before_adapt(64);
+    renderer.set_threshold_abs(1e-7);
+    renderer.set_threshold_rel(5e-4);
+    renderer.set_min_samples_before_adapt(256);
 
     let event_loop = EventLoop::new()?;
     let mut app = App::new(framebuffer.clone(), width, height);
@@ -494,9 +494,9 @@ fn headless_render(scene: Scene, scene_name: &str) {
     let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator);
     let (width, height) = camera.image_resolution();
 
-    renderer.set_threshold_abs(1e-4);
-    renderer.set_threshold_rel(0.02);
-    renderer.set_min_samples_before_adapt(64);
+    renderer.set_threshold_abs(1e-7);
+    renderer.set_threshold_rel(5e-4);
+    renderer.set_min_samples_before_adapt(128);
 
     let (mut objects, light_objects) = scene.into_objects();
 

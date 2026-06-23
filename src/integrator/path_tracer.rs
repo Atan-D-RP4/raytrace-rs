@@ -8,6 +8,7 @@
 ///
 use std::sync::Arc;
 
+use crate::film::rgb::LUMINANCE;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
@@ -102,7 +103,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             // Pad to fixed 9-dim stride so subsequent bounces use consistent
                             // Sobol dimensions regardless of this bounce's path structure.
                             for _ in 0..4 {
-                                let _ = dim_cursor.next_sample();
+                                let _ = dim_cursor.next_dim();
                             }
                         }
                         BsdfSample::NonDelta { pdf_kind } => {
@@ -126,9 +127,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             // directions that carry no energy. Scene-level heuristic
                             // (bright sky illuminates dark interiors just fine).
                             // Thresholds: 0.3=bright sky, 0.1=overcast, 0.01=near-black.
-                            let bg_lum = 0.2126 * self.background.x
-                                + 0.7152 * self.background.y
-                                + 0.0722 * self.background.z;
+                            let bg_lum = LUMINANCE * self.background;
+                            let bg_lum = bg_lum.x + bg_lum.y + bg_lum.z;
 
                             // Mixture components are duplicated to give them more weight in the sampling distribution.
                             let pdfs_8: &[&dyn PDF<S>; 8] = &[
