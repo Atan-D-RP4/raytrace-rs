@@ -424,11 +424,11 @@ impl Material {
             Material::Isotropic(inner) => inner.pdf_kind(wo, si),
             Material::Glossy(inner) => inner.pdf_kind(wo, si),
             Material::Custom(inner) => inner.pdf_kind(wo, si),
-            Material::Mix { a, b, .. } => {
-                // Return the PDF kind of the child that would have been sampled.
-                let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, 1.5);
-                if f > 0.5 {
+            Material::Mix { a, b, weight } => {
+                // Pick the PDF kind based on the stochastic weight (which child
+                // would be selected), not a Fresnel term — Mix has no Fresnel
+                // parameter (that's Coated).
+                if *weight > 0.5 {
                     b.pdf_kind(wo, si)
                 } else {
                     a.pdf_kind(wo, si)

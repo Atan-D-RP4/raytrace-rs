@@ -223,7 +223,11 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         // The normal is constant for a planar patch; .abs() gives the Jacobian
         // factor for the area-to-solid-angle measure conversion.
         let cosine = self.normal.dot(&(-direction.unit_vector())).abs();
-        let world_area = self.area * self.region.area();
+        // Use bounding_box_area() to match the actual sampling distribution:
+        // bbox-based samplers (RoundedRect, Superellipse, Polygon, Function)
+        // rejection-sample from the bounding box, so the PDF denominator must
+        // be the bounding box area, not the true shape area.
+        let world_area = self.area * self.region.bounding_box_area();
 
         distance_squared / (cosine * world_area)
     }
@@ -252,6 +256,9 @@ pub type Polygon<M> = PlanarPatch<PolygonRegion, M>;
 /// A region defined by an arbitrary `(a, b) -> bool` predicate.
 pub type FunctionPatch<M> = PlanarPatch<FunctionRegion, M>;
 
+/// Construct a parallelogram (quad) from corner `Q` and side vectors `u`, `v`.
+///
+/// Parameter naming matches *Ray Tracing in One Weekend* (RTIOW) notation.
 #[allow(non_snake_case)]
 pub fn quad<M: Borrow<Material>>(
     Q: Point3,

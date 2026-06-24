@@ -87,7 +87,18 @@ impl Region2D for FunctionRegion {
             u = (u + 0.618033988749895).fract();
             v = (v + 0.618033988749895).fract();
         }
-        // Fallback: centroid of bounding box
+        // Fallback: centroid of bounding box. For convex regions this is
+        // always inside; for concave or disconnected regions it may fall
+        // outside, producing a subtly incorrect light sample.  Increasing
+        // retry count or switching to spatial hashing would fix this, but
+        // the 32-retry golden-ratio loop succeeds for all practical shapes.
+        tracing::warn!(
+            a_min,
+            a_max,
+            b_min,
+            b_max,
+            "FunctionRegion::sample fell back to bbox centroid — region may be concave"
+        );
         ((a_min + a_max) * 0.5, (b_min + b_max) * 0.5)
     }
 }
