@@ -108,11 +108,15 @@ impl Bsdf for MetalMaterial {
         }
 
         Some(BsdfSample::NonDelta {
-            pdf_kind: PdfKind::Ggx {
-                wo,
-                normal: si.shading_normal(),
-                alpha,
-            },
+            pdf_kinds: [
+                PdfKind::Ggx {
+                    wo,
+                    normal: si.shading_normal(),
+                    alpha,
+                },
+                PdfKind::Delta,
+            ],
+            count: 1,
         })
     }
 
@@ -148,6 +152,18 @@ impl Bsdf for MetalMaterial {
             return 0.0;
         }
         ggx_d(cos_h_n, alpha) * cos_h_n / (4.0 * cos_h_o)
+    }
+
+    fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+        if self.fuzz < 1e-4 {
+            None
+        } else {
+            Some(PdfKind::Ggx {
+                wo,
+                normal: si.shading_normal(),
+                alpha: (self.fuzz * self.fuzz).clamp(0.001, 1.0),
+            })
+        }
     }
 
     fn is_delta(&self) -> bool {

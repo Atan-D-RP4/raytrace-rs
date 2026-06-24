@@ -19,9 +19,9 @@
 use crate::hittable::SurfaceInteraction;
 use crate::vec3::{Color3, Vec3, reflect, refract};
 
-use super::GPU_NONE;
-use super::fresnel_schlick;
-use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
+use crate::material::fresnel_schlick;
+use crate::material::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
+use crate::material::{GPU_NONE, PdfKind};
 
 /// Dielectric transmission/reflection controlled by refractive index.
 #[derive(Clone)]
@@ -74,6 +74,10 @@ impl Bsdf for DielectricMaterial {
     /// Delta material — probability of any specific direction is zero.
     fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
         0.0
+    }
+
+    fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
+        None
     }
 
     fn is_delta(&self) -> bool {

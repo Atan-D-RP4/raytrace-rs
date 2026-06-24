@@ -96,8 +96,10 @@ pub enum BsdfSample {
         /// BSDF × cosine. Tint for dielectrics, white for lossless coatings.
         f_cos: Color3,
     },
-    /// Non-specular — integrator calls [`Bsdf::eval`] for the BRDF.
-    NonDelta { pdf_kind: PdfKind },
+    /// Non-specular — integrator evaluates the BRDF and uses MIS weighting.
+    /// `pdf_kinds` holds up to 2 surface PDF descriptors (for Mix materials),
+    /// with `count` indicating how many are valid. Leaf materials set count=1.
+    NonDelta { pdf_kinds: [PdfKind; 2], count: u8 },
 }
 
 /// Describes which surface sampling PDF the integrator should use.
@@ -160,6 +162,10 @@ pub trait Bsdf: Send + Sync {
     /// Used by MIS when the integrator needs to know the probability
     /// that this material would have sampled `wi` given `wo`.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64;
+
+    fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
+        None
+    }
 
     /// Returns the emitted light color at the hit point.
     ///
@@ -308,7 +314,15 @@ impl Material {
                     BsdfSample::Delta { f_cos, .. } => {
                         *f_cos /= selection_prob;
                     }
-                    BsdfSample::NonDelta { .. } => {}
+                    BsdfSample::NonDelta { pdf_kinds, count } => {
+                        let other = if u < *weight { a.as_ref() } else { b.as_ref() };
+                        if let Some(other_kind) = other.pdf_kind(wo, si)
+                            && (*count as usize) < pdf_kinds.len()
+                        {
+                            pdf_kinds[*count as usize] = other_kind;
+                            *count += 1;
+                        }
+                    }
                 }
                 Some(result)
             }
@@ -401,6 +415,37 @@ impl Material {
         }
     }
 
+    pub fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+        match self {
+            Material::Lambertian(inner) => inner.pdf_kind(wo, si),
+            Material::Metal(inner) => inner.pdf_kind(wo, si),
+            Material::Dielectric(inner) => inner.pdf_kind(wo, si),
+            Material::DiffuseLight(inner) => inner.pdf_kind(wo, si),
+            Material::Isotropic(inner) => inner.pdf_kind(wo, si),
+            Material::Glossy(inner) => inner.pdf_kind(wo, si),
+            Material::Custom(inner) => inner.pdf_kind(wo, si),
+            Material::Mix { a, b, .. } => {
+                // Return the PDF kind of the child that would have been sampled.
+                let cos_o = wo.dot(&si.shading_normal()).abs();
+                let f = fresnel_schlick(cos_o, 1.5);
+                if f > 0.5 {
+                    b.pdf_kind(wo, si)
+                } else {
+                    a.pdf_kind(wo, si)
+                }
+            }
+            Material::Coated { substrate, coating } => {
+                let cos_o = wo.dot(&si.shading_normal()).abs();
+                let f = fresnel_schlick(cos_o, 1.5);
+                if f > 0.5 {
+                    coating.pdf_kind(wo, si)
+                } else {
+                    substrate.pdf_kind(wo, si)
+                }
+            }
+        }
+    }
+
     /// Returns the emitted light color at the hit point.
     pub fn emitted(&self, si: &SurfaceInteraction) -> Color3 {
         match self {
@@ -479,6 +524,10 @@ impl Bsdf for Material {
 
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         self.pdf(wo, wi, si)
+    }
+
+    fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+        self.pdf_kind(wo, si)
     }
 
     fn emitted(&self, si: &SurfaceInteraction) -> Color3 {

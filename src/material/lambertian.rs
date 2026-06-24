@@ -48,9 +48,13 @@ impl Bsdf for LambertianMaterial {
         _z: f64,
     ) -> Option<BsdfSample> {
         Some(BsdfSample::NonDelta {
-            pdf_kind: PdfKind::Cosine {
-                normal: si.shading_normal(),
-            },
+            pdf_kinds: [
+                PdfKind::Cosine {
+                    normal: si.shading_normal(),
+                },
+                PdfKind::Delta,
+            ],
+            count: 1,
         })
     }
 
@@ -73,6 +77,12 @@ impl Bsdf for LambertianMaterial {
     fn pdf(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         let cos_theta = si.shading_normal().dot(&wi);
         if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
+    }
+
+    fn pdf_kind(&self, _wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+        Some(PdfKind::Cosine {
+            normal: si.shading_normal(),
+        })
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {

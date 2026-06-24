@@ -3,9 +3,28 @@ use std::sync::Arc;
 
 use crate::hittable::Sampleable;
 use crate::material::ggx_d;
+use crate::material::PdfKind;
 use crate::onb::Onb;
 use crate::sampler::{DimCursor, Sampler};
-use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
+use crate::vec3::{concentric_disk, reflect, Point3, Vec3};
+
+/// Power-heuristic MIS weight exponent.
+///
+/// β = 2 is the standard choice — provably optimal for piecewise-smooth
+/// integrands and gives the best variance reduction in practice.
+pub const BETA: f64 = 2.0;
+
+/// Power-heuristic MIS weight: `p_i² / Σ(p_j²)`.
+///
+/// `pdf_sum_sq` must be the sum of squared PDF values (Σ p_j²).
+/// Returns 0 when the denominator is near-zero (degenerate PDF).
+#[inline(always)]
+pub fn power_heuristic(pdf_i: f64, pdf_sum_sq: f64) -> f64 {
+    if pdf_sum_sq <= 1e-20 {
+        return 0.0;
+    }
+    (pdf_i * pdf_i / pdf_sum_sq).max(0.0)
+}
 
 /// Cosine-weighted hemisphere direction via concentric disk mapping.
 ///
@@ -31,6 +50,56 @@ pub fn uniform_hemisphere_direction(u: f64, v: f64) -> Vec3 {
     let z = v;
     let r = (1.0 - z * z).max(0.0).sqrt();
     Vec3::from(r * phi.cos(), r * phi.sin(), z)
+}
+
+/// Type-erased wrapper that delegates to a concrete PDF type.
+///
+/// Avoids `dyn PDF` dispatch in the MIS hot path while allowing the integrator
+/// to build PDFs from runtime `PdfKind` descriptors.
+pub struct PdfEnum<S: Sampler> {
+    inner: PdfEnumInner,
+    _s: std::marker::PhantomData<S>,
+}
+
+enum PdfEnumInner {
+    Cosine(CosinePDF),
+    Ggx(GgxSamplePDF),
+    UniformSphere(UniformSpherePDF),
+}
+
+impl<S: Sampler> PDF<S> for PdfEnum<S> {
+    fn value(&self, direction: Vec3) -> f64 {
+        match &self.inner {
+            PdfEnumInner::Cosine(p) => <CosinePDF as PDF<S>>::value(p, direction),
+            PdfEnumInner::Ggx(p) => <GgxSamplePDF as PDF<S>>::value(p, direction),
+            PdfEnumInner::UniformSphere(p) => <UniformSpherePDF as PDF<S>>::value(p, direction),
+        }
+    }
+    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
+        match &self.inner {
+            PdfEnumInner::Cosine(p) => <CosinePDF as PDF<S>>::generate(p, dim_offset),
+            PdfEnumInner::Ggx(p) => <GgxSamplePDF as PDF<S>>::generate(p, dim_offset),
+            PdfEnumInner::UniformSphere(p) => <UniformSpherePDF as PDF<S>>::generate(p, dim_offset),
+        }
+    }
+}
+
+impl<S: Sampler> PdfEnum<S> {
+    /// Construct a concrete PDF from a `PdfKind` descriptor.
+    pub fn new(pk: &crate::material::PdfKind) -> Self {
+        let inner = match pk {
+            PdfKind::Cosine { normal } => PdfEnumInner::Cosine(CosinePDF::new(*normal)),
+            PdfKind::Ggx { wo, normal, alpha } => {
+                PdfEnumInner::Ggx(GgxSamplePDF::new(*wo, *normal, *alpha))
+            }
+            PdfKind::UniformSphere => PdfEnumInner::UniformSphere(UniformSpherePDF::new()),
+            PdfKind::Delta => unreachable!(),
+        };
+        PdfEnum {
+            inner,
+            _s: std::marker::PhantomData,
+        }
+    }
 }
 
 pub trait PDF<S: Sampler> {
@@ -177,53 +246,6 @@ impl<'a, S: Sampler> PDF<S> for HittablePDF<'a> {
         let u = dim_offset.next_sample();
         let v = dim_offset.next_sample();
         self.objects[index].random_direction(self.origin, u, v, self.time)
-    }
-}
-
-pub struct MixturePDF<'a, S: Sampler, const N: usize> {
-    pdfs: &'a [&'a dyn PDF<S>; N],
-    /// Uniform weights — fully stack-allocated, no heap, no runtime len field.
-    weights: [f64; N],
-}
-
-impl<'a, S: Sampler, const N: usize> MixturePDF<'a, S, N> {
-    /// Creates a mixture PDF with uniform weights per entry.
-    ///
-    /// Callers control the mixture by repeating entries: `[light, surface, surface]`
-    /// gives surface double weight — each entry gets `1/n`, so `value()` returns
-    /// `light/3 + 2*surface/3`.
-    pub fn new(pdfs: &'a [&'a dyn PDF<S>; N]) -> Self {
-        let inv_n = 1.0 / N as f64;
-        let weights = [inv_n; N];
-        MixturePDF { pdfs, weights }
-    }
-}
-
-impl<'a, S: Sampler, const N: usize> PDF<S> for MixturePDF<'a, S, N> {
-    fn value(&self, direction: Vec3) -> f64 {
-        self.pdfs
-            .iter()
-            .zip(&self.weights)
-            .map(|(pdf, &w)| w * pdf.value(direction))
-            .sum()
-    }
-
-    fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        let u = dim_offset.next_sample();
-        let mut cumulative = 0.0;
-        for (pdf, &weight) in self.pdfs.iter().zip(&self.weights) {
-            cumulative += weight;
-            if u < cumulative {
-                let wi = pdf.generate(dim_offset);
-                if wi.is_finite() {
-                    return wi;
-                }
-                // Degenerate PDF returned NaN/inf — fall through to next.
-            }
-        }
-
-        // Fallback: no PDF matched (rounding) or all were degenerate.
-        self.pdfs.last().unwrap().generate(dim_offset)
     }
 }
 

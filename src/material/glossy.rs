@@ -99,11 +99,15 @@ impl Bsdf for GlossyMaterial {
         }
 
         Some(BsdfSample::NonDelta {
-            pdf_kind: PdfKind::Ggx {
-                wo,
-                normal: si.shading_normal(),
-                alpha,
-            },
+            pdf_kinds: [
+                PdfKind::Ggx {
+                    wo,
+                    normal: si.shading_normal(),
+                    alpha,
+                },
+                PdfKind::Delta,
+            ],
+            count: 1,
         })
     }
 
@@ -147,6 +151,15 @@ impl Bsdf for GlossyMaterial {
         }
 
         ggx_d(cos_h_n, alpha) * cos_h_n / (4.0 * cos_h_o)
+    }
+
+    fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+        let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
+        Some(PdfKind::Ggx {
+            wo,
+            normal: si.shading_normal(),
+            alpha,
+        })
     }
 
     fn is_delta(&self) -> bool {

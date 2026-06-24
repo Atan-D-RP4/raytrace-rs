@@ -45,7 +45,8 @@ impl Bsdf for IsotropicMaterial {
         _z: f64,
     ) -> Option<BsdfSample> {
         Some(BsdfSample::NonDelta {
-            pdf_kind: PdfKind::UniformSphere,
+            pdf_kinds: [PdfKind::UniformSphere, PdfKind::Delta],
+            count: 1,
         })
     }
 

@@ -15,8 +15,8 @@ use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
-use super::GPU_NONE;
-use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
+use crate::material::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
+use crate::material::{GPU_NONE, PdfKind};
 
 /// Light emitting surface.
 #[derive(Clone)]
@@ -51,6 +51,10 @@ impl Bsdf for DiffuseLightMaterial {
     /// No scattering PDF — always zero.
     fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
         0.0
+    }
+
+    fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
+        None
     }
 
     /// Returns the emission color if the hit is on the front face, zero otherwise.
