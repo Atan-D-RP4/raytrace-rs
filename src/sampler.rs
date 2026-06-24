@@ -188,6 +188,7 @@ impl NaiveRandomSampler {
             seed: rand::rng().random(),
         }
     }
+
     pub fn with_seed(seed: u64) -> Self {
         Self { seed }
     }
@@ -237,6 +238,75 @@ impl Sampler for StratifiedRandomSampler {
     }
 }
 
+/// Factory trait for creating per-pixel samplers.
+///
+/// Each pixel gets its own sampler instance with a deterministic seed derived
+/// from its coordinates. This trait decouples sampler creation from the
+/// renderer, making it easy to swap sampling strategies without modifying
+/// renderer internals.
+pub trait SamplerFactory: Send + Sync {
+    type Sampler: Sampler;
+
+    /// Create a sampler seeded for the given pixel coordinates.
+    fn for_pixel(&self, x: i32, y: i32) -> Self::Sampler;
+}
+
+/// Factory for `SobolQmcSampler` — per-pixel Sobol' QMC.
+pub struct SobolSamplerFactory;
+
+impl SamplerFactory for SobolSamplerFactory {
+    type Sampler = SobolQmcSampler;
+
+    #[inline]
+    fn for_pixel(&self, x: i32, y: i32) -> SobolQmcSampler {
+        SobolQmcSampler::for_pixel(x, y)
+    }
+}
+
+/// Factory for `NaiveRandomSampler` — per-pixel hash-based.
+pub struct NaiveSamplerFactory {
+    seed: u64,
+}
+
+impl NaiveSamplerFactory {
+    pub fn new(seed: u64) -> Self {
+        Self { seed }
+    }
+}
+
+impl SamplerFactory for NaiveSamplerFactory {
+    type Sampler = NaiveRandomSampler;
+
+    #[inline]
+    fn for_pixel(&self, _x: i32, _y: i32) -> NaiveRandomSampler {
+        NaiveRandomSampler::with_seed(self.seed)
+    }
+}
+
+/// Factory for `StratifiedRandomSampler` — per-pixel jittered grid.
+pub struct StratifiedSamplerFactory {
+    sqrt_spp: u32,
+    seed: u64,
+}
+
+impl StratifiedSamplerFactory {
+    pub fn new(sqrt_spp: u32, seed: u64) -> Self {
+        Self {
+            sqrt_spp: sqrt_spp.max(1),
+            seed,
+        }
+    }
+}
+
+impl SamplerFactory for StratifiedSamplerFactory {
+    type Sampler = StratifiedRandomSampler;
+
+    #[inline]
+    fn for_pixel(&self, _x: i32, _y: i32) -> StratifiedRandomSampler {
+        StratifiedRandomSampler::new(self.sqrt_spp, self.seed)
+    }
+}
+
 /// Auto-advancing dimension cursor for sequential sample access.
 ///
 /// Replaces `&mut u32` with a safe wrapper that advances on each access,
@@ -259,13 +329,24 @@ pub struct DimCursor<S: Sampler> {
 }
 
 impl<S: Sampler> DimCursor<S> {
-    /// Creates a cursor starting at dimension `base`.
+    /// Creates a cursor starting at dimension `base`, sample_idx = 0.
     #[inline(always)]
     pub fn new(base: u32, sampler: S) -> Self {
         Self {
             base,
             offset: 0,
             sample_idx: 0,
+            sampler,
+        }
+    }
+
+    /// Creates a cursor starting at dimension `base` with the given sample index.
+    #[inline(always)]
+    pub fn new_at(base: u32, sample_idx: u32, sampler: S) -> Self {
+        Self {
+            base,
+            offset: 0,
+            sample_idx,
             sampler,
         }
     }
