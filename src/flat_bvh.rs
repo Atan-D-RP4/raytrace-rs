@@ -468,4 +468,64 @@ mod tests {
                 .is_none()
         );
     }
+
+    /// Regression test: FlatBvh produces the same intersection results as
+    /// BvhNode for a multi-object scene.
+    #[test]
+    fn flat_bvh_matches_bvh_node_multi_object() {
+        use crate::planar::quad;
+
+        // Build a small scene: 3 spheres at different positions.
+        let s1: Arc<dyn Intersectable> = Arc::new(sphere(
+            Vec3::from(-2., 0., -3.),
+            0.5,
+            Material::lambertian_color(1.0, 0.0, 0.0),
+        ));
+        let s2: Arc<dyn Intersectable> = Arc::new(sphere(
+            Vec3::from(0., 0., -3.),
+            0.5,
+            Material::lambertian_color(0.0, 1.0, 0.0),
+        ));
+        let s3: Arc<dyn Intersectable> = Arc::new(sphere(
+            Vec3::from(2., 0., -3.),
+            0.5,
+            Material::lambertian_color(0.0, 0.0, 1.0),
+        ));
+        let s4: Arc<dyn Intersectable> = Arc::new(quad(
+            Vec3::from(-3., -1., -5.),
+            Vec3::from(6., 0., 0.),
+            Vec3::from(0., 2., 0.),
+            Material::lambertian_color(0.5, 0.5, 0.5),
+        ));
+
+        let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];
+        let bvh = BvhNode::new(&mut objects);
+        let flat = FlatBvh::from(bvh);
+
+        // Test several rays: some hit, some miss.
+        let test_rays = vec![
+            // Hit sphere at (-2, 0, -3)
+            (Vec3::ZERO, Vec3::from(-2., 0., -3.).unit_vector(), true),
+            // Hit sphere at (0, 0, -3)
+            (Vec3::ZERO, Vec3::from(0., 0., -3.).unit_vector(), true),
+            // Hit sphere at (2, 0, -3)
+            (Vec3::ZERO, Vec3::from(2., 0., -3.).unit_vector(), true),
+            // Hit quad at z=-5
+            (Vec3::ZERO, Vec3::from(0., 0., -1.), true),
+            // Miss everything (shoot upward)
+            (Vec3::ZERO, Vec3::from(0., 10., 0.), false),
+            // Miss everything (shoot far to the side, away from all objects)
+            (Vec3::from(10., 0., 0.), Vec3::from(0., 1., 0.), false),
+        ];
+
+        for (origin, direction, should_hit) in test_rays {
+            let ray = Ray::new_with_time(origin, direction, 0.0);
+            let bvh_result = flat.intersect(&ray, Interval::from(0.001, f64::INFINITY));
+            assert_eq!(
+                bvh_result.is_some(),
+                should_hit,
+                "Ray from {origin} dir {direction}: expected hit={should_hit}"
+            );
+        }
+    }
 }

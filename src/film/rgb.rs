@@ -213,3 +213,86 @@ impl Film for RgbFilm {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Welford's online variance should converge to zero for constant samples.
+    #[test]
+    fn variance_converges_for_constant_samples() {
+        let mut film = RgbFilm::new((4, 4), 1.0, false);
+        let constant = Color3::from(0.5, 0.3, 0.2);
+
+        // Add many identical samples — variance should shrink to zero.
+        for _ in 0..1000 {
+            film.add_sample(0, 0, constant);
+        }
+
+        let variance = film.pixel_variance(0);
+        assert!(
+            variance < 1e-10,
+            "variance for constant samples should be ~0, got {variance}"
+        );
+    }
+
+    /// Variance should be infinity for a single sample (undefined).
+    #[test]
+    fn variance_infinity_for_single_sample() {
+        let mut film = RgbFilm::new((2, 2), 1.0, false);
+        film.add_sample(0, 0, Color3::from(1.0, 0.5, 0.2));
+
+        let variance = film.pixel_variance(0);
+        assert!(
+            variance.is_infinite(),
+            "single-sample variance should be infinity"
+        );
+    }
+
+    /// Variance should be > 0 for varying samples.
+    #[test]
+    fn variance_positive_for_varying_samples() {
+        let mut film = RgbFilm::new((2, 2), 1.0, false);
+        film.add_sample(0, 0, Color3::from(0.0, 0.0, 0.0));
+        film.add_sample(0, 0, Color3::from(1.0, 1.0, 1.0));
+        film.add_sample(0, 0, Color3::from(0.0, 0.0, 0.0));
+        film.add_sample(0, 0, Color3::from(1.0, 1.0, 1.0));
+
+        let variance = film.pixel_variance(0);
+        assert!(
+            variance > 0.1,
+            "variance for alternating 0/1 samples should be significant, got {variance}"
+        );
+    }
+
+    /// Convergence mask should mark unconverged pixels correctly.
+    #[test]
+    fn convergence_mask_basic() {
+        let mut film = RgbFilm::new((2, 1), 1.0, false);
+
+        // Pixel 0: many identical samples (low variance → converged)
+        for _ in 0..200 {
+            film.add_sample(0, 0, Color3::from(0.5, 0.5, 0.5));
+        }
+        // Pixel 1: no samples → should not converge
+        // (pixel stays at ZERO with count=0)
+
+        let mask = film.convergence_mask(1e-3, 1e-6, 100);
+        assert!(mask[0], "constant-sampled pixel should be converged");
+        assert!(!mask[1], "unsampled pixel should not be converged");
+    }
+
+    /// to_rgb8 should produce correct dimensions.
+    #[test]
+    fn to_rgb8_dimensions() {
+        let mut film = RgbFilm::new((3, 2), 1.0, false);
+        // Fill all pixels with at least one sample.
+        for y in 0..2 {
+            for x in 0..3 {
+                film.add_sample(x, y, Color3::from(0.5, 0.5, 0.5));
+            }
+        }
+        let rgb = film.to_rgb8();
+        assert_eq!(rgb.len(), 3 * 2 * 3); // width * height * 3 channels
+    }
+}

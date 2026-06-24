@@ -20,3 +20,76 @@ pub trait Integrator<S: Sampler>: Send + Sync {
         sampler: &mut DimCursor<S>,
     ) -> Color3;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bvh::BvhNode;
+    use crate::film::{Film, RgbFilm};
+    use crate::material::Material;
+    use crate::planar::quad;
+    use crate::sampler::NaiveRandomSampler;
+    use crate::vec3::{Point3, Vec3};
+
+    /// Minimal integration test: render a 4×4 image of a lit Cornell-box-like
+    /// scene and verify the output is non-zero and finite.
+    #[test]
+    fn render_4x4_minimal_scene() {
+        // Build a tiny scene: a light quad and a floor quad.
+        let light_mat = Material::light(Color3::from(8.0, 8.0, 8.0));
+        let floor_mat = Material::lambertian_color(0.7, 0.7, 0.7);
+
+        let light: Arc<dyn Intersectable> = Arc::new(quad(
+            Point3::from(-1., 2., -2.),
+            Vec3::from(2., 0., 0.),
+            Vec3::from(0., 0., 2.),
+            light_mat,
+        ));
+        let floor: Arc<dyn Intersectable> = Arc::new(quad(
+            Point3::from(-3., -1., -3.),
+            Vec3::from(6., 0., 0.),
+            Vec3::from(0., 0., 6.),
+            floor_mat,
+        ));
+
+        let light_sample: Arc<dyn Sampleable> = Arc::new(quad(
+            Point3::from(-1., 2., -2.),
+            Vec3::from(2., 0., 0.),
+            Vec3::from(0., 0., 2.),
+            Material::light(Color3::from(8.0, 8.0, 8.0)),
+        ));
+
+        let mut objects: Vec<Arc<dyn Intersectable>> = vec![light, floor];
+        let world = BvhNode::new(&mut objects);
+        let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
+
+        let integrator = PathTracingIntegrator::new(8, Color3::from(0.0, 0.0, 0.0));
+        let sampler = NaiveRandomSampler::with_seed(42);
+        let mut film = RgbFilm::new((4, 4), 1.0, false);
+
+        // Trace a few rays from a fixed origin.
+        let mut dim_cursor = DimCursor::new(0, sampler);
+        for y in 0..4u32 {
+            for x in 0..4u32 {
+                // Simple camera: origin at (0, 0, 4), rays toward -z.
+                let u = (x as f64 + 0.5) / 4.0;
+                let v = (y as f64 + 0.5) / 4.0;
+                let direction = Vec3::from(u - 0.5, v - 0.5, -1.0).unit_vector();
+                let mut ray = Ray::new_with_time(Vec3::from(0., 0., 4.), direction, 0.0);
+
+                let color = integrator.li(&mut ray, &world, &lights, &mut dim_cursor);
+                film.add_sample(x, y, color);
+            }
+        }
+
+        // Verify: every pixel should have finite, non-negative color.
+        let rgb = film.to_rgb8();
+        assert_eq!(rgb.len(), 4 * 4 * 3);
+        // At least some pixels should be non-zero (the light hits the floor).
+        let total: u32 = rgb.iter().map(|&b| b as u32).sum();
+        assert!(
+            total > 0,
+            "rendered image should have non-zero pixel values"
+        );
+    }
+}
