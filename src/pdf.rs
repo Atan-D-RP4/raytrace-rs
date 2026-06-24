@@ -2,11 +2,11 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::Sampleable;
-use crate::material::ggx_d;
 use crate::material::PdfKind;
+use crate::material::ggx_d;
 use crate::onb::Onb;
 use crate::sampler::{DimCursor, Sampler};
-use crate::vec3::{concentric_disk, reflect, Point3, Vec3};
+use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
 
 /// Power-heuristic MIS weight exponent.
 ///

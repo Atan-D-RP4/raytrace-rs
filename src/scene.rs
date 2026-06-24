@@ -412,7 +412,8 @@ impl Scene {
             Point3::from(200., 350., 200.),
             90.,
             // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
-            Material::dielectric_tinted(1.5, Color3::from(1.1, 1.1, 1.9)),
+            // Values must be <= 1.0 for energy conservation (no light amplification).
+            Material::dielectric_tinted(1.5, Color3::from(0.8, 0.8, 1.0)),
         );
 
         scene.config.samples_per_pixel = 200;

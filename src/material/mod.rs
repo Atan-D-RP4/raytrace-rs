@@ -730,9 +730,10 @@ pub(super) fn geometry_schlick_ggx(cos_theta: f64, alpha: f64) -> f64 {
     if cos_theta <= 0.0 {
         return 0.0;
     }
-    let a2 = alpha * alpha;
-    // Direct lighting remapping of α
-    let k = (a2.sqrt() + 1.0).powi(2) / 8.0;
+    // Direct lighting remapping: k = (roughness + 1)² / 8.
+    // `alpha` = roughness², so roughness = alpha.sqrt().
+    let roughness = alpha.sqrt();
+    let k = (roughness + 1.0).powi(2) / 8.0;
     cos_theta / (cos_theta * (1.0 - k) + k)
 }
 

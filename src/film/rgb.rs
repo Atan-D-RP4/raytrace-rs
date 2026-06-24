@@ -175,8 +175,8 @@ impl Film for RgbFilm {
             .map(|idx| {
                 let sample_count = self.sample_counts[idx];
                 let variance = self.pixel_variance(idx);
-                let var_rms = if sample_count > 0 {
-                    (variance * variance / (sample_count as f64)).sqrt()
+                let var_mean = if sample_count > 0 {
+                    variance / (sample_count as f64)
                 } else {
                     f64::INFINITY
                 };
@@ -185,7 +185,7 @@ impl Film for RgbFilm {
                 let luminance = luminance.x + luminance.y + luminance.z;
 
                 self.sample_counts[idx] >= min_samples
-                    && (var_rms < threshold_abs || var_rms / luminance.max(1e-6) < threshold_rel)
+                    && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel)
             })
             .collect()
     }
@@ -200,8 +200,8 @@ impl Film for RgbFilm {
         for (idx, entry) in out.iter_mut().enumerate() {
             let sample_count = self.sample_counts[idx];
             let variance = self.pixel_variance(idx);
-            let var_rms = if sample_count > 0 {
-                (variance * variance / (sample_count as f64)).sqrt()
+            let var_mean = if sample_count > 0 {
+                variance / (sample_count as f64)
             } else {
                 f64::INFINITY
             };
@@ -209,7 +209,7 @@ impl Film for RgbFilm {
             let luminance = LUMINANCE * mean;
             let luminance = luminance.x + luminance.y + luminance.z;
             *entry = self.sample_counts[idx] >= min_samples
-                && (var_rms < threshold_abs || var_rms / luminance.max(1e-6) < threshold_rel);
+                && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel);
         }
     }
 }

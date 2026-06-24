@@ -155,18 +155,24 @@ impl Default for SobolQmcSampler {
 impl Sampler for SobolQmcSampler {
     #[inline(always)]
     fn sample(&self, n: u32, d: u32) -> f64 {
-        let d_idx = (d as usize).min(MAX_DIMS - 1);
-        // Gray code g(n) = n ^ (n >> 1).
-        // Each set bit at position c contributes V[dim][c].
-        let gn = n ^ (n >> 1);
-        let mut v = splitmix_shift(self.seed, d);
-        let mut g = gn;
-        while g != 0 {
-            let c = g.trailing_zeros() as usize;
-            v ^= DIRS[d_idx][c];
-            g &= g - 1; // clear lowest set bit
+        if d < MAX_DIMS as u32 {
+            let d_idx = d as usize;
+            // Gray code g(n) = n ^ (n >> 1).
+            // Each set bit at position c contributes V[dim][c].
+            let gn = n ^ (n >> 1);
+            let mut v = splitmix_shift(self.seed, d);
+            let mut g = gn;
+            while g != 0 {
+                let c = g.trailing_zeros() as usize;
+                v ^= DIRS[d_idx][c];
+                g &= g - 1; // clear lowest set bit
+            }
+            v as f64 * INV_U32
+        } else {
+            // Hash-based fallback for dims >= MAX_DIMS to avoid structured
+            // correlation from clamping all overflow dims to the last direction numbers.
+            splitmix_shift(self.seed.wrapping_add(n as u64), d) as f64 * INV_U32
         }
-        v as f64 * INV_U32
     }
 }
 

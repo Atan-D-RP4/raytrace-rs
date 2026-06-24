@@ -60,7 +60,7 @@ fn mis_sample<S: Sampler, const N: usize>(
 
     // 5. Compute contribution: N * w_sel * f / p_sel
     let f = eval_fn(direction);
-    let contribution = if p_sel > 1e-10 {
+    let contribution = if p_sel > 1e-6 {
         f * (N as f64 * mis_weight / p_sel)
     } else {
         crate::vec3::Color3::ZERO
@@ -194,6 +194,10 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             (direction, contribution)
                         }
                     };
+
+                    // Clamp per-sample contribution to prevent fireflies
+                    let bias =
+                        Color3::from(bias.x.min(100.0), bias.y.min(100.0), bias.z.min(100.0));
 
                     accumulated_attenuation = accumulated_attenuation * bias;
                     ray = Ray::new_with_time(si.point(), direction, ray.time);
