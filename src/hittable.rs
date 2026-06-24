@@ -40,8 +40,8 @@ impl Hit {
         uv: Option<(f64, f64)>,
     ) -> Self {
         debug_assert!(
-            (geometric_normal.length_squared() - 1.0).abs() < 1e-6,
-            "geometric_normal must be unit length"
+            geometric_normal.near_zero() || (geometric_normal.length_squared() - 1.0).abs() < 1e-6,
+            "geometric_normal must be unit length or zero (for volumes)"
         );
         Self {
             time,
@@ -52,11 +52,11 @@ impl Hit {
         }
     }
 
-    /// Sets the geometric normal (must be unit length).
+    /// Sets the geometric normal (must be unit length, or zero for volumes).
     pub(crate) fn set_geometric_normal(&mut self, n: Vec3) {
         debug_assert!(
-            (n.length_squared() - 1.0).abs() < 1e-6,
-            "geometric_normal must be unit length"
+            n.near_zero() || (n.length_squared() - 1.0).abs() < 1e-6,
+            "geometric_normal must be unit length or zero (for volumes)"
         );
         self.geometric_normal = n;
     }
