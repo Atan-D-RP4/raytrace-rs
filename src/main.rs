@@ -14,7 +14,6 @@ use winit::{
     window::{Theme, Window, WindowId},
 };
 
-use raytrace_rs::renderer::Renderer;
 use raytrace_rs::scene::Scene;
 use raytrace_rs::{bvh::BvhNode, camera::PerspectiveCamera};
 use raytrace_rs::{camera::Camera, film::RgbFilm};
@@ -23,6 +22,7 @@ use raytrace_rs::{
     integrator::PathTracingIntegrator,
 };
 use raytrace_rs::{flat_bvh::FlatBvh, renderer::CpuRenderer};
+use raytrace_rs::{renderer::Renderer, sampler::SobolSamplerFactory};
 
 const WIDTH: u32 = 800;
 
@@ -410,13 +410,15 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
     let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
-    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator);
+    let sampler_factory = SobolSamplerFactory;
+    let mut renderer =
+        CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);
     let (width, height) = camera.image_resolution();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new(width, height)));
 
     renderer.set_threshold_abs(1e-7);
     renderer.set_threshold_rel(5e-4);
-    renderer.set_min_samples_before_adapt(256);
+    renderer.set_min_samples_before_adapt(u32::MAX);
 
     let event_loop = EventLoop::new()?;
     let mut app = App::new(framebuffer.clone(), width, height);
@@ -491,7 +493,9 @@ fn headless_render(scene: Scene, scene_name: &str) {
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
     let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
-    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator);
+    let sampler_factory = raytrace_rs::sampler::SobolSamplerFactory;
+    let mut renderer =
+        CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);
     let (width, height) = camera.image_resolution();
 
     renderer.set_threshold_abs(1e-7);
@@ -550,10 +554,13 @@ fn display_image(filename: &str) {
         .args(["--filename", filename])
         .spawn()
     {
-        Ok(mut child) => child.wait().map_or_else(
-            |e| panic!("Failed to close satty with error: {e:?}"),
-            |_| (),
-        ),
-        Err(e) => panic!("Failed to spawn `satty` with error: {e:?}"),
+        Ok(mut child) => {
+            if let Err(e) = child.wait() {
+                error!("Failed to close satty: {e:?}");
+            }
+        }
+        Err(_) => {
+            info!("satty not found, skipping image display — image saved to {filename}");
+        }
     }
 }

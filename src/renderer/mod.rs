@@ -7,12 +7,14 @@ use std::sync::Arc;
 use crate::camera::Camera;
 use crate::film::{Film, SharedFramebuffer};
 use crate::hittable::{Intersectable, Sampleable};
+use crate::sampler::Sampler;
 
-pub trait Renderer<W, C, F>: Send + Sync
+pub trait Renderer<W, C, F, S>: Send + Sync
 where
     W: Intersectable,
     C: Camera,
     F: Film,
+    S: Sampler,
 {
     /// Renders the scene and returns (width, height, RGB pixel data).
     ///

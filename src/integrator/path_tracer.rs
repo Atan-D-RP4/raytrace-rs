@@ -12,7 +12,9 @@ use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::BsdfSample;
-use crate::pdf::{HittablePDF, PDF, PdfEnum, UniformHemispherePDF, power_heuristic};
+use crate::pdf::{
+    HittablePDF, PDF, PdfEnum, UniformHemispherePDF, UniformSpherePDF, power_heuristic,
+};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Color3, Vec3};
@@ -33,21 +35,25 @@ use crate::vec3::{Color3, Vec3};
 /// we can make this generic over a MisWeightingStrategy trait that takes the selected PDF and all
 /// PDFs and returns a weight.
 #[inline(always)]
-fn mis_sample<S: Sampler, const N: usize>(
-    pdfs: [&dyn PDF<S>; N],
+fn mis_sample<S: Sampler>(
+    pdfs: &[&dyn PDF<S>],
     eval_fn: impl FnOnce(Vec3) -> crate::vec3::Color3,
     dim_cursor: &mut DimCursor<S>,
 ) -> (Vec3, crate::vec3::Color3) {
+    let n = pdfs.len();
+    debug_assert!(n > 0, "mis_sample requires at least one PDF strategy");
+
     // 1. Select strategy uniformly: 1 QMC dim for selection
     let u_select = dim_cursor.next_sample();
-    let sel_idx = (u_select * N as f64).min(N as f64 - 1e-15) as usize;
+    let sel_idx = (u_select * n as f64).min(n as f64 - 1e-15) as usize;
 
     // 2. Generate direction from selected strategy
     let direction = pdfs[sel_idx].generate(dim_cursor).unit_vector();
 
     // 3. Evaluate ALL PDFs at the sampled direction, compute sum of squares
     let mut pdf_sum_sq = 0.0;
-    let mut pdf_vals = [0.0f64; N];
+    // Stack-allocate for the small strategy counts we support (max ~4).
+    let mut pdf_vals = [0.0f64; 8];
     for (i, pdf) in pdfs.iter().enumerate() {
         let v = pdf.value(direction);
         pdf_vals[i] = v;
@@ -61,7 +67,7 @@ fn mis_sample<S: Sampler, const N: usize>(
     // 5. Compute contribution: N * w_sel * f / p_sel
     let f = eval_fn(direction);
     let contribution = if p_sel > 1e-6 {
-        f * (N as f64 * mis_weight / p_sel)
+        f * (n as f64 * mis_weight / p_sel)
     } else {
         crate::vec3::Color3::ZERO
     };
@@ -159,7 +165,21 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             // Selects one strategy uniformly, generates direction from it,
                             // evaluates ALL PDFs, computes weighted estimator:
                             //   N * (p_sel² / Σp_j²) * f / p_sel
-                            let env_pdf = UniformHemispherePDF::new(si.shading_normal());
+                            //
+                            // Strategy selection:
+                            // - Always include env_pdf: provides hemisphere/sphere fallback
+                            //   for indirect illumination and escape directions. Without it,
+                            //   MIS weights become suboptimal for multi-bounce paths and
+                            //   caustic-adjacent geometry (e.g. glass sphere in Cornell box).
+                            // - Surfaces: [env_pdf, light_pdf, material_pdf(s)]
+                            // - Volumes: env_pdf uses UniformSpherePDF instead of hemisphere.
+                            let is_volume = si.shading_normal().near_zero();
+
+                            let env_pdf: Box<dyn PDF<S>> = if is_volume {
+                                Box::new(UniformSpherePDF::new())
+                            } else {
+                                Box::new(UniformHemispherePDF::new(si.shading_normal()))
+                            };
                             let light_pdf = HittablePDF::new(lights, si.point(), ray.time);
 
                             // Track consumption for fixed-dim stride padding.
@@ -167,24 +187,30 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
 
                             // Build surface PDFs only for valid slots.
                             let eval = |d: Vec3| material.eval(wo, d, &si);
-                            let (direction, contribution) = match count {
-                                0 => {
-                                    let pdfs: [&dyn PDF<S>; 2] = [&env_pdf, &light_pdf];
-                                    mis_sample(pdfs, eval, dim_cursor)
-                                }
-                                1 => {
-                                    let s0 = PdfEnum::new(&pdf_kinds[0]);
-                                    let pdfs: [&dyn PDF<S>; 3] = [&env_pdf, &light_pdf, &s0];
-                                    mis_sample(pdfs, eval, dim_cursor)
-                                }
-                                2 => {
-                                    let s0 = PdfEnum::new(&pdf_kinds[0]);
-                                    let s1 = PdfEnum::new(&pdf_kinds[1]);
-                                    let pdfs: [&dyn PDF<S>; 4] = [&env_pdf, &light_pdf, &s0, &s1];
-                                    mis_sample(pdfs, eval, dim_cursor)
-                                }
-                                _ => unreachable!("at most 2 surface PDFs"),
+
+                            // Build the strategy list dynamically. Max capacity: env(0/1) + light(1) + s0(0/1) + s1(0/1) = 1..4.
+                            let s0 = if count >= 1 {
+                                Some(PdfEnum::new(&pdf_kinds[0]))
+                            } else {
+                                None
                             };
+                            let s1 = if count >= 2 {
+                                Some(PdfEnum::new(&pdf_kinds[1]))
+                            } else {
+                                None
+                            };
+
+                            let mut pdfs: Vec<&dyn PDF<S>> = Vec::with_capacity(4);
+                            pdfs.push(&*env_pdf);
+                            pdfs.push(&light_pdf);
+                            if let Some(ref s) = s0 {
+                                pdfs.push(s);
+                            }
+                            if let Some(ref s) = s1 {
+                                pdfs.push(s);
+                            }
+
+                            let (direction, contribution) = mis_sample(&pdfs, eval, dim_cursor);
 
                             // Pad mixture dims to exactly 4 (1 selection + 3 direction).
                             let mix_consumed = dim_cursor.offset() - mix_start;

@@ -102,31 +102,43 @@ impl Scene {
 }
 
 impl Scene {
+    /// Push an intersectable object, optionally registering it as a light
+    /// source for importance sampling.
+    fn add_intersectable(
+        &mut self,
+        object: Arc<dyn Intersectable>,
+        light: Option<Arc<dyn Sampleable>>,
+    ) {
+        if let Some(light) = light {
+            self.light_objects.push(light);
+        }
+        self.objects.push(object);
+    }
+
     pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
         trace!(?center, radius, "add sphere");
         if material.is_emissive() {
             let material = Arc::new(material);
-            self.light_objects
-                .push(Arc::new(sphere(center, radius, material.clone())));
-            self.objects
-                .push(Arc::new(sphere(center, radius, material)));
+            self.add_intersectable(
+                Arc::new(sphere(center, radius, material.clone())),
+                Some(Arc::new(sphere(center, radius, material))),
+            );
         } else {
-            self.objects
-                .push(Arc::new(sphere(center, radius, material)));
+            self.add_intersectable(Arc::new(sphere(center, radius, material)), None);
         }
     }
 
     #[allow(non_snake_case)]
     pub fn add_quad(&mut self, Q: Point3, u: Vec3, v: Vec3, material: Material) {
         trace!(?Q, ?u, ?v, "add quad");
-        // Auto-detect emitters: add geometry-only copy for light importance sampling.
         if material.is_emissive() {
             let material = Arc::new(material);
-            self.light_objects
-                .push(Arc::new(quad(Q, u, v, material.clone())));
-            self.objects.push(Arc::new(quad(Q, u, v, material)));
+            self.add_intersectable(
+                Arc::new(quad(Q, u, v, material.clone())),
+                Some(Arc::new(quad(Q, u, v, material))),
+            );
         } else {
-            self.objects.push(Arc::new(quad(Q, u, v, material)));
+            self.add_intersectable(Arc::new(quad(Q, u, v, material)), None);
         }
     }
 
@@ -140,25 +152,25 @@ impl Scene {
         trace!(?center_start, ?center_end, radius, "add moving sphere");
         if material.is_emissive() {
             let material = Arc::new(material);
-            self.light_objects.push(Arc::new(moving_sphere(
-                center_start,
-                center_end,
-                radius,
-                material.clone(),
-            )));
-            self.objects.push(Arc::new(moving_sphere(
-                center_start,
-                center_end,
-                radius,
-                material,
-            )));
+            self.add_intersectable(
+                Arc::new(moving_sphere(
+                    center_start,
+                    center_end,
+                    radius,
+                    material.clone(),
+                )),
+                Some(Arc::new(moving_sphere(
+                    center_start,
+                    center_end,
+                    radius,
+                    material,
+                ))),
+            );
         } else {
-            self.objects.push(Arc::new(moving_sphere(
-                center_start,
-                center_end,
-                radius,
-                material,
-            )));
+            self.add_intersectable(
+                Arc::new(moving_sphere(center_start, center_end, radius, material)),
+                None,
+            );
         }
     }
 
@@ -371,19 +383,19 @@ impl Scene {
                 15.,
                 white.clone(),
             ),
-            (
-                Vec3::from(165., 165., 165.),
-                Vec3::from(130., 0., 65.),
-                -18.,
-                white.clone(),
-            ),
-            // A *smaller* box in front of the taller box and beside the smaller box at the front
-            (
-                Vec3::from(100., 100., 100.),
-                Vec3::from(340., 0., 100.),
-                17.,
-                Material::dielectric(1.5),
-            ),
+            // (
+            //     Vec3::from(165., 165., 165.),
+            //     Vec3::from(130., 0., 65.),
+            //     -18.,
+            //     white.clone(),
+            // ),
+            // // A *smaller* box in front of the taller box and beside the smaller box at the front
+            // (
+            //     Vec3::from(100., 100., 100.),
+            //     Vec3::from(340., 0., 100.),
+            //     17.,
+            //     Material::dielectric(1.5),
+            // ),
         ];
 
         let boxes = box_params
@@ -402,18 +414,23 @@ impl Scene {
 
         scene.objects.extend(boxes);
 
-        // Add a small sphere in the center to better visualize the light transport effects.
+        // // Add a small sphere in the center to better visualize the light transport effects.
+        // scene.add_sphere(
+        //     Point3::from(348., 400., 278.),
+        //     40.,
+        //     Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 0.3, 20.0),
+        // );
+        // scene.add_sphere(
+        //     Point3::from(200., 350., 200.),
+        //     90.,
+        //     // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
+        //     // Values must be <= 1.0 for energy conservation (no light amplification).
+        //     Material::dielectric_tinted(1.5, Color3::from(0.8, 0.8, 1.0)),
+        // );
         scene.add_sphere(
-            Point3::from(348., 400., 278.),
-            40.,
-            Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 0.3, 20.0),
-        );
-        scene.add_sphere(
-            Point3::from(200., 350., 200.),
+            Point3::from(200., 90., 200.),
             90.,
-            // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
-            // Values must be <= 1.0 for energy conservation (no light amplification).
-            Material::dielectric_tinted(1.5, Color3::from(0.8, 0.8, 1.0)),
+            Material::dielectric(1.5),
         );
 
         scene.config.samples_per_pixel = 200;

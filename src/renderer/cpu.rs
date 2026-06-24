@@ -8,10 +8,15 @@ use crate::film::{Film, FilmTile, SharedFramebuffer};
 use crate::hittable::{Intersectable, Sampleable};
 use crate::integrator::Integrator;
 use crate::renderer::Renderer;
-use crate::sampler::{DimCursor, SobolQmcSampler};
+use crate::sampler::{DimCursor, SamplerFactory};
 use crate::vec3::Color3;
 
-pub struct CpuRenderer<I: Integrator<SobolQmcSampler>> {
+pub struct CpuRenderer<I, S, Fact>
+where
+    I: Integrator<S>,
+    S: crate::sampler::Sampler,
+    Fact: SamplerFactory<Sampler = S>,
+{
     /// Number of samples to take per pixel. Higher values yield better quality but take longer.
     samples_per_pixel: u32,
     /// Absolute variance floor. Pixels with variance below this threshold are
@@ -25,18 +30,29 @@ pub struct CpuRenderer<I: Integrator<SobolQmcSampler>> {
     /// Minimum number of samples to take before considering adaptive sampling.
     /// Ensures we have enough data to make a reliable variance estimate.
     min_samples_before_adapt: u32,
-
+    /// The integrator used to compute radiance along rays. This is a generic parameter
+    /// that allows different integration strategies (e.g., path tracing, direct lighting).
     integrator: I,
+    /// Factory for creating per-pixel samplers. Decouples sampler creation from the renderer.
+    sampler_factory: Fact,
+    _phantom: std::marker::PhantomData<S>,
 }
 
-impl<I: Integrator<SobolQmcSampler>> CpuRenderer<I> {
-    pub fn new(samples_per_pixel: u32, integrator: I) -> Self {
+impl<I, S, Fact> CpuRenderer<I, S, Fact>
+where
+    I: Integrator<S>,
+    S: crate::sampler::Sampler,
+    Fact: SamplerFactory<Sampler = S>,
+{
+    pub fn new(samples_per_pixel: u32, integrator: I, sampler_factory: Fact) -> Self {
         Self {
             samples_per_pixel,
             threshold_abs: 1e-4,
             threshold_rel: 0.02,
             min_samples_before_adapt: 64,
             integrator,
+            sampler_factory,
+            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -53,12 +69,14 @@ impl<I: Integrator<SobolQmcSampler>> CpuRenderer<I> {
     }
 }
 
-impl<W, I, C, F> Renderer<W, C, F> for CpuRenderer<I>
+impl<W, I, C, F, S, Fact> Renderer<W, C, F, S> for CpuRenderer<I, S, Fact>
 where
     W: Intersectable,
-    I: Integrator<SobolQmcSampler>,
+    I: Integrator<S>,
     C: Camera,
     F: Film,
+    S: crate::sampler::Sampler,
+    Fact: SamplerFactory<Sampler = S>,
 {
     fn render(
         &self,
@@ -170,10 +188,9 @@ where
                             continue; // Skip pixels that have already converged
                         }
 
-                        // Create sampler internally — SobolQmcSampler per pixel
-                        let sampler = SobolQmcSampler::for_pixel(x as i32, y as i32);
-                        let mut dim_cursor = DimCursor::new(0, sampler);
-                        dim_cursor.sample_idx = sample_idx;
+                        // Create sampler from factory — decoupled from renderer internals
+                        let sampler = self.sampler_factory.for_pixel(x as i32, y as i32);
+                        let mut dim_cursor = DimCursor::new_at(0, sample_idx, sampler);
 
                         // Generate a camera sample for the pixel from sampler dimensions
                         // Dims 0-1: AA jitter, dims 2-3: lens (defocus)

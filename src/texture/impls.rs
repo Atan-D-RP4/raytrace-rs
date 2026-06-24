@@ -183,12 +183,15 @@ impl NoiseTexture {
 }
 
 impl Texture for NoiseTexture {
+    /// Marbled Perlin texture: combines turbulence with a sinusoidal warp
+    /// for a natural stone-like appearance.
+    ///
+    /// Other variants (for reference):
+    /// - Smooth: `Color3::from(1., 1., 1.) * 0.5 * (1.0 + self.noise.noise(&point))`
+    /// - Turbulent: `Color3::from(1., 1., 1.) * self.noise.turbulence(&point, 7)`
     fn value(&self, coords: &TextureCoords) -> Color3 {
         let point = coords.tex_points.texture;
-        // Color3::from(1., 1., 1.) * 0.5 * (1.0 + self.noise.noise(&point)) // Smooth Perlin Texture
-        // Color3::from(1., 1., 1.) * self.noise.turbulence(&point, 7) // Turbulent Perlin Texture
         Color3::from(0.5, 0.5, 0.5)
             * (1.0 + (point.z + (10.0 * self.noise.turbulence(point, 7))).sin())
-        // Marbled Perlin Texture
     }
 }
