@@ -53,8 +53,8 @@
 //! The material tree can be flattened into a GPU-friendly buffer via
 //! [`Material::to_gpu_buffer`]. Each node is a [`GpuMaterialNode`] with
 //! optional child indices. The shader mirrors the CPU's enum match via a
-//! switch on `material_type`. Custom materials return `None` from
-//! are not serialized to the GPU buffer.
+//! switch on `material_type`. Custom materials serialize as `Passthrough`
+//! nodes and are not uploaded to the GPU buffer.
 
 mod dielectric;
 mod diffuse_light;
@@ -133,7 +133,7 @@ pub enum PdfKind {
 /// Public so library consumers can implement custom materials.
 /// See [`Material`] for how built-in materials implement this trait.
 pub trait Bsdf: Send + Sync {
-    /// Sample an outgoing direction for the given outgoing direction and hit.
+    /// Sample an outgoing direction for the given view direction and hit.
     ///
     /// `u` is typically used for categorical decisions (which lobe to sample),
     /// `(v, w)` for 2D directional sampling, and `(x, y, z)` are reserved.
@@ -219,6 +219,9 @@ pub trait Bsdf: Send + Sync {
 /// to their [`Bsdf`] implementations. Library consumers can add custom
 /// materials via the [`Material::Custom`] variant.
 pub enum Material {
+    /// Absence of material. All BSDF methods return zero/None.
+    /// Used for importance targets where only geometry matters for sampling.
+    Void,
     /// Diffuse (Lambertian) surface.
     Lambertian(LambertianMaterial),
     /// Microfacet conductor BRDF (GGX).
@@ -251,6 +254,7 @@ pub enum Material {
 impl Clone for Material {
     fn clone(&self) -> Self {
         match self {
+            Material::Void => Material::Void,
             Material::Lambertian(inner) => Material::Lambertian(inner.clone()),
             Material::Metal(inner) => Material::Metal(inner.clone()),
             Material::Dielectric(inner) => Material::Dielectric(inner.clone()),
@@ -288,6 +292,7 @@ impl Material {
         z: f64,
     ) -> Option<BsdfSample> {
         match self {
+            Material::Void => None,
             Material::Lambertian(inner) => inner.sample(wo, si, u, v, w, x, y, z),
             Material::Metal(inner) => inner.sample(wo, si, u, v, w, x, y, z),
             Material::Dielectric(inner) => inner.sample(wo, si, u, v, w, x, y, z),
@@ -369,12 +374,10 @@ impl Material {
         }
     }
 
-    /// Evaluate the material's BSDF for an externally-chosen direction pair.
-    ///
-    /// Used by MIS when the integrator samples a direction from the light
-    /// PDF and needs to evaluate the material at that direction.
+    /// Evaluate the BSDF for a direction pair not sampled by this material.
     pub fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         match self {
+            Material::Void => Color3::ZERO,
             Material::Lambertian(inner) => inner.eval(wo, wi, si),
             Material::Metal(inner) => inner.eval(wo, wi, si),
             Material::Dielectric(inner) => inner.eval(wo, wi, si),
@@ -397,6 +400,7 @@ impl Material {
     /// Evaluate the material's sampling PDF for a given direction pair.
     pub fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         match self {
+            Material::Void => 0.0,
             Material::Lambertian(inner) => inner.pdf(wo, wi, si),
             Material::Metal(inner) => inner.pdf(wo, wi, si),
             Material::Dielectric(inner) => inner.pdf(wo, wi, si),
@@ -415,8 +419,10 @@ impl Material {
         }
     }
 
+    /// Returns the sampling PDF kind for MIS strategy selection.
     pub fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
         match self {
+            Material::Void => None,
             Material::Lambertian(inner) => inner.pdf_kind(wo, si),
             Material::Metal(inner) => inner.pdf_kind(wo, si),
             Material::Dielectric(inner) => inner.pdf_kind(wo, si),
@@ -446,9 +452,10 @@ impl Material {
         }
     }
 
-    /// Returns the emitted light color at the hit point.
+    /// Returns emitted light at the hit point. Default: no emission.
     pub fn emitted(&self, si: &SurfaceInteraction) -> Color3 {
         match self {
+            Material::Void => Color3::ZERO,
             Material::Lambertian(inner) => inner.emitted(si),
             Material::Metal(inner) => inner.emitted(si),
             Material::Dielectric(inner) => inner.emitted(si),
@@ -552,6 +559,11 @@ impl Bsdf for Material {
 }
 
 impl Material {
+    /// Absence of material. All BSDF methods return zero/None.
+    pub fn void() -> Self {
+        Material::Void
+    }
+
     /// Lambertian diffuse material from a solid color.
     pub fn lambertian_color(r: f64, g: f64, b: f64) -> Self {
         Material::Lambertian(LambertianMaterial {
@@ -568,8 +580,7 @@ impl Material {
         })
     }
 
-    /// Microfacet conductor (GGX). `fuzz` ∈ [0, 1] controls roughness;
-    /// `ior` sets the index of refraction for the Fresnel term (default 2.5).
+    /// Microfacet conductor (GGX). `fuzz` ∈ [0, 1] controls roughness.
     pub fn metal(albedo: Color3, fuzz: f64) -> Self {
         Material::Metal(MetalMaterial {
             albedo,
@@ -597,6 +608,7 @@ impl Material {
         })
     }
 
+    /// Dielectric with a colored tint (absorption per channel).
     pub fn dielectric_tinted(ior: f64, tint: Color3) -> Self {
         Material::Dielectric(DielectricMaterial {
             refractive_idx: ior,
@@ -670,10 +682,8 @@ impl Material {
         })
     }
 
-    /// Stochastic mix of two materials.
-    ///
-    /// `weight` ∈ [0, 1]: probability of choosing `b`. Use 0.5 for a 50/50
-    /// blend.
+    /// Stochastic mix of two materials. `weight` ∈ [0, 1] is the probability
+    /// of choosing `b`.
     pub fn mix(self, other: Material, weight: f64) -> Self {
         let weight = weight.clamp(0.0, 1.0);
         Material::Mix {

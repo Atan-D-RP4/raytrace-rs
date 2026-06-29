@@ -31,6 +31,7 @@ impl<T: Intersectable, const SURFACE: bool> ConstantMedium<T, SURFACE> {
     /// isolation.
     pub fn with_surface(boundary: T, density: f64, phase_fn: Material) -> Self {
         let phase_tag = match &phase_fn {
+            Material::Void => 0x00,
             Material::Lambertian(_) => 0x01,
             Material::Metal(_) => 0x02,
             Material::Dielectric(_) => 0x03,
@@ -62,6 +63,7 @@ impl<T: Intersectable> ConstantMedium<T> {
         // Uses the material's type tag bits rather than a heap pointer, so the seed
         // is reproducible across runs (not affected by ASLR / allocator state).
         let phase_tag = match &phase_fn {
+            Material::Void => 0x00,
             Material::Lambertian(_) => 0x01,
             Material::Metal(_) => 0x02,
             Material::Dielectric(_) => 0x03,

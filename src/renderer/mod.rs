@@ -29,7 +29,9 @@ where
         framebuffer: Option<SharedFramebuffer>,
     );
 
+    /// Resizes the renderer state for new output dimensions.
     fn resize(&mut self, _width: u32, _height: u32) {}
 
+    /// Resets renderer state for a new scene or camera.
     fn reset(&mut self) {}
 }

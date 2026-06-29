@@ -12,9 +12,7 @@ use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::BsdfSample;
-use crate::pdf::{
-    HittablePDF, PDF, PdfEnum, UniformHemispherePDF, UniformSpherePDF, power_heuristic,
-};
+use crate::pdf::{HittablePDF, PDF, PdfEnum, power_heuristic};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Color3, Vec3};
@@ -66,7 +64,7 @@ fn mis_sample<S: Sampler>(
 
     // 5. Compute contribution: N * w_sel * f / p_sel
     let f = eval_fn(direction);
-    let contribution = if p_sel > 1e-6 {
+    let contribution = if p_sel > 1e-10 {
         f * (n as f64 * mis_weight / p_sel)
     } else {
         crate::vec3::Color3::ZERO
@@ -175,10 +173,14 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             // - Volumes: env_pdf uses UniformSpherePDF instead of hemisphere.
                             let is_volume = si.shading_normal().near_zero();
 
-                            let env_pdf: Box<dyn PDF<S>> = if is_volume {
-                                Box::new(UniformSpherePDF::new())
+                            // Stack-allocated env PDF — no heap allocation.
+                            // PdfEnum dispatches via match on a hand-rolled enum (zero-cost).
+                            let env_pdf: PdfEnum<S> = if is_volume {
+                                PdfEnum::new(&crate::material::PdfKind::UniformSphere)
                             } else {
-                                Box::new(UniformHemispherePDF::new(si.shading_normal()))
+                                PdfEnum::new(&crate::material::PdfKind::Cosine {
+                                    normal: si.shading_normal(),
+                                })
                             };
                             let light_pdf = HittablePDF::new(lights, si.point(), ray.time);
 
@@ -188,7 +190,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             // Build surface PDFs only for valid slots.
                             let eval = |d: Vec3| material.eval(wo, d, &si);
 
-                            // Build the strategy list dynamically. Max capacity: env(0/1) + light(1) + s0(0/1) + s1(0/1) = 1..4.
+                            // Build the strategy list in a fixed-size array.
+                            // Max capacity: env(1) + light(1) + s0(0/1) + s1(0/1) = 2..4.
                             let s0 = if count >= 1 {
                                 Some(PdfEnum::new(&pdf_kinds[0]))
                             } else {
@@ -200,17 +203,22 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                                 None
                             };
 
-                            let mut pdfs: Vec<&dyn PDF<S>> = Vec::with_capacity(4);
-                            pdfs.push(&*env_pdf);
-                            pdfs.push(&light_pdf);
+                            // Fixed-size array replaces Vec — zero heap allocation.
+                            // Placeholder refs at indices 2..4 are overwritten before use.
+                            let mut pdf_refs: [&dyn PDF<S>; 4] =
+                                [&env_pdf, &light_pdf, &env_pdf, &light_pdf];
+                            let mut n = 2usize;
                             if let Some(ref s) = s0 {
-                                pdfs.push(s);
+                                pdf_refs[n] = s;
+                                n += 1;
                             }
                             if let Some(ref s) = s1 {
-                                pdfs.push(s);
+                                pdf_refs[n] = s;
+                                n += 1;
                             }
 
-                            let (direction, contribution) = mis_sample(&pdfs, eval, dim_cursor);
+                            let (direction, contribution) =
+                                mis_sample(&pdf_refs[..n], eval, dim_cursor);
 
                             // Pad mixture dims to exactly 4 (1 selection + 3 direction).
                             let mix_consumed = dim_cursor.offset() - mix_start;
@@ -220,10 +228,6 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             (direction, contribution)
                         }
                     };
-
-                    // Clamp per-sample contribution to prevent fireflies
-                    let bias =
-                        Color3::from(bias.x.min(100.0), bias.y.min(100.0), bias.z.min(100.0));
 
                     accumulated_attenuation = accumulated_attenuation * bias;
                     ray = Ray::new_with_time(si.point(), direction, ray.time);

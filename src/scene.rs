@@ -22,11 +22,13 @@ fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
 }
 
 pub struct Scene {
+    /// Camera configuration for the scene.
     config: CameraConfig,
+    /// All intersectable objects in the scene, including lights.
     objects: Vec<Arc<dyn Intersectable>>,
-    /// Geometry-only copies of emitting objects, used by the integrator
-    /// for light importance sampling (HittablePDF).
-    light_objects: Vec<Arc<dyn Sampleable>>,
+    /// Objects whose directions are worth sampling toward (area lights,
+    /// glass targets, etc.). Used by `HittablePDF` for MIS.
+    important_objects: Vec<Arc<dyn Sampleable>>,
 }
 
 impl Scene {
@@ -34,7 +36,7 @@ impl Scene {
         Self {
             config: CameraConfig::new(),
             objects: Vec::new(),
-            light_objects: Vec::new(),
+            important_objects: Vec::new(),
         }
     }
 
@@ -47,12 +49,12 @@ impl Scene {
         &self.config
     }
 
-    /// Returns (world_objects, light_objects).
+    /// Returns `(objects, important_objects)`.
     ///
-    /// `light_objects` are geometry-only copies of emitting primitives,
-    /// used by the integrator for importance sampling (HittablePDF).
+    /// `important_objects` are geometry-only copies for importance sampling
+    /// via `HittablePDF` (area lights, glass targets, etc.).
     pub fn into_objects(self) -> (Vec<Arc<dyn Intersectable>>, Vec<Arc<dyn Sampleable>>) {
-        (self.objects, self.light_objects)
+        (self.objects, self.important_objects)
     }
 
     pub fn aspect_ratio(mut self, ratio: f64) -> Self {
@@ -102,16 +104,29 @@ impl Scene {
 }
 
 impl Scene {
-    /// Push an intersectable object, optionally registering it as a light
-    /// source for importance sampling.
-    fn add_intersectable(
+    /// Add an intersectable for intersection, optionally with a separate
+    /// importance target for sampling via `HittablePDF`.
+    ///
+    /// Use separate objects when the importance target needs a different
+    /// material (e.g., `Material::Void` for sampling, `Material::dielectric`
+    /// for refraction).
+    pub fn add_intersectable(
         &mut self,
         object: Arc<dyn Intersectable>,
-        light: Option<Arc<dyn Sampleable>>,
+        importance_target: Option<Arc<dyn Sampleable>>,
     ) {
-        if let Some(light) = light {
-            self.light_objects.push(light);
+        if let Some(target) = importance_target {
+            self.important_objects.push(target);
         }
+        self.objects.push(object);
+    }
+
+    /// Register a sampleable as an importance target.
+    ///
+    /// Pushes to both `objects` (intersection) and `important_objects`
+    /// (importance sampling via `HittablePDF`).
+    pub fn add_importance_target(&mut self, object: Arc<dyn Sampleable>) {
+        self.important_objects.push(object.clone());
         self.objects.push(object);
     }
 
@@ -174,6 +189,7 @@ impl Scene {
         }
     }
 
+    /// Add an intersectable object for intersection only (no importance sampling).
     pub fn add_object(&mut self, object: Arc<dyn Intersectable>) {
         self.objects.push(object);
     }
@@ -427,10 +443,18 @@ impl Scene {
         //     // Values must be <= 1.0 for energy conservation (no light amplification).
         //     Material::dielectric_tinted(1.5, Color3::from(0.8, 0.8, 1.0)),
         // );
-        scene.add_sphere(
-            Point3::from(200., 90., 200.),
-            90.,
-            Material::dielectric(1.5),
+        // Glass sphere: dielectric for intersection, Void for importance sampling.
+        scene.add_intersectable(
+            Arc::new(sphere(
+                Point3::from(200., 90., 200.),
+                90.,
+                Material::dielectric(1.5),
+            )),
+            Some(Arc::new(sphere(
+                Point3::from(200., 90., 200.),
+                90.,
+                Material::Void,
+            ))),
         );
 
         scene.config.samples_per_pixel = 200;

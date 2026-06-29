@@ -29,6 +29,8 @@ pub enum GpuMaterialType {
     Coated = 7,
     /// Marks a node that exists only for its children (no parameters).
     Passthrough = 0xFFFF,
+    /// Absence of material — surface contributes nothing.
+    Void = 0xFFFE,
 }
 
 /// A material node in the GPU buffer.
@@ -111,6 +113,18 @@ pub(super) fn write_node(mat: &Material, buf: &mut GpuMaterialBuffer) -> u32 {
                 param_offset,
                 child_a,
                 child_b,
+                texture_index: GPU_NONE,
+            });
+            buf.nodes.len() as u32 - 1
+        }
+
+        Material::Void => {
+            let param_offset = buf.params.len() as u32;
+            buf.nodes.push(GpuMaterialNode {
+                material_type: GpuMaterialType::Void as u32,
+                param_offset,
+                child_a: GPU_NONE,
+                child_b: GPU_NONE,
                 texture_index: GPU_NONE,
             });
             buf.nodes.len() as u32 - 1
