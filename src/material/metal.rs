@@ -27,7 +27,7 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3, reflect};
+use crate::vec3::{reflect, Color3, Vec3};
 
 use super::GPU_NONE;
 use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
@@ -47,6 +47,8 @@ pub struct MetalMaterial {
     pub fuzz: f64,
     /// Index of refraction for the Fresnel term (typical metals: 2.5–3.0).
     pub ior: f64,
+    /// Precomputed Fresnel reflectance at normal incidence.
+    pub r0: f64,
 }
 
 impl Bsdf for MetalMaterial {
@@ -65,7 +67,7 @@ impl Bsdf for MetalMaterial {
                 return None;
             }
             let cos_o = wo.dot(&si.shading_normal()).max(0.0);
-            let f = fresnel_schlick(cos_o, self.ior);
+            let f = fresnel_schlick(cos_o, self.r0);
             let albedo_ = self
                 .tex
                 .as_ref()
@@ -128,8 +130,8 @@ impl Bsdf for MetalMaterial {
             return Color3::from(0., 0., 0.);
         }
         let d = ggx_d(cos_h_n, alpha);
-        let f = fresnel_schlick(cos_h_o, self.ior);
-        let g = geometry_schlick_ggx(cos_o, alpha) * geometry_schlick_ggx(cos_i, alpha);
+        let f = fresnel_schlick(cos_h_o, self.r0);
+        let g = geometry_schlick_ggx(cos_o, self.fuzz) * geometry_schlick_ggx(cos_i, self.fuzz);
         albedo * f * d * g / (4.0 * cos_o)
     }
 
@@ -145,6 +147,7 @@ impl Bsdf for MetalMaterial {
         ggx_d(cos_h_n, alpha) * cos_h_n / (4.0 * cos_h_o)
     }
 
+    /// Returns the PDF kind for the GGX NDF if `fuzz` is non-zero, otherwise `None`.
     fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
         if self.fuzz < 1e-4 {
             None

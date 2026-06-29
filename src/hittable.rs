@@ -129,10 +129,16 @@ impl<'si> SurfaceInteraction<'si> {
         self.hit.uv
     }
     pub fn u(&self) -> f64 {
-        self.hit.uv.map(|(u, _)| u).unwrap_or(0.0)
+        match self.hit.uv {
+            Some((u, _)) => u,
+            None => 0.0,
+        }
     }
     pub fn v(&self) -> f64 {
-        self.hit.uv.map(|(_, v)| v).unwrap_or(0.0)
+        match self.hit.uv {
+            Some((_, v)) => v,
+            None => 0.0,
+        }
     }
     pub fn geometric_normal(&self) -> Vec3 {
         self.hit.geometric_normal

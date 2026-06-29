@@ -17,11 +17,11 @@
 //! sampled direction directly.
 
 use crate::hittable::SurfaceInteraction;
-use crate::vec3::{Color3, Vec3, reflect, refract};
+use crate::vec3::{reflect, refract, Color3, Vec3};
 
 use crate::material::fresnel_schlick;
 use crate::material::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
-use crate::material::{GPU_NONE, PdfKind};
+use crate::material::{PdfKind, GPU_NONE};
 use crate::sampler::SampleDims;
 
 /// Dielectric transmission/reflection controlled by refractive index.
@@ -31,6 +31,8 @@ pub struct DielectricMaterial {
     pub refractive_idx: f64,
     /// Optional tint color for colored glass. Pure white means no tint.
     pub tint: Color3,
+    /// Precomputed Fresnel reflectance at normal incidence.
+    pub r0: f64,
 }
 
 impl Bsdf for DielectricMaterial {
@@ -45,12 +47,11 @@ impl Bsdf for DielectricMaterial {
         };
         let cos_theta = wo.dot(&si.shading_normal()).min(1.0);
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-        let direction =
-            if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.refractive_idx) > dims.u {
-                reflect(&-wo, &si.shading_normal())
-            } else {
-                refract(&-wo, &si.shading_normal(), ri)
-            };
+        let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > dims.u {
+            reflect(&-wo, &si.shading_normal())
+        } else {
+            refract(&-wo, &si.shading_normal(), ri)
+        };
         Some(BsdfSample::Delta {
             wi: direction,
             f_cos: self.tint,
@@ -67,6 +68,7 @@ impl Bsdf for DielectricMaterial {
         0.0
     }
 
+    /// Delta material — no PDF kind for arbitrary directions.
     fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }

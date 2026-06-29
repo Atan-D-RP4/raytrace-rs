@@ -152,6 +152,9 @@ pub trait Bsdf: Send + Sync {
     /// that this material would have sampled `wi` given `wo`.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64;
 
+    /// Returns the sampling PDF kind for MIS strategy selection.
+    ///
+    /// The integrator uses this to select the correct PDF object for MIS weighting.
     fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }
@@ -343,7 +346,7 @@ impl Material {
                 // this branch will need to be updated to keep sample/eval/pdf
                 // consistent.
                 let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, 1.5);
+                let f = fresnel_schlick(cos_o, COATED_R0);
                 if dims.u < f {
                     // Compute coating reflection directly — delegating to the
                     // dielectric's sample() would apply a second Fresnel check
@@ -401,7 +404,7 @@ impl Material {
             }
             Material::Coated { substrate, coating } => {
                 let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, 1.5);
+                let f = fresnel_schlick(cos_o, COATED_R0);
                 f * coating.eval(wo, wi, si) + (1.0 - f) * substrate.eval(wo, wi, si)
             }
         }
@@ -423,7 +426,7 @@ impl Material {
             }
             Material::Coated { substrate, coating } => {
                 let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, 1.5);
+                let f = fresnel_schlick(cos_o, COATED_R0);
                 f * coating.pdf(wo, wi, si) + (1.0 - f) * substrate.pdf(wo, wi, si)
             }
         }
@@ -452,7 +455,7 @@ impl Material {
             }
             Material::Coated { substrate, coating } => {
                 let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, 1.5);
+                let f = fresnel_schlick(cos_o, COATED_R0);
                 if f > 0.5 {
                     coating.pdf_kind(wo, si)
                 } else {
@@ -587,6 +590,7 @@ impl Material {
             tex: None,
             fuzz,
             ior: 2.5,
+            r0: fresnel_r0(2.5),
         })
     }
 
@@ -597,6 +601,7 @@ impl Material {
             tex: None,
             fuzz,
             ior,
+            r0: fresnel_r0(ior),
         })
     }
 
@@ -605,6 +610,7 @@ impl Material {
         Material::Dielectric(DielectricMaterial {
             refractive_idx: ior,
             tint: Color3::from(1., 1., 1.),
+            r0: fresnel_r0(ior),
         })
     }
 
@@ -613,6 +619,7 @@ impl Material {
         Material::Dielectric(DielectricMaterial {
             refractive_idx: ior,
             tint,
+            r0: fresnel_r0(ior),
         })
     }
 
@@ -649,6 +656,7 @@ impl Material {
             tex: None,
             roughness,
             ior,
+            r0: fresnel_r0(ior),
         })
     }
 
@@ -659,6 +667,7 @@ impl Material {
             tex: Some(tex),
             fuzz,
             ior: 2.5,
+            r0: fresnel_r0(2.5),
         })
     }
 
@@ -669,6 +678,7 @@ impl Material {
             tex: Some(tex),
             fuzz,
             ior,
+            r0: fresnel_r0(ior),
         })
     }
 
@@ -679,6 +689,7 @@ impl Material {
             tex: Some(tex),
             roughness,
             ior,
+            r0: fresnel_r0(ior),
         })
     }
 
@@ -735,25 +746,31 @@ pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
 ///
 /// Models microfacet self-shadowing: at grazing angles, some microfacets are
 /// blocked by others, reducing the effective reflection. `cos_theta` is
-/// `cos(ω·N)`, `alpha` is `roughness²`. Returns a multiplier in [0, 1].
-pub(super) fn geometry_schlick_ggx(cos_theta: f64, alpha: f64) -> f64 {
+/// `cos(ω·N)`, `roughness` is the RMS surface slope (e.g., `fuzz` or
+/// `roughness` directly, not squared). Returns a multiplier in [0, 1].
+pub(super) fn geometry_schlick_ggx(cos_theta: f64, roughness: f64) -> f64 {
     if cos_theta <= 0.0 {
         return 0.0;
     }
-    // Direct lighting remapping: k = (roughness + 1)² / 8.
-    // `alpha` = roughness², so roughness = alpha.sqrt().
-    let roughness = alpha.sqrt();
     let k = (roughness + 1.0).powi(2) / 8.0;
     cos_theta / (cos_theta * (1.0 - k) + k)
 }
 
+/// Precomputed Fresnel reflectance at normal incidence for a given IOR.
+#[inline(always)]
+pub(super) fn fresnel_r0(ior: f64) -> f64 {
+    ((1.0 - ior) / (1.0 + ior)).powi(2)
+}
+
+/// Fresnel r0 for the Coated material's hardcoded IOR of 1.5.
+pub(super) const COATED_R0: f64 = 0.04;
+
 /// Schlick Fresnel reflectance for unpolarized light.
 ///
 /// Approximates the fraction of light reflected at a dielectric interface.
-/// `cos_theta` is `cos(ω·N)`, `ior` is the ratio of refractive indices.
-/// At normal incidence returns `((1-ior)/(1+ior))²`; approaches 1 at grazing.
-pub(super) fn fresnel_schlick(cos_theta: f64, ior: f64) -> f64 {
-    let r0 = ((1.0 - ior) / (1.0 + ior)).powi(2);
+/// `cos_theta` is `cos(ω·N)`, `r0` is the reflectance at normal incidence
+/// (precomputed via [`fresnel_r0`]). Approaches 1 at grazing.
+pub(super) fn fresnel_schlick(cos_theta: f64, r0: f64) -> f64 {
     r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
 }
 

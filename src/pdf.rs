@@ -2,11 +2,11 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::Sampleable;
-use crate::material::PdfKind;
 use crate::material::ggx_d;
+use crate::material::PdfKind;
 use crate::onb::Onb;
 use crate::sampler::{DimCursor, Sampler};
-use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
+use crate::vec3::{concentric_disk, reflect, Point3, Vec3};
 
 /// Power-heuristic MIS weight exponent.
 ///
@@ -158,7 +158,7 @@ impl UniformHemispherePDF {
 
 impl<S: Sampler> PDF<S> for UniformHemispherePDF {
     fn value(&self, direction: Vec3) -> f64 {
-        let cos_theta = direction.unit_vector().dot(&self.uvw.w);
+        let cos_theta = direction.dot(&self.uvw.w);
         if cos_theta > 0.0 {
             1.0 / (2.0 * PI)
         } else {
@@ -194,7 +194,7 @@ impl CosinePDF {
 
 impl<S: Sampler> PDF<S> for CosinePDF {
     fn value(&self, direction: Vec3) -> f64 {
-        let cos_theta = direction.unit_vector().dot(&self.uvw.w);
+        let cos_theta = direction.dot(&self.uvw.w);
         (cos_theta / PI).max(0.)
     }
 
@@ -294,7 +294,7 @@ impl GgxSamplePDF {
 
 impl<S: Sampler> PDF<S> for GgxSamplePDF {
     fn value(&self, direction: Vec3) -> f64 {
-        let wi = direction.unit_vector();
+        let wi = direction;
         let h = (self.wo_unit + wi).unit_vector();
         let cos_h = self.wo_unit.dot(&h).abs();
         if cos_h <= 0.0 {

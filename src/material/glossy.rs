@@ -20,13 +20,13 @@ use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::{
-    Bsdf, BsdfSample, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    fresnel_schlick, geometry_schlick_ggx, ggx_d,
+    fresnel_schlick, geometry_schlick_ggx, ggx_d, Bsdf, BsdfSample, GpuMaterialBuffer,
+    GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE,
 };
 use crate::onb::Onb;
 use crate::sampler::SampleDims;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3, reflect};
+use crate::vec3::{reflect, Color3, Vec3};
 
 /// Glossy microfacet BRDF (GGX).
 #[derive(Clone)]
@@ -40,6 +40,8 @@ pub struct GlossyMaterial {
     pub roughness: f64,
     /// Index of refraction for the Fresnel term (1.5 = glass, 1.45 = typical plastic).
     pub ior: f64,
+    /// Precomputed Fresnel reflectance at normal incidence.
+    pub r0: f64,
 }
 
 impl Bsdf for GlossyMaterial {
@@ -57,7 +59,7 @@ impl Bsdf for GlossyMaterial {
                 return None;
             }
             let cos_o = wo.dot(&si.shading_normal()).max(0.0);
-            let f = fresnel_schlick(cos_o, self.ior);
+            let f = fresnel_schlick(cos_o, self.r0);
             let albedo_ = self
                 .tex
                 .as_ref()
@@ -123,8 +125,9 @@ impl Bsdf for GlossyMaterial {
         }
 
         let d = ggx_d(cos_h_n, alpha);
-        let f = fresnel_schlick(cos_h_o, self.ior);
-        let g = geometry_schlick_ggx(cos_o, alpha) * geometry_schlick_ggx(cos_i, alpha);
+        let f = fresnel_schlick(cos_h_o, self.r0);
+        let g = geometry_schlick_ggx(cos_o, self.roughness)
+            * geometry_schlick_ggx(cos_i, self.roughness);
 
         albedo * f * d * g / (4.0 * cos_o)
     }
@@ -144,6 +147,7 @@ impl Bsdf for GlossyMaterial {
         ggx_d(cos_h_n, alpha) * cos_h_n / (4.0 * cos_h_o)
     }
 
+    /// Returns the PDF kind for the GGX distribution, which is used in mixture sampling.
     fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         Some(PdfKind::Ggx {
