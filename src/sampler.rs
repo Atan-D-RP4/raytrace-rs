@@ -391,6 +391,26 @@ impl<S: Sampler> DimCursor<S> {
     }
 }
 
+/// Random dimensions consumed by material sampling.
+///
+/// A material call consumes 6 dimensions from the sampler:
+/// `u` for categorical decisions, `(v, w)` for 2D directional sampling,
+/// and `(x, y, z)` reserved for future use. `z` is sometimes recycled
+/// when composition variants need an extra dimension for a child's
+/// directional sampling.
+#[derive(Clone, Copy, Debug)]
+pub struct SampleDims {
+    /// Categorical decision (lobe selection, Fresnel check).
+    pub u: f64,
+    /// 2D directional sampling on the sphere/hemisphere.
+    pub v: f64,
+    pub w: f64,
+    /// Reserved for future use.
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

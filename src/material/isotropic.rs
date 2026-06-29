@@ -19,6 +19,7 @@ use crate::vec3::{Color3, Vec3};
 
 use super::GPU_NONE;
 use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
+use crate::sampler::SampleDims;
 
 /// Isotropic scattering medium (volumes).
 #[derive(Clone)]
@@ -33,17 +34,7 @@ impl Bsdf for IsotropicMaterial {
     /// Returns the attenuation color (texture or solid albedo) with `Vec3::ZERO`
     /// as a placeholder direction. The integrator generates the actual scattered
     /// direction.
-    fn sample(
-        &self,
-        _wo: Vec3,
-        _si: &SurfaceInteraction,
-        _u: f64,
-        _v: f64,
-        _w: f64,
-        _x: f64,
-        _y: f64,
-        _z: f64,
-    ) -> Option<BsdfSample> {
+    fn sample(&self, _wo: Vec3, _si: &SurfaceInteraction, _dims: SampleDims) -> Option<BsdfSample> {
         Some(BsdfSample::NonDelta {
             pdf_kinds: [PdfKind::UniformSphere, PdfKind::Delta],
             count: 1,

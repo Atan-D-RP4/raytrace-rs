@@ -14,7 +14,7 @@ use crate::interval::Interval;
 use crate::material::BsdfSample;
 use crate::pdf::{HittablePDF, PDF, PdfEnum, power_heuristic};
 use crate::ray::Ray;
-use crate::sampler::{DimCursor, Sampler};
+use crate::sampler::{DimCursor, SampleDims, Sampler};
 use crate::vec3::{Color3, Vec3};
 
 /// One-sample MIS estimator with power heuristic (β=2).
@@ -146,9 +146,18 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 let y_mat = dim_cursor.next_sample();
                 let z_mat = dim_cursor.next_sample();
 
-                if let Some(sample) =
-                    material.sample(wo, &si, u_mat, v_mat, w_mat, x_mat, y_mat, z_mat)
-                {
+                if let Some(sample) = material.sample(
+                    wo,
+                    &si,
+                    SampleDims {
+                        u: u_mat,
+                        v: v_mat,
+                        w: w_mat,
+                        x: x_mat,
+                        y: y_mat,
+                        z: z_mat,
+                    },
+                ) {
                     let (direction, bias) = match sample {
                         BsdfSample::Delta { wi, f_cos } => {
                             // Pad to fixed 4-dim stride so subsequent bounces use consistent

@@ -24,6 +24,7 @@ use crate::material::{
     fresnel_schlick, geometry_schlick_ggx, ggx_d,
 };
 use crate::onb::Onb;
+use crate::sampler::SampleDims;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
@@ -48,17 +49,7 @@ impl Bsdf for GlossyMaterial {
     /// When `roughness` is effectively zero (below 1e-4), the surface is a
     /// perfect mirror — returns `BsdfSample::Delta` so the integrator skips
     /// the mixture PDF and uses the reflected direction directly.
-    fn sample(
-        &self,
-        wo: Vec3,
-        si: &SurfaceInteraction,
-        u: f64,
-        v: f64,
-        _w: f64,
-        _x: f64,
-        _y: f64,
-        _z: f64,
-    ) -> Option<BsdfSample> {
+    fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
         if self.roughness < 1e-4 {
             let wi = reflect(&-wo, &si.shading_normal());
@@ -80,8 +71,8 @@ impl Bsdf for GlossyMaterial {
 
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         // Sample H from GGX NDF.
-        let u1 = u;
-        let u2 = v;
+        let u1 = dims.u;
+        let u2 = dims.v;
         let cos_theta = ((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2))
             .clamp(0.0, 1.0)
             .sqrt();

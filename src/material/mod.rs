@@ -40,7 +40,7 @@
 //! struct MyCustomBrdf { ... }
 //!
 //! impl Bsdf for MyCustomBrdf {
-//!     fn sample(&self, wo: Vec3, si: &SurfaceInteraction, _u: f64, _v: f64, _w: f64, _x: f64) -> Option<BsdfSample> { ... }
+//!     fn sample(&self, wo: Vec3, si: &SurfaceInteraction, _dims: SampleDims) -> Option<BsdfSample> { ... }
 //!     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 { ... }
 //!     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 { ... }
 //! }
@@ -80,6 +80,7 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
+use crate::sampler::SampleDims;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
@@ -135,20 +136,8 @@ pub enum PdfKind {
 pub trait Bsdf: Send + Sync {
     /// Sample an outgoing direction for the given view direction and hit.
     ///
-    /// `u` is typically used for categorical decisions (which lobe to sample),
-    /// `(v, w)` for 2D directional sampling, and `(x, y, z)` are reserved.
-    /// Returns `None` for pure emitters.
-    fn sample(
-        &self,
-        wo: Vec3,
-        si: &SurfaceInteraction,
-        u: f64,
-        v: f64,
-        w: f64,
-        x: f64,
-        y: f64,
-        z: f64,
-    ) -> Option<BsdfSample>;
+    /// See [`SampleDims`] for dimension semantics. Returns `None` for pure emitters.
+    fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample>;
 
     /// Evaluate the BSDF for an outgoing→incoming direction pair.
     ///
@@ -284,24 +273,19 @@ impl Material {
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
-        u: f64,
-        v: f64,
-        w: f64,
-        x: f64,
-        y: f64,
-        z: f64,
+        dims: SampleDims,
     ) -> Option<BsdfSample> {
         match self {
             Material::Void => None,
-            Material::Lambertian(inner) => inner.sample(wo, si, u, v, w, x, y, z),
-            Material::Metal(inner) => inner.sample(wo, si, u, v, w, x, y, z),
-            Material::Dielectric(inner) => inner.sample(wo, si, u, v, w, x, y, z),
-            Material::DiffuseLight(inner) => inner.sample(wo, si, u, v, w, x, y, z),
-            Material::Isotropic(inner) => inner.sample(wo, si, u, v, w, x, y, z),
-            Material::Glossy(inner) => inner.sample(wo, si, u, v, w, x, y, z),
-            Material::Custom(inner) => inner.sample(wo, si, u, v, w, x, y, z),
+            Material::Lambertian(inner) => inner.sample(wo, si, dims),
+            Material::Metal(inner) => inner.sample(wo, si, dims),
+            Material::Dielectric(inner) => inner.sample(wo, si, dims),
+            Material::DiffuseLight(inner) => inner.sample(wo, si, dims),
+            Material::Isotropic(inner) => inner.sample(wo, si, dims),
+            Material::Glossy(inner) => inner.sample(wo, si, dims),
+            Material::Custom(inner) => inner.sample(wo, si, dims),
             Material::Mix { a, b, weight } => {
-                let (chosen, selection_prob) = if u < *weight {
+                let (chosen, selection_prob) = if dims.u < *weight {
                     (b.as_ref() as &dyn Bsdf, *weight)
                 } else {
                     (a.as_ref() as &dyn Bsdf, 1.0 - *weight)
@@ -309,7 +293,18 @@ impl Material {
                 // Dims: `u` consumed for selection, pass v-w for child directional
                 // sampling, x-y-z as padding. `z` is recycled for child's z — no
                 // material reads z, so the dependency is semantically harmless.
-                let mut result = chosen.sample(wo, si, v, w, x, y, z, z)?;
+                let mut result = chosen.sample(
+                    wo,
+                    si,
+                    SampleDims {
+                        u: dims.v,
+                        v: dims.w,
+                        w: dims.x,
+                        x: dims.y,
+                        y: dims.z,
+                        z: dims.z,
+                    },
+                )?;
                 // The child was selected with probability `selection_prob`. For Delta
                 // paths the direction comes directly from the child (no MIS mixture),
                 // so f_cos must be divided by the selection probability. NonDelta paths
@@ -320,7 +315,11 @@ impl Material {
                         *f_cos /= selection_prob;
                     }
                     BsdfSample::NonDelta { pdf_kinds, count } => {
-                        let other = if u < *weight { a.as_ref() } else { b.as_ref() };
+                        let other = if dims.u < *weight {
+                            a.as_ref()
+                        } else {
+                            b.as_ref()
+                        };
                         if let Some(other_kind) = other.pdf_kind(wo, si)
                             && (*count as usize) < pdf_kinds.len()
                         {
@@ -345,7 +344,7 @@ impl Material {
                 // consistent.
                 let cos_o = wo.dot(&si.shading_normal()).abs();
                 let f = fresnel_schlick(cos_o, 1.5);
-                if u < f {
+                if dims.u < f {
                     // Compute coating reflection directly — delegating to the
                     // dielectric's sample() would apply a second Fresnel check
                     // (on dimension v) causing double-counting or selecting
@@ -361,7 +360,18 @@ impl Material {
                 } else {
                     // Transmit through coating; importance-sample substrate with
                     // transmission probability (1-f) weight.
-                    let mut bsdf = substrate.sample(wo, si, v, w, x, y, z, z)?;
+                    let mut bsdf = substrate.sample(
+                        wo,
+                        si,
+                        SampleDims {
+                            u: dims.v,
+                            v: dims.w,
+                            w: dims.x,
+                            x: dims.y,
+                            y: dims.z,
+                            z: dims.z,
+                        },
+                    )?;
                     match &mut bsdf {
                         BsdfSample::Delta { f_cos, .. } => {
                             *f_cos /= 1.0 - f;
@@ -511,18 +521,8 @@ impl Material {
 }
 
 impl Bsdf for Material {
-    fn sample(
-        &self,
-        wo: Vec3,
-        si: &SurfaceInteraction,
-        u: f64,
-        v: f64,
-        w: f64,
-        x: f64,
-        y: f64,
-        z: f64,
-    ) -> Option<BsdfSample> {
-        self.sample(wo, si, u, v, w, x, y, z)
+    fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample> {
+        self.sample(wo, si, dims)
     }
 
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
@@ -882,12 +882,7 @@ mod tests {
                 &self,
                 _wo: Vec3,
                 _si: &SurfaceInteraction,
-                _u: f64,
-                _v: f64,
-                _w: f64,
-                _x: f64,
-                _y: f64,
-                _z: f64,
+                _dims: SampleDims,
             ) -> Option<BsdfSample> {
                 None
             }
