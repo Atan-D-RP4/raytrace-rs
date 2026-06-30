@@ -2,11 +2,11 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::Sampleable;
-use crate::material::ggx_d;
 use crate::material::PdfKind;
+use crate::material::ggx_d;
 use crate::onb::Onb;
 use crate::sampler::{DimCursor, Sampler};
-use crate::vec3::{concentric_disk, reflect, Point3, Vec3};
+use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
 
 /// Power-heuristic MIS weight exponent.
 ///
@@ -65,6 +65,7 @@ enum PdfEnumInner {
     Cosine(CosinePDF),
     Ggx(GgxSamplePDF),
     UniformSphere(UniformSpherePDF),
+    UniformHemisphere(UniformHemispherePDF),
 }
 
 impl<S: Sampler> PDF<S> for PdfEnum<S> {
@@ -73,6 +74,9 @@ impl<S: Sampler> PDF<S> for PdfEnum<S> {
             PdfEnumInner::Cosine(p) => <CosinePDF as PDF<S>>::value(p, direction),
             PdfEnumInner::Ggx(p) => <GgxSamplePDF as PDF<S>>::value(p, direction),
             PdfEnumInner::UniformSphere(p) => <UniformSpherePDF as PDF<S>>::value(p, direction),
+            PdfEnumInner::UniformHemisphere(p) => {
+                <UniformHemispherePDF as PDF<S>>::value(p, direction)
+            }
         }
     }
     fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
@@ -80,6 +84,9 @@ impl<S: Sampler> PDF<S> for PdfEnum<S> {
             PdfEnumInner::Cosine(p) => <CosinePDF as PDF<S>>::generate(p, dim_offset),
             PdfEnumInner::Ggx(p) => <GgxSamplePDF as PDF<S>>::generate(p, dim_offset),
             PdfEnumInner::UniformSphere(p) => <UniformSpherePDF as PDF<S>>::generate(p, dim_offset),
+            PdfEnumInner::UniformHemisphere(p) => {
+                <UniformHemispherePDF as PDF<S>>::generate(p, dim_offset)
+            }
         }
     }
 }
@@ -93,6 +100,9 @@ impl<S: Sampler> PdfEnum<S> {
                 PdfEnumInner::Ggx(GgxSamplePDF::new(*wo, *normal, *alpha))
             }
             PdfKind::UniformSphere => PdfEnumInner::UniformSphere(UniformSpherePDF::new()),
+            PdfKind::UniformHemisphere { normal } => {
+                PdfEnumInner::UniformHemisphere(UniformHemispherePDF::new(*normal))
+            }
             PdfKind::Delta => unreachable!(),
         };
         PdfEnum {

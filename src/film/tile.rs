@@ -9,6 +9,9 @@ pub struct FilmTile {
     pub pixels: Vec<Color3>,
     /// A parallel vector to `pixels` that tracks whether each pixel has been sampled at least once.
     pub sampled: Vec<bool>,
+    /// Whether this tile was zeroed this pass (has unconverged pixels).
+    /// Tiles where all pixels are converged skip zeroing and merging.
+    pub dirty: bool,
 }
 
 impl FilmTile {
@@ -21,6 +24,7 @@ impl FilmTile {
             width,
             pixels: vec![Color3::ZERO; (width * height) as usize],
             sampled: vec![false; (width * height) as usize],
+            dirty: true,
         }
     }
 

@@ -5,24 +5,24 @@ use softbuffer::{Context, Surface};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-use winit::{
-    application::ApplicationHandler,
-    dpi::{LogicalSize, PhysicalSize},
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
-    window::{Theme, Window, WindowId},
-};
+use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use winit::window::{Theme, Window, WindowId};
 
+use raytrace_rs::bvh::BvhNode;
+use raytrace_rs::camera::Camera;
+use raytrace_rs::camera::PerspectiveCamera;
+use raytrace_rs::film::RgbFilm;
+use raytrace_rs::film::{Framebuffer, SharedFramebuffer};
+use raytrace_rs::flat_bvh::FlatBvh;
+use raytrace_rs::integrator::PathTracingIntegrator;
+use raytrace_rs::renderer::CpuRenderer;
+use raytrace_rs::renderer::Renderer;
+use raytrace_rs::sampler::{SobolSamplerFactory, StratifiedSamplerFactory};
 use raytrace_rs::scene::Scene;
-use raytrace_rs::{bvh::BvhNode, camera::PerspectiveCamera};
-use raytrace_rs::{camera::Camera, film::RgbFilm};
-use raytrace_rs::{
-    film::{Framebuffer, SharedFramebuffer},
-    integrator::PathTracingIntegrator,
-};
-use raytrace_rs::{flat_bvh::FlatBvh, renderer::CpuRenderer};
-use raytrace_rs::{renderer::Renderer, sampler::SobolSamplerFactory};
 
 const WIDTH: u32 = 800;
 
@@ -418,7 +418,8 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
 
     renderer.set_threshold_abs(1e-7);
     renderer.set_threshold_rel(5e-4);
-    renderer.set_min_samples_before_adapt(u32::MAX);
+    // renderer.set_min_samples_before_adapt(u32::MAX);
+    renderer.set_min_samples_before_adapt(256);
 
     let event_loop = EventLoop::new()?;
     let mut app = App::new(framebuffer.clone(), width, height);
@@ -493,14 +494,17 @@ fn headless_render(scene: Scene, scene_name: &str) {
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
     let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
-    let sampler_factory = raytrace_rs::sampler::SobolSamplerFactory;
+    let sampler_factory = StratifiedSamplerFactory::new(config.samples_per_pixel as u32);
     let mut renderer =
         CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);
     let (width, height) = camera.image_resolution();
 
-    renderer.set_threshold_abs(1e-7);
-    renderer.set_threshold_rel(5e-4);
-    renderer.set_min_samples_before_adapt(128);
+    renderer.set_threshold_abs(1e-6);
+    renderer.set_threshold_rel(1e-4);
+
+    // Disable adaptive sampling for headless mode to ensure full sample count is rendered.
+    // renderer.set_min_samples_before_adapt(u32::MAX);
+    renderer.set_min_samples_before_adapt(256);
 
     let (mut objects, light_objects) = scene.into_objects();
 

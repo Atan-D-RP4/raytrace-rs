@@ -6,6 +6,8 @@
 
 use std::sync::LazyLock;
 
+use rand::RngExt;
+
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
 ///
 /// Same `(n, d)` always returns the same value — deterministic across threads.
@@ -278,8 +280,8 @@ impl SamplerFactory for NaiveSamplerFactory {
     type Sampler = NaiveRandomSampler;
 
     #[inline]
-    fn for_pixel(&self, _x: i32, _y: i32) -> NaiveRandomSampler {
-        NaiveRandomSampler::with_seed(self.seed)
+    fn for_pixel(&self, x: i32, y: i32) -> NaiveRandomSampler {
+        NaiveRandomSampler::with_seed(self.seed.wrapping_add(pixel_seed(x, y)))
     }
 }
 
@@ -290,10 +292,10 @@ pub struct StratifiedSamplerFactory {
 }
 
 impl StratifiedSamplerFactory {
-    pub fn new(sqrt_spp: u32, seed: u64) -> Self {
+    pub fn new(sqrt_spp: u32) -> Self {
         Self {
             sqrt_spp: sqrt_spp.max(1),
-            seed,
+            seed: rand::rng().random(),
         }
     }
 }
@@ -302,8 +304,8 @@ impl SamplerFactory for StratifiedSamplerFactory {
     type Sampler = StratifiedRandomSampler;
 
     #[inline]
-    fn for_pixel(&self, _x: i32, _y: i32) -> StratifiedRandomSampler {
-        StratifiedRandomSampler::new(self.sqrt_spp, self.seed)
+    fn for_pixel(&self, x: i32, y: i32) -> StratifiedRandomSampler {
+        StratifiedRandomSampler::new(self.sqrt_spp, self.seed.wrapping_add(pixel_seed(x, y)))
     }
 }
 
@@ -521,6 +523,44 @@ mod tests {
         assert!(
             same < 16,
             "Different seeds should produce different samples"
+        );
+    }
+
+    #[test]
+    fn naive_different_pixels_different_samples() {
+        let factory = NaiveSamplerFactory::new(42);
+        let s1 = factory.for_pixel(0, 0);
+        let s2 = factory.for_pixel(10, 10);
+        let mut same = 0u32;
+        for n in 0..64 {
+            for d in 0..8 {
+                if (s1.sample(n, d) - s2.sample(n, d)).abs() < f64::EPSILON {
+                    same += 1;
+                }
+            }
+        }
+        assert!(
+            same < 4,
+            "Different pixels should produce different samples"
+        );
+    }
+
+    #[test]
+    fn stratified_different_pixels_different_samples() {
+        let factory = StratifiedSamplerFactory::new(4);
+        let s1 = factory.for_pixel(0, 0);
+        let s2 = factory.for_pixel(10, 10);
+        let mut same = 0u32;
+        for n in 0..64 {
+            for d in 0..8 {
+                if (s1.sample(n, d) - s2.sample(n, d)).abs() < f64::EPSILON {
+                    same += 1;
+                }
+            }
+        }
+        assert!(
+            same < 4,
+            "Different pixels should produce different samples"
         );
     }
 

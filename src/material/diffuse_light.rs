@@ -44,6 +44,7 @@ impl Bsdf for DiffuseLightMaterial {
         0.0
     }
 
+    /// No scattering PDF kind — always `None`.
     fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }

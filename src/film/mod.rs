@@ -87,13 +87,15 @@ pub trait Film: Send + Sync {
 
     /// Refills an existing convergence mask `out` in place, avoiding allocation.
     /// The slice must have length == pixel count.
+    /// Returns `true` if every pixel converged (allows early exit without a
+    /// separate `all()` scan over the mask).
     fn reset_convergence_mask(
         &self,
         threshold_rel: f64,
         threshold_abs: f64,
         min_samples: u32,
         out: &mut [bool],
-    );
+    ) -> bool;
 }
 
 /// Thread-safe framebuffer shared between UI thread and render thread.

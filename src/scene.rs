@@ -26,8 +26,9 @@ pub struct Scene {
     config: CameraConfig,
     /// All intersectable objects in the scene, including lights.
     objects: Vec<Arc<dyn Intersectable>>,
-    /// Objects whose directions are worth sampling toward (area lights,
-    /// glass targets, etc.). Used by `HittablePDF` for MIS.
+    /// Objects whose directions are worth sampling toward (area lights).
+    /// Used by `HittablePDF` for MIS. Delta materials (glass, metal) should
+    /// NOT be included — they have no meaningful PDF for importance sampling.
     important_objects: Vec<Arc<dyn Sampleable>>,
 }
 
@@ -52,7 +53,7 @@ impl Scene {
     /// Returns `(objects, important_objects)`.
     ///
     /// `important_objects` are geometry-only copies for importance sampling
-    /// via `HittablePDF` (area lights, glass targets, etc.).
+    /// via `HittablePDF` (area lights only — delta materials excluded).
     pub fn into_objects(self) -> (Vec<Arc<dyn Intersectable>>, Vec<Arc<dyn Sampleable>>) {
         (self.objects, self.important_objects)
     }
@@ -443,7 +444,7 @@ impl Scene {
         //     // Values must be <= 1.0 for energy conservation (no light amplification).
         //     Material::dielectric_tinted(1.5, Color3::from(0.8, 0.8, 1.0)),
         // );
-        // Glass sphere: dielectric for intersection, Void for importance sampling.
+        // Glass sphere — delta material, no importance sampling needed.
         scene.add_intersectable(
             Arc::new(sphere(
                 Point3::from(200., 90., 200.),

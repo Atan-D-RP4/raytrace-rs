@@ -20,13 +20,13 @@ use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::{
-    fresnel_schlick, geometry_schlick_ggx, ggx_d, Bsdf, BsdfSample, GpuMaterialBuffer,
-    GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE,
+    Bsdf, BsdfSample, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    fresnel_schlick, geometry_schlick_ggx, ggx_d,
 };
 use crate::onb::Onb;
 use crate::sampler::SampleDims;
 use crate::texture::Texture;
-use crate::vec3::{reflect, Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect};
 
 /// Glossy microfacet BRDF (GGX).
 #[derive(Clone)]

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::BsdfSample;
+use crate::material::{BsdfSample, PdfKind};
 use crate::pdf::{HittablePDF, PDF, PdfEnum, power_heuristic};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, SampleDims, Sampler};
@@ -178,8 +178,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             //   for indirect illumination and escape directions. Without it,
                             //   MIS weights become suboptimal for multi-bounce paths and
                             //   caustic-adjacent geometry (e.g. glass sphere in Cornell box).
-                            // - Surfaces: [env_pdf, light_pdf, material_pdf(s)]
-                            // - Volumes: env_pdf uses UniformSpherePDF instead of hemisphere.
+                            // - Surfaces: env_pdf = UniformHemisphere (general fallback, never
+                            //   duplicates material PDFs). Volumes: env_pdf = UniformSphere.
                             let is_volume = si.shading_normal().near_zero();
 
                             // Stack-allocated env PDF — no heap allocation.
@@ -187,7 +187,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             let env_pdf: PdfEnum<S> = if is_volume {
                                 PdfEnum::new(&crate::material::PdfKind::UniformSphere)
                             } else {
-                                PdfEnum::new(&crate::material::PdfKind::Cosine {
+                                PdfEnum::new(&PdfKind::UniformHemisphere {
                                     normal: si.shading_normal(),
                                 })
                             };
@@ -201,16 +201,17 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
 
                             // Build the strategy list in a fixed-size array.
                             // Max capacity: env(1) + light(1) + s0(0/1) + s1(0/1) = 2..4.
-                            let s0 = if count >= 1 {
-                                Some(PdfEnum::new(&pdf_kinds[0]))
-                            } else {
-                                None
+                            // env_pdf is UniformHemisphere (surfaces) or UniformSphere (volumes) —
+                            // never duplicates a material PDF (Cosine, Ggx, UniformSphere).
+                            let make_pdf = |idx: usize| -> Option<PdfEnum<S>> {
+                                if count > idx as u8 {
+                                    Some(PdfEnum::new(&pdf_kinds[idx]))
+                                } else {
+                                    None
+                                }
                             };
-                            let s1 = if count >= 2 {
-                                Some(PdfEnum::new(&pdf_kinds[1]))
-                            } else {
-                                None
-                            };
+                            let s0 = make_pdf(0);
+                            let s1 = make_pdf(1);
 
                             // Fixed-size array replaces Vec — zero heap allocation.
                             // Placeholder refs at indices 2..4 are overwritten before use.

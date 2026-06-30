@@ -136,7 +136,7 @@ where
             // the convergence mask in place — no reallocation. Before that, keep
             // all pixels unconverged (false) to build up initial variance estimates.
             if sample_idx >= self.min_samples_before_adapt {
-                film.reset_convergence_mask(
+                let all_done = film.reset_convergence_mask(
                     self.threshold_rel,
                     self.threshold_abs,
                     self.min_samples_before_adapt,
@@ -144,7 +144,7 @@ where
                 );
 
                 // Early exit: if every pixel has converged, stop sampling.
-                if converged.iter().all(|&c| c) {
+                if all_done {
                     info!(
                         "all pixels converged at sample {} of {}",
                         sample_idx + 1,
@@ -166,10 +166,17 @@ where
                 converged.fill(false);
             }
 
-            // Zero-fill all pooled tiles before reuse.
+            // Zero-fill pooled tiles before reuse — skip tiles where all pixels are
+            // already converged (avoids 15.7MB of useless memsets per pass).
             for tile in &mut tile_pool {
-                tile.pixels.fill(Color3::ZERO);
-                tile.sampled.fill(false);
+                let [x_start, x_end, y_start, y_end] = tile.bounds;
+                tile.dirty = (y_start..y_end).any(|y| {
+                    (x_start..x_end).any(|x| !converged[y as usize * width as usize + x as usize])
+                });
+                if tile.dirty {
+                    tile.pixels.fill(Color3::ZERO);
+                    tile.sampled.fill(false);
+                }
             }
 
             // Parallelly Iterate over tiles — each thread produces its own FilmTile,
@@ -212,9 +219,11 @@ where
                     }
                 });
 
-            // Merge all tiles sequentially — fast, no contention.
+            // Merge only dirty tiles — skip fully-converged tiles (no new samples).
             for tile in &tile_pool {
-                film.merge_tile(tile);
+                if tile.dirty {
+                    film.merge_tile(tile);
+                }
             }
 
             // Progressive rendering: adaptive cadence to reduce lock contention.

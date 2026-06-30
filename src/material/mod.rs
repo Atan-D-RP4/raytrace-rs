@@ -124,6 +124,9 @@ pub enum PdfKind {
     },
     /// Uniform sampling over the full sphere (used by isotropic volumes).
     UniformSphere,
+    /// Uniform sampling over the hemisphere oriented by `normal`. Used for
+    /// diffuse light sources and environment lights.
+    UniformHemisphere { normal: Vec3 },
     /// Delta distribution (perfect specular). The integrator skips MIS
     /// weighting for delta materials — the sampled direction is used directly.
     Delta,

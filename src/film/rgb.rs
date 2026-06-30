@@ -196,7 +196,8 @@ impl Film for RgbFilm {
         threshold_abs: f64,
         min_samples: u32,
         out: &mut [bool],
-    ) {
+    ) -> bool {
+        let mut all_converged = true;
         for (idx, entry) in out.iter_mut().enumerate() {
             let sample_count = self.sample_counts[idx];
             let variance = self.pixel_variance(idx);
@@ -208,9 +209,12 @@ impl Film for RgbFilm {
             let mean = self.pixels[idx] / (self.sample_counts[idx] as f64);
             let luminance = LUMINANCE * mean;
             let luminance = luminance.x + luminance.y + luminance.z;
-            *entry = self.sample_counts[idx] >= min_samples
+            let converged = self.sample_counts[idx] >= min_samples
                 && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel);
+            *entry = converged;
+            all_converged = all_converged && converged;
         }
+        all_converged
     }
 }
 

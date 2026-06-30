@@ -70,6 +70,7 @@ impl Bsdf for LambertianMaterial {
         if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
     }
 
+    /// Returns `PdfKind::Cosine` for the cosine-weighted hemisphere PDF.
     fn pdf_kind(&self, _wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
         Some(PdfKind::Cosine {
             normal: si.shading_normal(),
