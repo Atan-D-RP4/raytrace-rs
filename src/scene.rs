@@ -460,6 +460,7 @@ impl Scene {
 
         scene.config.samples_per_pixel = 200;
         scene.config.tone_map = true;
+        scene.config.exposure = 1.8;
 
         scene
     }
@@ -469,7 +470,7 @@ impl Scene {
         let red = Material::lambertian_color(0.65, 0.05, 0.05);
         let white = Material::lambertian_color(0.73, 0.73, 0.73);
         let green = Material::lambertian_color(0.12, 0.45, 0.15);
-        let light = Material::light(Color3::from(15.0, 15.0, 15.0));
+        let light = Material::light(Color3::from(16.0, 16.0, 16.0));
 
         scene.add_quad(
             Point3::from(555., 0., 0.),

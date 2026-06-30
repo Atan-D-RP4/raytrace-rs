@@ -126,6 +126,10 @@ where
         // to avoid repeated heap allocation of the full-resolution bool buffer.
         let mut converged = vec![false; (width * height) as usize];
 
+        // Ring buffer for rolling average of last 8 pass durations.
+        let mut pass_times = [0.0f64; 8];
+        let mut pass_count: usize = 0;
+
         for sample_idx in 0..self.samples_per_pixel {
             let pass_start = std::time::Instant::now();
             let _sample_span =
@@ -253,12 +257,16 @@ where
 
             // Log pass timing every 8 passes and on the final pass.
             if (sample_idx + 1) % 8 == 0 || sample_idx + 1 == self.samples_per_pixel {
-                let elapsed = pass_start.elapsed();
-                let avg_sec = render_start.elapsed().as_secs_f64() / (sample_idx + 1) as f64;
+                let elapsed = pass_start.elapsed().as_secs_f64();
+                let slot = pass_count % 8;
+                pass_times[slot] = elapsed;
+                pass_count += 1;
+                let window = pass_count.min(8);
+                let avg_sec: f64 = pass_times[..window].iter().sum::<f64>() / window as f64;
                 info!(
                     sample = sample_idx + 1,
                     total = self.samples_per_pixel,
-                    pass_sec = format!("{:.4}", elapsed.as_secs_f64()),
+                    pass_sec = format!("{:.4}", elapsed),
                     avg_sec = format!("{:.4}", avg_sec),
                     eta_sec = format!(
                         "{:.4}",
