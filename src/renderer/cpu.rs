@@ -158,9 +158,10 @@ where
                     if let Some(ref framebuffer) = framebuffer {
                         let rgb = film.progressive();
                         if let Ok(mut fb) = framebuffer.write() {
-                            fb.width = width;
-                            fb.height = height;
-                            fb.rgb.iter_mut().zip(rgb).for_each(|(dst, src)| *dst = src);
+                            fb.image
+                                .iter_mut()
+                                .zip(rgb)
+                                .for_each(|(dst, src)| *dst = src);
                             fb.finished = true;
                         }
                     }
@@ -248,9 +249,10 @@ where
             if should_publish && let Some(ref framebuffer) = framebuffer {
                 let rgb = film.progressive();
                 if let Ok(mut fb) = framebuffer.write() {
-                    fb.width = width;
-                    fb.height = height;
-                    fb.rgb.iter_mut().zip(rgb).for_each(|(dst, src)| *dst = src);
+                    fb.image
+                        .iter_mut()
+                        .zip(rgb)
+                        .for_each(|(dst, src)| *dst = src);
                     fb.finished = sample_idx + 1 == self.samples_per_pixel;
                 }
             }

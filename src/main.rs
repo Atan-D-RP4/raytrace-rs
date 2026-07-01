@@ -1,6 +1,5 @@
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
-use image::{ImageBuffer, Rgb, RgbImage};
 use softbuffer::{Context, Surface};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -108,7 +107,8 @@ impl WindowState {
             return;
         };
 
-        if fb.width == 0 || fb.height == 0 {
+        let (w, h) = fb.image.dimensions();
+        if w == 0 || h == 0 {
             tracing::trace!("skip draw: framebuffer not initialized");
             return;
         }
@@ -116,8 +116,8 @@ impl WindowState {
         tracing::trace!(
             window_width = size.width,
             window_height = size.height,
-            fb_width = fb.width,
-            fb_height = fb.height,
+            fb_width = w,
+            fb_height = h,
             finished = fb.finished,
             "blitting framebuffer to surface"
         );
@@ -125,24 +125,24 @@ impl WindowState {
         // TODO(opt-preview): replace full-frame blit with tile/dirty-rect blits.
         // This lowers memory bandwidth and improves interactivity on large windows.
         profiling::scope!("ui_blit");
-        // let mut buffer = self.surface.buffer_mut().unwrap();
         let Ok(mut buffer) = self.surface.buffer_mut() else {
             tracing::error!("failed to acquire softbuffer buffer for drawing");
             return;
         };
         buffer.fill(0);
 
+        let raw = &*fb.image;
         // TODO(viewport): implement aspect-fit viewport (letterbox/pillarbox) instead of stretch.
         for y in 0..size.height {
-            let src_y = ((y as u64 * fb.height as u64) / size.height as u64) as u32;
+            let src_y = ((y as u64 * h as u64) / size.height as u64) as u32;
             for x in 0..size.width {
-                let src_x = ((x as u64 * fb.width as u64) / size.width as u64) as u32;
+                let src_x = ((x as u64 * w as u64) / size.width as u64) as u32;
                 let dst = y as usize * size.width as usize + x as usize;
-                let src = (src_y as usize * fb.width as usize + src_x as usize) * 3;
+                let src = (src_y as usize * w as usize + src_x as usize) * 3;
 
-                let r = fb.rgb[src] as u32;
-                let g = fb.rgb[src + 1] as u32;
-                let b = fb.rgb[src + 2] as u32;
+                let r = raw[src] as u32;
+                let g = raw[src + 1] as u32;
+                let b = raw[src + 2] as u32;
 
                 buffer[dst] = (r << 16) | (g << 8) | b;
             }
@@ -288,16 +288,9 @@ fn save_framebuffer(framebuffer: &SharedFramebuffer, filename: &str) {
         return;
     }
 
-    let mut img: RgbImage = ImageBuffer::new(fb.width, fb.height);
-    for (i, pixel) in fb.rgb.chunks(3).enumerate() {
-        let x = (i as u32) % fb.width;
-        let y = (i as u32) / fb.width;
-        img.put_pixel(x, y, Rgb([pixel[0], pixel[1], pixel[2]]));
-    }
-
     info!(%filename, "saving image");
     profiling::scope!("image_save");
-    if let Err(error) = img.save(&filename) {
+    if let Err(error) = fb.image.save(&filename) {
         error!(%filename, ?error, "failed to save image");
     } else {
         info!(%filename, "image saved");
@@ -342,9 +335,10 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get() / 2));
-    init_thread_pool(render_threads);
 
+    init_thread_pool(render_threads);
     init_tracing();
+
     info!(threads = rayon::current_num_threads(), "startup");
 
     // Parse scene name from CLI args (optional first positional arg).
@@ -378,7 +372,26 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     // Optional env-var overrides: RT_SAMPLES, RT_WIDTH, RT_DEPTH (for fast debugging).
     // Set RT_LIVE=1 for live preview window, otherwise defaults to headless.
     if std::env::var("RT_LIVE").ok().as_deref() == Some("1") {
-        live_render(scene, &scene_name)?;
+        match std::env::var("RT_PREVIEW").ok().as_deref() {
+            Some("web") => {
+                let (framebuffer, _w, _h) = setup_render_pipeline(scene, &scene_name);
+                web_live_render(framebuffer);
+            }
+            Some("native") => {
+                let (framebuffer, w, h) = setup_render_pipeline(scene, &scene_name);
+                native_live_render(framebuffer, w, h)?;
+            }
+            Some("both") => {
+                let (framebuffer, w, h) = setup_render_pipeline(scene, &scene_name);
+                let fb = framebuffer.clone();
+                std::thread::spawn(move || web_live_render(fb));
+                native_live_render(framebuffer, w, h)?;
+            }
+            _ => {
+                let (framebuffer, w, h) = setup_render_pipeline(scene, &scene_name);
+                native_live_render(framebuffer, w, h)?;
+            }
+        }
     } else {
         headless_render(scene, &scene_name);
     }
@@ -386,14 +399,15 @@ fn main() -> Result<(), winit::error::EventLoopError> {
     Ok(())
 }
 
-#[profiling::function]
-fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::EventLoopError> {
+/// Sets up the render pipeline and spawns the render worker thread.
+///
+/// Returns the shared framebuffer plus image dimensions (for window creation).
+/// The render thread consumes the scene, builds the BVH, and progressively
+/// renders into the returned framebuffer.
+fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, u32, u32) {
     // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
-    profiling::scope!("scene_build");
-
     let mut config = *scene.config();
 
-    // Allow env-var overrides for fast iteration during debugging.
     config.image_width = std::env::var("RT_WIDTH")
         .ok()
         .and_then(|s| s.parse::<i32>().ok())
@@ -414,38 +428,24 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
     let mut renderer =
         CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);
     let (width, height) = camera.image_resolution();
-    let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new(width, height)));
+    let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new_with(width, height)));
 
     renderer.set_threshold_abs(5e-7);
     renderer.set_threshold_rel(1e-4);
-
-    // Disable adaptive sampling for live preview to ensure full sample count is rendered.
-    // renderer.set_min_samples_before_adapt(u32::MAX);
     renderer.set_min_samples_before_adapt(128);
 
-    let event_loop = EventLoop::new()?;
-    let mut app = App::new(framebuffer.clone(), width, height);
-    let scene_name = scene_name.to_string();
+    let fb = framebuffer.clone();
+    let sn = scene_name.to_string();
 
-    // Spawns dedicated CPU render worker thread.
-    //
-    // Worker thread responsibilities:
-    // - Build scene and root BVH.
-    // - Run progressive renderer writing into shared framebuffer.
-    // - Save completed frame to disk.
-    //
-    // UI thread remains free to process events and draw continuously.
     std::thread::spawn(move || {
         let _span = tracing::info_span!("render_thread").entered();
         info!("starting render thread");
 
         profiling::scope!("scene_build");
         let (mut objects, light_objects) = scene.into_objects();
-        let world_len = objects.len();
-        let light_len = light_objects.len();
         info!(
-            object_count = world_len,
-            light_count = light_len,
+            object_count = objects.len(),
+            light_count = light_objects.len(),
             "building world BVH"
         );
         profiling::scope!("root_bvh_build");
@@ -459,13 +459,31 @@ fn live_render(scene: Scene, scene_name: &str) -> Result<(), winit::error::Event
             &camera,
             &mut film,
             (&world, &light_objects),
-            Some(framebuffer.clone()),
+            Some(fb.clone()),
         );
 
-        save_framebuffer(&framebuffer, &scene_name);
+        save_framebuffer(&fb, &sn);
         info!("render thread complete");
     });
 
+    (framebuffer, width, height)
+}
+
+/// Blocks on the web preview server, streaming the framebuffer over WebSocket.
+fn web_live_render(framebuffer: SharedFramebuffer) {
+    if let Err(e) = smol::block_on(raytrace_rs::server::run(framebuffer)) {
+        error!("web preview server error: {e}");
+    }
+}
+
+/// Runs the native winit event loop with softbuffer presentation.
+fn native_live_render(
+    framebuffer: SharedFramebuffer,
+    width: u32,
+    height: u32,
+) -> Result<(), winit::error::EventLoopError> {
+    let event_loop = EventLoop::new()?;
+    let mut app = App::new(framebuffer, width, height);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -537,12 +555,8 @@ fn headless_render(scene: Scene, scene_name: &str) {
 
     let rgb_data = film.to_rgb8();
 
-    let mut img: RgbImage = ImageBuffer::new(width, height);
-    for (i, pixel) in rgb_data.chunks(3).enumerate() {
-        let x = (i as u32) % width;
-        let y = (i as u32) / width;
-        img.put_pixel(x, y, Rgb([pixel[0], pixel[1], pixel[2]]));
-    }
+    let img =
+        image::RgbImage::from_raw(width, height, rgb_data).expect("film output size mismatch");
 
     info!(%filename, "saving image");
     profiling::scope!("image_save");

@@ -16,6 +16,7 @@ pub mod ray;
 pub mod renderer;
 pub mod sampler;
 pub mod scene;
+pub mod server;
 pub mod shape;
 pub mod texture;
 pub mod transform;

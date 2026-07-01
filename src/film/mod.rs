@@ -7,7 +7,7 @@ pub use tile::FilmTile;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use image::ImageResult;
+use image::{ImageResult, RgbImage};
 
 use crate::vec3::{Color3, Vec3};
 
@@ -106,27 +106,30 @@ pub type SharedFramebuffer = Arc<RwLock<Framebuffer>>;
 
 /// Shared RGB framebuffer used by live preview path.
 ///
-/// `rgb` layout is tightly packed RGB8 triples:
-/// `[R, G, B, R, G, B, ...]`, row-major, top-left origin.
+/// Wraps an `RgbImage` (`ImageBuffer<Rgb<u8>, Vec<u8>>`) for the pixel data.
+/// The image provides tightly packed RGB8 triples in row-major, top-left origin order,
+/// with width and height metadata bundled in.
+#[derive(Default)]
 pub struct Framebuffer {
-    /// Pixel width of framebuffer.
-    pub width: u32,
-    /// Pixel height of framebuffer.
-    pub height: u32,
-    /// Packed RGB8 data, `width * height * 3` bytes.
-    pub rgb: Vec<u8>,
+    /// The image buffer containing RGB8 pixel data.
+    pub image: RgbImage,
     /// Signals render completion to UI redraw loop.
     pub finished: bool,
 }
 
 impl Framebuffer {
-    /// Creates zero-initialized framebuffer for given dimensions.
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn new_with(width: u32, height: u32) -> Self {
         Self {
-            width,
-            height,
-            rgb: vec![0; (width * height * 3) as usize],
+            image: RgbImage::new(width, height),
             finished: false,
         }
+    }
+
+    pub fn set_dimensions(&mut self, width: u32, height: u32) {
+        self.image = RgbImage::new(width, height);
     }
 }
