@@ -863,8 +863,7 @@ this escape hatch. No `unsafe` in the render graph orchestration layer.
 
 ### Buffer Layout Convention
 
-**Rule: buffer layout types in `starlight-types` use primitive arrays `[f32;
-N]`, not `glam::Vec3`.**
+**Rule: buffer layout types in `starlight-types` use primitive arrays `[f32; N]`, not `glam::Vec3`.**
 
 GLSL `vec3` has 16-byte alignment in storage buffers (std140/std430). `[f32; 3]`
 compiles to SPIR-V `OpTypeArray float 3` with 4-byte element alignment — no
@@ -1268,8 +1267,7 @@ Every material implements three core operations:
 
 1. `sample(wo, rng) → BsdfSample`: sample a direction, return direction +
    BSDF×cos + PDF + pdf_kind.
-2. `eval(wo, wi) → Color3`: evaluate the BSDF at a direction pair. Returns `f ×
-   |cos θ_i|`.
+2. `eval(wo, wi) → Color3`: evaluate the BSDF at a direction pair. Returns `f × |cos θ_i|`.
 3. `pdf(wo, wi) → f64`: evaluate the PDF for a given direction pair.
 
 `BsdfSample` carries `pdf_kind: PdfKind` indicating delta or non-delta, enabling
@@ -1302,8 +1300,7 @@ ______________________________________________________________________
 
 > **Material Centralization Tension**
 >
-> The design asserts "leaf sovereignty" while `material_id → global material
-> buffer` is centralized. This is a known and intentional tradeoff, not an
+> The design asserts "leaf sovereignty" while `material_id → global material buffer` is centralized. This is a known and intentional tradeoff, not an
 > oversight.
 >
 > **Why centralized is correct now:**
@@ -1344,12 +1341,10 @@ Following pbrt-v4's `SampleLd` pattern:
 
 1. Sample a light from the light buffer
 2. Sample a point on the light surface
-3. Evaluate the BSDF toward the light point: `wi = normalize(light_point -
-   hit_point)`, `f = material.eval(wo, wi)`
+3. Evaluate the BSDF toward the light point: `wi = normalize(light_point - hit_point)`, `f = material.eval(wo, wi)`
 4. Trace a shadow ray: `visible = occluded(shadow_ray)` (boolean, no
    `SurfaceInteraction`)
-5. Compute MIS weight (power heuristic): `weight = p_light² / (p_light² +
-   p_bsdf²)`
+5. Compute MIS weight (power heuristic): `weight = p_light² / (p_light² + p_bsdf²)`
 6. Accumulate: `if visible: L += f * light.radiance * weight / p_light`
 
 #### Shadow Ray Execution
@@ -1368,9 +1363,9 @@ Both share the same BVH traversal code. Both are expressed as Rust functions in
 
 The power heuristic:
 
-```
-weight_i = pdf_i² / Σ(pdf_j²)
-```
+$$
+w_i = \frac{p_i^2}{\sum_j p_j^2}
+$$
 
 When light sampling has a much higher PDF than BSDF sampling, the power
 heuristic gives most weight to light sampling — correct because light sampling
@@ -1849,8 +1844,7 @@ ______________________________________________________________________
 > **ABI note:** This is a breaking change to `SurfaceInteraction`. Bump the
 > `starlight-types` major version. Both CPU and GPU implementations must update
 > simultaneously. The CPU path tracer is the reference for validating the
-> migration. Place a `// TODO(volume-interaction): split when ConstantMedium is
-> implemented in Stage 8` comment in `interaction.rs` now.
+> migration. Place a `// TODO(volume-interaction): split when ConstantMedium is implemented in Stage 8` comment in `interaction.rs` now.
 >
 > **Why not now:** All leaf types through Stage 7 return surface hits. Adding
 > the hierarchy before needing it adds struct indirection with no benefit and
@@ -2122,8 +2116,7 @@ ______________________________________________________________________
 > **Trigger:** A scene requires worlds that are not pre-loaded at startup.
 >
 > Introduce the `WorldLoader` trait and `WorldHandle` type as documented in
-> §2.12. Migrate `PortalFrame.world_id: u32` to `Portal.capability:
-> WorldHandle`. Add a GPU-side world table populated asynchronously by the host.
+> §2.12. Migrate `PortalFrame.world_id: u32` to `Portal.capability: WorldHandle`. Add a GPU-side world table populated asynchronously by the host.
 > The traversal shader marks un-loaded worlds as `LeafHit::miss()` for one frame
 > while loading is queued. Validate: pre-loaded worlds behave identically to
 > Stage 8 portals.
@@ -2278,7 +2271,7 @@ identical output to the CPU path tracer for the same scene configuration.
 2. **Deterministic comparison**: for the same random seed and sample count, CPU
    and GPU must produce pixel values within floating-point tolerance (ε = 1e-5
    for single-precision). This catches algorithmic divergence without
-	   statistical tests.
+   statistical tests.
 
 3. **Visual regression**: side-by-side renders of reference scenes (Cornell box,
    glossy spheres, glass with caustics) must be perceptually identical. A pixel
