@@ -2,7 +2,9 @@ use std::borrow::Borrow;
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
-use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit, Sampleable};
+use crate::hittable::{
+    Bounded, Hit, Intersectable, LightSample, MaterialHit, Sampleable, SurfaceInteraction,
+};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
@@ -43,6 +45,23 @@ pub trait Shape3D: Send + Sync {
     fn sample_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
         let (point, _normal) = self.sample(u, v, time);
         (point - origin).unit_vector()
+    }
+
+    /// Sample a point on the light and return a [`LightSample`] with direction,
+    /// surface normal, distance, and area PDF.
+    fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample {
+        let (point, normal) = self.sample(u, v, time);
+        let offset = point - origin;
+        let distance = offset.length();
+        // Area PDF: p_A(q) = 1 / area for uniform area sampling.
+        let area_pdf = 1.0 / self.area();
+        LightSample {
+            direction: offset,
+            normal,
+            distance,
+            pdf: area_pdf,
+            emission: Vec3::ZERO,
+        }
     }
 
     /// PDF of sampling `direction` from `origin` toward this shape.
@@ -129,5 +148,19 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<
 
     fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
         self.shape.sample_direction(origin, u, v, time)
+    }
+
+    fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample {
+        let mut sample = self.shape.sample_light(origin, u, v, time);
+        // Compute the light's emission at the sampled point on the surface.
+        // Construct a minimal SurfaceInteraction to call material.emitted().
+        let point = origin + sample.direction;
+        let light_unit = sample.direction.unit_vector();
+        // Front face: light normal faces toward the shaded surface.
+        let front_face = sample.normal.dot(&(-light_unit)) > 0.0;
+        let hit = Hit::new(time, point, point, sample.normal, None);
+        let si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material());
+        sample.emission = self.material().emitted(&si);
+        sample
     }
 }

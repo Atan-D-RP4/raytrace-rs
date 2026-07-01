@@ -1,60 +1,35 @@
-//! Material models and scattering behavior for path tracing.
+//! Material models and BSDF sampling for path tracing.
 //!
-//! Materials form a **tree of BSDFs** — the [`Material`] enum is recursive via
-//! `Box<dyn Bsdf>` in composition variants ([`Material::Mix`], [`Material::Coated`]).
-//! The tree can't have cycles by construction (Rust's type system forbids it),
-//! so no graph validation is needed at runtime.
+//! [`Material`] is a recursive enum — composition variants ([`Material::Mix`],
+//! [`Material::Coated`]) contain `Box<dyn Bsdf>` children. No cycles by construction.
 //!
 //! # Authoring
-//!
-//! Use the helper constructors and composition methods on [`Material`]:
 //!
 //! ```ignore
 //! use std::sync::Arc;
 //! use raytrace_rs::material::Material;
-//! use raytrace_rs::texture::{SolidColor, Texture};
+//! use raytrace_rs::texture::SolidColor;
 //! use raytrace_rs::vec3::Color3;
 //!
-//! // A plain Lambertian material with a texture.
-//! let _red = Material::lambertian(Arc::new(SolidColor::new(Color3::from(0.8, 0.2, 0.2))));
-//!
-//! // Composition: metallic paint (Lambertian mixed with metal).
-//! let _paint = Material::lambertian(Arc::new(SolidColor::new(Color3::from(0.2, 0.1, 0.1))))
-//!     .mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0), 0.5);
-//!
-//! // Composition: clear coat over a substrate.
-//! let _car_paint = Material::lambertian(Arc::new(SolidColor::new(Color3::from(0.7, 0.3, 0.1))))
-//!     .coated(Material::dielectric(1.5));
+//! let red = Material::lambertian(Arc::new(SolidColor::new(Color3::from(0.8, 0.2, 0.2))));
+//! let paint = red.mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0), 0.5);
+//! let car_paint = red.coated(Material::dielectric(1.5));
 //! ```
 //!
 //! # Extensibility
 //!
-//! Library consumers can implement custom materials via the [`Bsdf`] trait and
-//! wrap them in [`Material::Custom`]:
+//! Implement [`Bsdf`] for custom materials, wrap in [`Material::Custom`]:
 //!
 //! ```ignore
-//! use raytrace_rs::material::{Bsdf, BsdfSample, Material, PdfKind};
-//! use raytrace_rs::hittable::SurfaceInteraction;
-//! use raytrace_rs::vec3::{Color3, Vec3};
-//!
-//! struct MyCustomBrdf { ... }
-//!
-//! impl Bsdf for MyCustomBrdf {
-//!     fn sample(&self, wo: Vec3, si: &SurfaceInteraction, _dims: SampleDims) -> Option<BsdfSample> { ... }
-//!     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 { ... }
-//!     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 { ... }
-//! }
-//!
-//! let my_mat = Material::Custom(Box::new(MyCustomBrdf { ... }));
+//! struct MyBrdf { ... }
+//! impl Bsdf for MyBrdf { ... }
+//! let mat = Material::Custom(Box::new(MyBrdf { ... }));
 //! ```
 //!
 //! # GPU Serialization
 //!
-//! The material tree can be flattened into a GPU-friendly buffer via
-//! [`Material::to_gpu_buffer`]. Each node is a [`GpuMaterialNode`] with
-//! optional child indices. The shader mirrors the CPU's enum match via a
-//! switch on `material_type`. Custom materials serialize as `Passthrough`
-//! nodes and are not uploaded to the GPU buffer.
+//! Flatten via [`Material::to_gpu_buffer`] into [`GpuMaterialNode`]s with
+//! child indices. Custom materials serialize as `Passthrough` (not uploaded).
 
 mod dielectric;
 mod diffuse_light;
@@ -86,115 +61,89 @@ use crate::vec3::{Color3, Vec3, reflect};
 
 /// Material sample result for one bounce.
 ///
-/// [`BsdfSample::Delta`]: integrator uses direction and throughput directly.
-/// [`BsdfSample::NonDelta`]: integrator samples from mixture PDF and calls
-/// [`Bsdf::eval`]; only [`PdfKind`] matters, the sampled direction is discarded.
+/// [`Delta`]: integrator uses direction and throughput directly.
+/// [`NonDelta`]: integrator samples from mixture PDF; only [`PdfKind`] matters.
 #[derive(Clone, Copy, Debug)]
 pub enum BsdfSample {
     /// Perfect specular — used directly without MIS weighting.
     Delta {
+        /// Scattered direction (toward camera for reflection, through surface for refraction).
         wi: Vec3,
         /// BSDF × cosine. Tint for dielectrics, white for lossless coatings.
         f_cos: Color3,
     },
     /// Non-specular — integrator evaluates the BRDF and uses MIS weighting.
-    /// `pdf_kinds` holds up to 2 surface PDF descriptors (for Mix materials),
-    /// with `count` indicating how many are valid. Leaf materials set count=1.
-    NonDelta { pdf_kinds: [PdfKind; 2], count: u8 },
+    /// `count` indicates how many PDF descriptors are valid (1 for leaf, up to 2 for Mix).
+    NonDelta {
+        /// Up to 2 surface PDF descriptors (first from chosen child, second from other).
+        pdf_kinds: [PdfKind; 2],
+        /// Number of valid entries in `pdf_kinds` (1 or 2).
+        count: u8,
+    },
 }
 
 /// Describes which surface sampling PDF the integrator should use.
 ///
-/// Instead of returning a heap-allocated `Box<dyn PDF>`, materials return
-/// this lightweight enum. The integrator owns concrete PDF objects on the
-/// stack and updates them from the kind + parameters here.
+/// Lightweight enum returned by materials instead of heap-allocated `Box<dyn PDF>`.
+/// The integrator owns concrete PDF objects on the stack and updates them from
+/// the kind + parameters here.
 #[derive(Clone, Copy, Debug)]
 pub enum PdfKind {
     /// Cosine-weighted hemisphere. `normal` defines the hemisphere orientation.
     Cosine { normal: Vec3 },
-    /// GGX microfacet importance sampling. The half-vector is sampled from
-    /// the GGX NDF, then the incoming direction is reflected about it.
+    /// GGX microfacet importance sampling. Samples half-vector from NDF, reflects.
     Ggx {
-        /// Outgoing direction (from surface toward camera), in world space.
+        /// Outgoing direction (surface → camera), world space.
         wo: Vec3,
         /// Surface normal.
         normal: Vec3,
         /// GGX alpha (roughness² clamped to [0.001, 1]).
         alpha: f64,
     },
-    /// Uniform sampling over the full sphere (used by isotropic volumes).
+    /// Uniform over the full sphere (isotropic volumes).
     UniformSphere,
-    /// Uniform sampling over the hemisphere oriented by `normal`. Used for
-    /// diffuse light sources and environment lights.
+    /// Uniform over the hemisphere oriented by `normal`.
     UniformHemisphere { normal: Vec3 },
-    /// Delta distribution (perfect specular). The integrator skips MIS
-    /// weighting for delta materials — the sampled direction is used directly.
+    /// Delta distribution (perfect specular). Integrator skips MIS weighting.
     Delta,
 }
 
-/// BSDF sampling interface.
-///
-/// Public so library consumers can implement custom materials.
-/// See [`Material`] for how built-in materials implement this trait.
+/// BSDF sampling interface. Public so library consumers can implement custom materials.
 pub trait Bsdf: Send + Sync {
-    /// Sample an outgoing direction for the given view direction and hit.
-    ///
-    /// See [`SampleDims`] for dimension semantics. Returns `None` for pure emitters.
+    /// Sample an outgoing direction. Returns `None` for pure emitters.
     fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample>;
 
-    /// Evaluate the BSDF for an outgoing→incoming direction pair.
-    ///
-    /// Used by the integrator when the direction was sampled externally
-    /// (e.g., from a light source PDF) and we need the material's response
-    /// at that direction.
+    /// Evaluate the BSDF for an externally-sampled direction pair.
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3;
 
     /// Evaluate the material's sampling PDF for a given direction pair.
-    ///
-    /// Used by MIS when the integrator needs to know the probability
-    /// that this material would have sampled `wi` given `wo`.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64;
 
     /// Returns the sampling PDF kind for MIS strategy selection.
-    ///
-    /// The integrator uses this to select the correct PDF object for MIS weighting.
     fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }
 
-    /// Returns the emitted light color at the hit point.
-    ///
-    /// Default: no emission. Override for light-emitting materials.
+    /// Returns emitted light at the hit point. Default: no emission.
     fn emitted(&self, _si: &SurfaceInteraction) -> Color3 {
         Color3::from(0., 0., 0.)
     }
 
-    /// Returns `true` if this material emits light. Default: `false`.
+    /// Returns `true` if this material emits light.
     fn is_emissive(&self) -> bool {
         false
     }
 
-    /// Returns `true` if this BSDF is a delta distribution (perfect specular
-    /// that scatters in a single determined direction). The integrator skips
-    /// MIS weighting for delta materials.
+    /// Returns `true` if this BSDF is a delta distribution (perfect specular).
+    /// The integrator skips MIS weighting for delta materials.
     fn is_delta(&self) -> bool {
         false
     }
 
-    /// Clone this material into a boxed trait object.
-    ///
-    /// Required for `Material` to be `Clone` when it contains
-    /// `Box<dyn Bsdf>`.
+    /// Clone into a boxed trait object. Required for `Material: Clone`.
     fn clone_box(&self) -> Box<dyn Bsdf>;
 
-    /// Recursively serialize this material into the GPU buffer.
-    ///
-    /// Leaf materials call `GpuMaterialBuffer` methods directly.
-    /// Composition materials serialize children first, then register
-    /// themselves with child indices. Returns the node index.
-    ///
-    /// The default implementation pushes a `Custom` node (unknown type).
-    /// Built-in materials override this.
+    /// Recursively serialize into the GPU buffer. Returns the node index.
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let param_offset = buf.params.len() as u32;
         buf.nodes.push(GpuMaterialNode {
@@ -210,11 +159,10 @@ pub trait Bsdf: Send + Sync {
 
 /// Supported material models.
 ///
-/// The enum wraps concrete structs for built-in materials and delegates
-/// to their [`Bsdf`] implementations. Library consumers can add custom
-/// materials via the [`Material::Custom`] variant.
+/// Wraps concrete structs for built-in materials and delegates to their
+/// [`Bsdf`] implementations. Library consumers use [`Material::Custom`].
 pub enum Material {
-    /// Absence of material. All BSDF methods return zero/None.
+    /// Absence of material — all BSDF methods return zero/None.
     /// Used for importance targets where only geometry matters for sampling.
     Void,
     /// Diffuse (Lambertian) surface.
@@ -229,17 +177,20 @@ pub enum Material {
     Isotropic(IsotropicMaterial),
     /// Glossy microfacet BRDF (GGX).
     Glossy(GlossyMaterial),
-    /// Stochastic mix of two materials, weighted by a scalar in [0, 1].
+    /// Stochastic mix of two materials. `weight` is the probability of choosing `b`.
     Mix {
+        /// Material chosen with probability `(1 - weight)`.
         a: Box<dyn Bsdf>,
+        /// Material chosen with probability `weight`.
         b: Box<dyn Bsdf>,
-        /// Selection probability for `b`.
+        /// Selection probability for `b`. ∈ [0, 1].
         weight: f64,
     },
-    /// A vertical layer: light hits `coating` first; if it transmits, it
-    /// interacts with `substrate`.
+    /// Vertical layer: light hits `coating` first; if it transmits, interacts with `substrate`.
     Coated {
+        /// Bottom layer (absorbs transmitted light).
         substrate: Box<dyn Bsdf>,
+        /// Top layer (thin dielectric, reflects some light via Fresnel).
         coating: Box<dyn Bsdf>,
     },
     /// Custom material provided by a library consumer.
@@ -271,10 +222,7 @@ impl Clone for Material {
 }
 
 impl Material {
-    /// Sample this material for a given outgoing direction and hit record.
-    ///
-    /// Returns `None` for light-emitting materials (no scattering) or if the
-    /// sampled direction is invalid (e.g., below surface).
+    /// Sample this material. Returns `None` for emitters or invalid directions.
     pub fn sample(
         &self,
         wo: Vec3,
@@ -391,6 +339,9 @@ impl Material {
     }
 
     /// Evaluate the BSDF for a direction pair not sampled by this material.
+    ///
+    /// Called by the integrator when the direction was sampled externally
+    /// (e.g., from a light source PDF) and we need the material's response.
     pub fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         match self {
             Material::Void => Color3::ZERO,
@@ -493,9 +444,7 @@ impl Material {
     }
 
     /// Returns `true` if this material emits light.
-    ///
-    /// Recursively checks composition variants — a `Coated` or `Mix`
-    /// containing an emissive material will also return `true`.
+    /// Recursively checks composition variants.
     pub fn is_emissive(&self) -> bool {
         match self {
             Material::DiffuseLight(_) => true,
@@ -508,11 +457,7 @@ impl Material {
     }
 
     /// Returns `true` if this material is a pure delta distribution.
-    ///
-    /// Delta materials (perfect speculars) scatter in a single determined
-    /// direction — MIS weighting must be skipped. Recursively checks
-    /// composition variants: `Mix` is delta only if both children are
-    /// delta; `Coated` is delta only if both substrate and coating are delta.
+    /// Recursively checks composition variants: `Mix` is delta iff both children are.
     pub fn is_delta(&self) -> bool {
         match self {
             Material::Dielectric(_) => true,
@@ -732,10 +677,8 @@ impl Material {
 
 /// GGX/Trowbridge-Reitz normal distribution function (NDF).
 ///
-/// Returns the probability density that a microfacet has half-vector H with
-/// the surface normal. `cos_theta_h` is `cos(H·N)`, `alpha` is `roughness²`.
-/// The NDF controls the specular lobe width: low alpha = sharp highlights,
-/// high alpha = broad sheen.
+/// Returns the probability density that a microfacet has half-vector H aligned
+/// with the surface normal. `alpha` is roughness²; controls specular lobe width.
 pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
     if cos_theta_h <= 0.0 {
         return 0.0;
@@ -747,10 +690,8 @@ pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
 
 /// Smith's geometry function (Schlick-GGX approximation).
 ///
-/// Models microfacet self-shadowing: at grazing angles, some microfacets are
-/// blocked by others, reducing the effective reflection. `cos_theta` is
-/// `cos(ω·N)`, `roughness` is the RMS surface slope (e.g., `fuzz` or
-/// `roughness` directly, not squared). Returns a multiplier in [0, 1].
+/// Models microfacet self-shadowing at grazing angles. Returns a multiplier
+/// in [0, 1]. `roughness` is RMS surface slope (not squared).
 pub(super) fn geometry_schlick_ggx(cos_theta: f64, roughness: f64) -> f64 {
     if cos_theta <= 0.0 {
         return 0.0;
@@ -771,8 +712,7 @@ pub(super) const COATED_R0: f64 = 0.04;
 /// Schlick Fresnel reflectance for unpolarized light.
 ///
 /// Approximates the fraction of light reflected at a dielectric interface.
-/// `cos_theta` is `cos(ω·N)`, `r0` is the reflectance at normal incidence
-/// (precomputed via [`fresnel_r0`]). Approaches 1 at grazing.
+/// Approaches 1 at grazing angles. `r0` is reflectance at normal incidence.
 pub(super) fn fresnel_schlick(cos_theta: f64, r0: f64) -> f64 {
     r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
 }

@@ -212,6 +212,26 @@ impl<T: Bounded + ?Sized> Bounded for Arc<T> {
     }
 }
 
+/// Result of sampling a direction toward a light source.
+///
+/// Contains everything needed to evaluate the direct lighting contribution:
+/// the (non-normalized) direction from the surface point to the light,
+/// the light's surface normal at the sampled point, the distance, and
+/// the area PDF of the sample.
+pub struct LightSample {
+    /// Non-normalized direction from surface point to the sampled point on the light.
+    /// `.unit_vector()` gives the unit direction; `.length()` gives the distance.
+    pub direction: Vec3,
+    /// Light's outward surface normal at the sampled point (unit length).
+    pub normal: Vec3,
+    /// Distance from the surface point to the sampled point on the light.
+    pub distance: f64,
+    /// Area PDF of this sample (probability density per unit area on the light surface).
+    pub pdf: f64,
+    /// Emission color of the light at the sampled point (radiance).
+    pub emission: Vec3,
+}
+
 pub trait Sampleable: Intersectable + Send + Sync {
     /// Returns the PDF value for sampling this hittable from a given origin and direction.
     /// Default returns 0.0 (no contribution to the PDF).
@@ -226,6 +246,14 @@ pub trait Sampleable: Intersectable + Send + Sync {
         let _ = (origin, u, v, time);
         Vec3::ZERO
     }
+
+    /// Samples a point on the light and returns everything needed for direct lighting:
+    /// direction, surface normal, distance, and area PDF.
+    ///
+    /// The returned [`LightSample`] is self-consistent — the direction points from
+    /// `origin` to the sampled point, the normal is the outward normal at that point,
+    /// and the distance equals `direction.length()`.
+    fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample;
 }
 
 impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
@@ -235,5 +263,9 @@ impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
 
     fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
         (**self).random_direction(origin, u, v, time)
+    }
+
+    fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample {
+        (**self).sample_light(origin, u, v, time)
     }
 }

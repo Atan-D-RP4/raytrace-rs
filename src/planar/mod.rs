@@ -7,6 +7,7 @@ use crate::hittable::Hit;
 use crate::hittable::Intersectable;
 use crate::hittable::MaterialHit;
 use crate::hittable::Sampleable;
+use crate::hittable::SurfaceInteraction;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
@@ -236,6 +237,39 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         let (a, b) = self.region.sample(u, v);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
         random_point - origin
+    }
+
+    fn sample_light(
+        &self,
+        origin: Vec3,
+        u: f64,
+        v: f64,
+        time: f64,
+    ) -> crate::hittable::LightSample {
+        let direction = self.random_direction(origin, u, v, time);
+        let distance = direction.length();
+        // Area PDF: uniform over the bounding box area (matches pdf_value's denominator).
+        let world_area = self.area * self.region.bounding_box_area();
+        let area_pdf = if world_area > 1e-20 {
+            1.0 / world_area
+        } else {
+            0.0
+        };
+        // Compute the light's emission at the sampled point.
+        // The surface is front-facing when the light normal points toward the shaded surface.
+        let front_face = self.normal.dot(&(-direction)) > 0.0;
+        let point = origin + direction;
+        let hit = Hit::new(time, point, point, self.normal, None);
+        let si = SurfaceInteraction::new(hit, self.normal, front_face, self.material());
+        let emission = self.material().emitted(&si);
+
+        crate::hittable::LightSample {
+            direction,
+            normal: self.normal,
+            distance,
+            pdf: area_pdf,
+            emission,
+        }
     }
 }
 

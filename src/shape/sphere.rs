@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::f64::consts::PI;
 
 use crate::aabb::Aabb;
-use crate::hittable::Hit;
+use crate::hittable::{Hit, LightSample};
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::onb::Onb;
@@ -132,6 +132,46 @@ impl Shape3D for SphereShape {
         let distance_squared = direction_to_center.length_squared();
         let uvw = Onb::build_from_normal(direction_to_center);
         uvw.local_to_world(self.random_to_sphere(distance_squared, u, v))
+    }
+
+    fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample {
+        // sample_direction returns a unit vector via cone projection.
+        let direction = self.sample_direction(origin, u, v, time);
+        let center = self.center.at(time);
+
+        // Compute actual ray-sphere intersection along the sampled direction.
+        // The unit direction tells us WHERE to look; the quadratic tells us HOW FAR.
+        let oc = center - origin;
+        let h = direction.dot(&oc);
+        let c = oc.length_squared() - self.radius * self.radius;
+        let discriminant = (h * h - c).max(0.0);
+        let sqrtd = discriminant.sqrt();
+        let distance = (h - sqrtd).max(0.001);
+
+        let hit_point = origin + direction * distance;
+        let normal = (hit_point - center) / self.radius;
+
+        // Area PDF: convert from solid-angle PDF (1/Ω) to area measure.
+        // p_A(q) = p_ω(ω) · |cos θ_l| / d²
+        let cos_theta = normal.dot(&(-direction)).abs();
+        let distance_squared = (center - origin).length_squared();
+        let cos_theta_max = (1.0 - (self.radius * self.radius) / distance_squared)
+            .sqrt()
+            .min(1.0);
+        let solid_angle = 2.0 * PI * (1.0 - cos_theta_max);
+        let area_pdf = if solid_angle > 1e-20 {
+            (cos_theta / (solid_angle * distance * distance)).max(0.0)
+        } else {
+            0.0
+        };
+
+        LightSample {
+            direction: direction * distance, // displacement from surface to light
+            normal,
+            distance,
+            pdf: area_pdf,
+            emission: Vec3::ZERO, // filled in by ShapeObject::sample_light via material
+        }
     }
 
     fn pdf_direction(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {

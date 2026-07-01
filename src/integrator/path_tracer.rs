@@ -110,6 +110,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 let emission = material.emitted(&si);
                 // Accumulate the emitted light, scaled by the current attenuation
                 accumulated_color += accumulated_attenuation * emission;
+                // Outgoing direction (away from the surface) is the negative of the ray direction
+                let wo = -ray.direction.unit_vector();
 
                 // Sample the material to get the next ray and attenuation
                 let max_attenuation = accumulated_attenuation
@@ -120,6 +122,45 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 // If the maximum attenuation is very small, terminate the path early to avoid unnecessary computation
                 if max_attenuation < 1e-6 {
                     return accumulated_color;
+                }
+
+                // Shadow ray based Next Event Estimation (NEE) for direct lighting.
+                // Skip for delta materials (mirrors, glass) — BSDF is zero for any
+                // direction that doesn't match the single specular direction.
+                if !lights.is_empty() && !material.is_delta() {
+                    // Pick a random light source to sample from the list
+                    let light_idx = (dim_cursor.next_sample() * lights.len() as f64) as usize;
+                    let light = &lights[light_idx % lights.len()];
+
+                    // Sample a point on the light source — returns direction, normal, distance, and area PDF
+                    let (u, v) = (dim_cursor.next_sample(), dim_cursor.next_sample());
+                    let sample = light.sample_light(si.point(), u, v, ray.time);
+                    let light_unit = sample.direction.unit_vector();
+                    let light_emission = sample.emission;
+
+                    // Shadow ray: test visibility/occlusion between the surface point and the light source
+                    let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time);
+                    let far = (sample.distance - 0.001).max(0.001);
+                    let shadow_ray_interval = Interval::from(0.001, far);
+                    let occluded = world.intersect(&shadow_ray, shadow_ray_interval).is_some();
+                    if !occluded {
+                        // Unoccluded — compute direct lighting contribution.
+                        // Area-sampling form: L ≈ f_r · L_e · |cos θ_s| · |cos θ_l| · V / (p_A · d²)
+                        let f = material.eval(wo, light_unit, &si);
+                        let cos_light = sample.normal.dot(&(-light_unit)).abs();
+                        let cos_surface = si.shading_normal().dot(&light_unit).abs();
+
+                        // N factor: uniform selection over N lights, estimator = N * contribution.
+                        let n_lights = lights.len() as f64;
+                        let direct = n_lights
+                            * accumulated_attenuation
+                            * light_emission
+                            * f
+                            * cos_surface
+                            * cos_light
+                            / (sample.pdf * sample.distance * sample.distance);
+                        accumulated_color += direct;
+                    }
                 }
 
                 // Sample a random number for Russian Roulette
@@ -134,9 +175,6 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     }
                     accumulated_attenuation /= survival;
                 }
-
-                // Outgoing direction (away from the surface) is the negative of the ray direction
-                let wo = -ray.direction.unit_vector();
 
                 // Sample the material to get the next ray and attenuation
                 let u_mat = dim_cursor.next_sample();
@@ -242,8 +280,15 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     accumulated_attenuation = accumulated_attenuation * bias;
                     ray = Ray::new_with_time(si.point(), direction, ray.time);
 
-                    // QMC invariant: every completed bounce must consume exactly 11 dims.
-                    debug_assert_eq!(dim_cursor.offset() - bounce_start, 11);
+                    // QMC invariant: every completed bounce consumes a fixed number of dims.
+                    // Non-delta: NEE(3) + RR(1) + material(6) + MIS mixture(4) = 14.
+                    // Delta:     NEE(0) + RR(1) + material(6) + delta pad(4) = 11.
+                    // (NEE is skipped for delta materials — BSDF is zero everywhere.)
+                    let consumed = dim_cursor.offset() - bounce_start;
+                    debug_assert!(
+                        consumed == 14 || consumed == 11,
+                        "QMC dim mismatch: consumed {consumed}, expected 14 (non-delta) or 11 (delta)"
+                    );
                 } else {
                     // Emissive materials return None — no scattering. Emission already added
                     // to accumulated_color via emitted() above.

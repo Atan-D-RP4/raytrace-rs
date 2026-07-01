@@ -110,6 +110,26 @@ where
         // Transform direction back to world space using the inverse rotation.
         self.transform.object_to_world_direction(dir)
     }
+
+    fn sample_light(
+        &self,
+        origin: Vec3,
+        u: f64,
+        v: f64,
+        time: f64,
+    ) -> crate::hittable::LightSample {
+        let to_obj_origin = self.transform.world_to_object_point(origin);
+        let sample = self.object.sample_light(to_obj_origin, u, v, time);
+        crate::hittable::LightSample {
+            direction: self.transform.object_to_world_direction(sample.direction),
+            // For rigid transforms, normals transform by the inverse rotation
+            // (equivalent to the rotation itself for orthonormal matrices).
+            normal: self.transform.object_to_world_direction(sample.normal),
+            distance: sample.distance,
+            pdf: sample.pdf,
+            emission: sample.emission,
+        }
+    }
 }
 
 /// Translation transform for wrapping hittables without runtime dispatch.
