@@ -25,6 +25,7 @@ impl Region2D for AnnulusRegion {
     fn sample(&self, u: f64, v: f64) -> (f64, f64) {
         let r = (self.inner * self.inner + u * (1.0 - self.inner * self.inner)).sqrt();
         let theta = v * 2.0 * PI;
-        (r * theta.cos(), r * theta.sin())
+        let (sin_theta, cos_theta) = theta.sin_cos();
+        (r * cos_theta, r * sin_theta)
     }
 }

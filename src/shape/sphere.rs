@@ -60,9 +60,10 @@ impl SphereShape {
     fn random_to_sphere(&self, distance_squared: f64, r1: f64, r2: f64) -> Vec3 {
         let radius = self.radius;
         let phi = 2.0 * PI * r1;
+        let (sin_phi, cos_phi) = phi.sin_cos();
         let z = 1.0 + r2 * ((1.0 - (radius * radius) / distance_squared).sqrt() - 1.0);
         let r = (1.0 - z * z).sqrt();
-        Vec3::from(r * phi.cos(), r * phi.sin(), z)
+        Vec3::from(r * cos_phi, r * sin_phi, z)
     }
 }
 
@@ -118,9 +119,10 @@ impl Shape3D for SphereShape {
         // Standard z = 1 - 2v, θ = 2πu parameterization.
         let center = self.center.at(time);
         let theta = 2.0 * PI * u;
+        let (sin_theta, cos_theta) = theta.sin_cos();
         let z = 1.0 - 2.0 * v;
         let r = (1.0 - z * z).sqrt();
-        let normal = Vec3::from(r * theta.cos(), r * theta.sin(), z);
+        let normal = Vec3::from(r * cos_theta, r * sin_theta, z);
         (center + normal * self.radius, normal)
     }
 

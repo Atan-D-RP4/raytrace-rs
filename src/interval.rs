@@ -26,8 +26,8 @@ impl Interval {
     }
 
     pub fn from_intervals(a: &Interval, b: &Interval) -> Self {
-        let min = if a.min <= b.min { a.min } else { b.min };
-        let max = if a.max >= b.max { a.max } else { b.max };
+        let min = a.min.min(b.min);
+        let max = a.max.max(b.max);
         Self { min, max }
     }
 

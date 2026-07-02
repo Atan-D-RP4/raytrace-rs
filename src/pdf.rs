@@ -47,9 +47,10 @@ pub fn cosine_hemisphere_direction(u: f64, v: f64) -> Vec3 {
 #[inline(always)]
 pub fn uniform_hemisphere_direction(u: f64, v: f64) -> Vec3 {
     let phi = 2.0 * PI * u;
+    let (sin_phi, cos_phi) = phi.sin_cos();
     let z = v;
     let r = (1.0 - z * z).max(0.0).sqrt();
-    Vec3::from(r * phi.cos(), r * phi.sin(), z)
+    Vec3::from(r * cos_phi, r * sin_phi, z)
 }
 
 /// Type-erased wrapper that delegates to a concrete PDF type.
@@ -139,9 +140,10 @@ impl<S: Sampler> PDF<S> for UniformSpherePDF {
         let v = dim_offset.next_sample();
 
         let phi = 2.0 * std::f64::consts::PI * u;
+        let (sin_phi, cos_phi) = phi.sin_cos();
         let z = 1.0 - 2.0 * v;
         let r = (1.0 - z * z).max(0.0).sqrt();
-        Vec3::from(r * phi.cos(), r * phi.sin(), z)
+        Vec3::from(r * cos_phi, r * sin_phi, z)
     }
 }
 
@@ -181,9 +183,10 @@ impl<S: Sampler> PDF<S> for UniformHemispherePDF {
         let v = dim_offset.next_sample();
 
         let phi = 2.0 * PI * u;
+        let (sin_phi, cos_phi) = phi.sin_cos();
         let z = v;
         let r = (1.0 - z * z).max(0.0).sqrt();
-        let local_dir = Vec3::from(r * phi.cos(), r * phi.sin(), z);
+        let local_dir = Vec3::from(r * cos_phi, r * sin_phi, z);
 
         self.uvw.local_to_world(local_dir)
     }
@@ -323,16 +326,18 @@ impl<S: Sampler> PDF<S> for GgxSamplePDF {
         let v = dim_offset.next_sample();
 
         let a = self.alpha;
+
         let cos_theta = ((1.0 - v) / (1.0 + (a * a - 1.0) * v))
             .clamp(0.0, 1.0)
             .sqrt();
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 
         let phi = 2.0 * PI * u;
+        let (sin_phi, cos_phi) = phi.sin_cos();
 
         // Local frame: x=bitangent, y=tangent, z=normal (matches ONB convention). Put cos_theta on
         // the normal axis (z).
-        let h_local = Vec3::from(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
+        let h_local = Vec3::from(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
 
         let h_world = self.onb.local_to_world(h_local);
 

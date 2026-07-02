@@ -165,8 +165,9 @@ impl Camera for PerspectiveCamera {
             // Sampling a point on the defocus disk for it.
             let r = sample.lens.0.sqrt(); // Square root for uniform disk sampling
             let theta = sample.lens.1 * 2.0 * std::f64::consts::PI;
-            let px = r * theta.cos();
-            let py = r * theta.sin();
+            let (sin_theta, cos_theta) = theta.sin_cos();
+            let px = r * cos_theta;
+            let py = r * sin_theta;
             self.look_from + (px * self.defocus_disk_u) + (py * self.defocus_disk_v)
         };
 

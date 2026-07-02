@@ -29,6 +29,27 @@ impl Onb {
         Onb { u, v, w }
     }
 
+    pub fn build_from_normal_revised(normal: Vec3) -> Self {
+        debug_assert!(
+            !normal.near_zero(),
+            "ONB from zero normal produces NaN basis"
+        );
+        let normal = normal.unit_vector();
+        let sign = normal.z.signum();
+        let a = -1.0 / (sign + normal.z);
+        let b = -normal.x * normal.y * a;
+
+        let u = Vec3::from(
+            1.0 + sign * normal.x * normal.x * a,
+            sign * b,
+            -sign * normal.x,
+        );
+        let v = Vec3::from(b, sign + normal.y * normal.y * a, -normal.y);
+        let w = normal;
+
+        Onb { u, v, w }
+    }
+
     /// Transforms a local-space vector (in tangent space) to world-space using the ONB basis.
     pub fn local_to_world(&self, local: Vec3) -> Vec3 {
         local.x * self.u + local.y * self.v + local.z * self.w

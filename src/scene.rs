@@ -5,6 +5,7 @@ use rand::RngExt;
 use crate::bvh::BvhNode;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
+use crate::flat_bvh::FlatBvh;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
@@ -233,7 +234,7 @@ impl Scene {
                 box_count = boxes_len,
                 "assembled complex_scene ground boxes"
             );
-            Arc::new(BvhNode::new(&mut boxes))
+            Arc::new(FlatBvh::from(BvhNode::new(&mut boxes)))
         };
         scene.objects.push(boxes1_bvh);
 

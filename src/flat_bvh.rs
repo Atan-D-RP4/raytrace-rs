@@ -254,31 +254,41 @@ impl Intersectable for FlatBvh {
             let mut lo = tmin;
             let mut hi = best_t;
 
+            // X slab
             let t0 = (node.min[0] - ox) * idx;
             let t1 = (node.max[0] - ox) * idx;
+            // Update lo/hi with the intersection interval of the X slab.
             lo = lo.max(t0.min(t1));
             hi = hi.min(t0.max(t1));
+            // If the intersection interval is empty, skip this node.
             if hi <= lo {
                 continue;
             }
 
+            // Y slab
             let t0 = (node.min[1] - oy) * idy;
             let t1 = (node.max[1] - oy) * idy;
+            // Update lo/hi with the intersection interval of the Y slab.
             lo = lo.max(t0.min(t1));
             hi = hi.min(t0.max(t1));
+            // If the intersection interval is empty, skip this node.
             if hi <= lo {
                 continue;
             }
 
+            // Z slab
             let t0 = (node.min[2] - oz) * idz;
             let t1 = (node.max[2] - oz) * idz;
+            // Update lo/hi with the intersection interval of the Z slab.
             lo = lo.max(t0.min(t1));
             hi = hi.min(t0.max(t1));
+            // If the intersection interval is empty, skip this node.
             if hi <= lo {
                 continue;
             }
 
             if node.is_leaf() {
+                // Leaf node: test all primitives in the range.
                 let start = node.prim_start();
                 let count = node.prim_count();
                 for i in start..start + count {
@@ -291,6 +301,7 @@ impl Intersectable for FlatBvh {
                     }
                 }
             } else {
+                // Interior node: push children onto the stack in near-first order.
                 let left_idx = node.left_child();
                 let right_idx = node.right_child();
 
@@ -300,16 +311,23 @@ impl Intersectable for FlatBvh {
                 let left = &self.nodes[left_idx as usize];
                 let right = &self.nodes[right_idx as usize];
 
+                // Compute the centroid of each child AABB of the left child and project onto the
+                // ray direction.
                 let lcx = left.min[0] + left.max[0];
                 let lcy = left.min[1] + left.max[1];
                 let lcz = left.min[2] + left.max[2];
+
+                // Compute the centroid of each child AABB of the right child and project onto the
+                // ray direction.
                 let rcx = right.min[0] + right.max[0];
                 let rcy = right.min[1] + right.max[1];
                 let rcz = right.min[2] + right.max[2];
 
+                // Project the centroids onto the ray direction to determine which child is closer.
                 let ld = (lcx - ox) * dx + (lcy - oy) * dy + (lcz - oz) * dz;
                 let rd = (rcx - ox) * dx + (rcy - oy) * dy + (rcz - oz) * dz;
 
+                // Determine the near and far child indices based on the projected distances.
                 let (near_idx, far_idx) = if ld <= rd {
                     (left_idx, right_idx)
                 } else {
@@ -317,21 +335,11 @@ impl Intersectable for FlatBvh {
                 };
 
                 // Push far child first so near is popped first (stack LIFO).
-                if sp >= MAX_STACK {
-                    tracing::warn!(
-                        "FlatBvh traversal stack overflow (max_depth={}), subtree dropped",
-                        MAX_STACK
-                    );
+                if sp >= MAX_STACK - 1 {
+                    tracing::warn!("FlatBvh traversal stack overflow");
                 } else {
                     stack[sp] = far_idx;
                     sp += 1;
-                }
-                if sp >= MAX_STACK {
-                    tracing::warn!(
-                        "FlatBvh traversal stack overflow (max_depth={}), subtree dropped",
-                        MAX_STACK
-                    );
-                } else {
                     stack[sp] = near_idx;
                     sp += 1;
                 }

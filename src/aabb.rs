@@ -53,6 +53,7 @@ impl Aabb {
     }
 
     /// Returns the union of two AABBs.
+    /// Pads the resulting AABB to ensure it has a minimum size along each axis.
     pub fn merge(&self, other: &Aabb) -> Self {
         Self {
             x: Interval::from_intervals(&self.x, &other.x),
@@ -60,6 +61,15 @@ impl Aabb {
             z: Interval::from_intervals(&self.z, &other.z),
         }
         .pad_to_minimums()
+    }
+
+    /// Returns the union of two AABBs without padding.
+    pub fn merge_unpadded(&self, other: &Aabb) -> Self {
+        Self {
+            x: Interval::from_intervals(&self.x, &other.x),
+            y: Interval::from_intervals(&self.y, &other.y),
+            z: Interval::from_intervals(&self.z, &other.z),
+        }
     }
 
     /// Returns the interval for the selected axis (0=x, 1=y, 2=z).

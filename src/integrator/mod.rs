@@ -26,6 +26,7 @@ mod tests {
     use super::*;
     use crate::bvh::BvhNode;
     use crate::film::{Film, RgbFilm};
+    use crate::flat_bvh::FlatBvh;
     use crate::material::Material;
     use crate::planar::quad;
     use crate::sampler::NaiveRandomSampler;
@@ -60,7 +61,7 @@ mod tests {
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![light, floor];
-        let world = BvhNode::new(&mut objects);
+        let world = FlatBvh::from(BvhNode::new(&mut objects));
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::from(0.0, 0.0, 0.0));
@@ -136,7 +137,7 @@ mod tests {
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![floor, mirror, light_quad];
-        let world = BvhNode::new(&mut objects);
+        let world = FlatBvh::from(BvhNode::new(&mut objects));
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(1, Color3::ZERO); // max_depth=1

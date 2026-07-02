@@ -1,13 +1,18 @@
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
 use crate::hittable::{Bounded, Intersectable, MaterialHit};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::Point3;
 use tracing::{info, trace};
 
+/// The number of bins to use for binned SAH BVH construction. More bins gives a more accurate SAH
+/// estimate, but increases the build cost.
 const BVH_BIN_SIZE: usize = 32;
+/// The threshold number of objects in a BVH node above which we will build child nodes in parallel
+/// using rayon.
+const BVH_PARALLEL_THRESHOLD: usize = 64;
 
 /// A binary BVH node for accelerating ray-scene intersection queries.
 ///
@@ -43,14 +48,16 @@ impl BvhNode {
     pub fn new_inner(objects: &mut [Arc<dyn Intersectable>]) -> Self {
         let obj_span = objects.len();
 
-        let mut centroids: Vec<(Arc<dyn Intersectable>, Point3)> = Vec::with_capacity(obj_span);
-        let mut bbox = Aabb::new();
-
-        for object in objects.iter() {
-            let object_bbox = object.bounding_box();
-            bbox = bbox.merge(&object_bbox);
-            centroids.push((object.clone(), object_bbox.centroid()));
-        }
+        let mut centroids = objects
+            .iter()
+            .map(|object| {
+                let object_bbox = object.bounding_box();
+                (object.clone(), object_bbox, object_bbox.centroid())
+            })
+            .collect::<Vec<_>>();
+        let root_bbox = centroids
+            .iter()
+            .fold(Aabb::new(), |acc, (_, bbox, _)| acc.merge(bbox));
 
         match obj_span {
             0 => {
@@ -61,20 +68,24 @@ impl BvhNode {
                 trace!(object_count = obj_span, "bvh leaf");
                 Self::Leaf {
                     object: centroids[0].0.clone(),
-                    bbox: centroids[0].0.bounding_box(),
+                    bbox: centroids[0].1,
                 }
             }
             2 => {
                 trace!(object_count = obj_span, "bvh leaf");
                 let left = Box::new(Self::Leaf {
                     object: centroids[0].0.clone(),
-                    bbox: centroids[0].0.bounding_box(),
+                    bbox: centroids[0].1,
                 });
                 let right = Box::new(Self::Leaf {
                     object: centroids[1].0.clone(),
-                    bbox: centroids[1].0.bounding_box(),
+                    bbox: centroids[1].1,
                 });
-                Self::Interior { left, right, bbox }
+                Self::Interior {
+                    left,
+                    right,
+                    bbox: root_bbox,
+                }
             }
             _ => {
                 // Binned Surface Area Heuristic (SAH) for optimal BVH construction.
@@ -86,7 +97,7 @@ impl BvhNode {
                     // Find Centroid range along the axis
                     let (min_c, max_c) = centroids.iter().fold(
                         (f64::INFINITY, f64::NEG_INFINITY),
-                        |(min, max), (_, centroid)| {
+                        |(min, max), (_, _, centroid)| {
                             (min.min(centroid[axis]), max.max(centroid[axis]))
                         },
                     );
@@ -101,14 +112,14 @@ impl BvhNode {
                     }
 
                     // Bin the objects
-                    for (object, centroid) in centroids.iter() {
+                    for (_, bbox, centroid) in centroids.iter() {
                         let t = (centroid[axis] - min_c) / range;
                         let b = (t * BVH_BIN_SIZE as f64)
                             .floor()
                             .clamp(0., BVH_BIN_SIZE as f64 - 1.)
                             as usize;
                         bin_count[b] += 1;
-                        bin_bbox[b] = bin_bbox[b].merge(&object.bounding_box());
+                        bin_bbox[b] = bin_bbox[b].merge(bbox);
                     }
 
                     // Precompute suffix AABBs and counts.
@@ -156,23 +167,39 @@ impl BvhNode {
 
                 // Sort objects by centroid along the best axis, then split at the best point.
                 centroids.select_nth_unstable_by(best_split, |a, b| {
-                    a.1[best_axis]
-                        .partial_cmp(&b.1[best_axis])
+                    a.2[best_axis]
+                        .partial_cmp(&b.2[best_axis])
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
 
                 // Copy sorted objects back to the original slice for recursive construction.
-                for (slot, (object, _)) in centroids.iter().enumerate() {
+                for (slot, (object, _, _)) in centroids.iter().enumerate() {
                     objects[slot] = object.clone();
                 }
 
                 // Recurse on the two halves to build child nodes.
                 let (left_half, right_half) = objects.split_at_mut(best_split);
-                let (left, right) = rayon::join(
-                    || Box::new(Self::new(left_half)),
-                    || Box::new(Self::new(right_half)),
-                );
-                Self::Interior { left, right, bbox }
+                let (left, right) = match obj_span.cmp(&BVH_PARALLEL_THRESHOLD) {
+                    Ordering::Less => {
+                        // For small node sizes, build sequentially to avoid thread overhead.
+                        (
+                            Box::new(Self::new(left_half)),
+                            Box::new(Self::new(right_half)),
+                        )
+                    }
+                    Ordering::Greater | Ordering::Equal => {
+                        // For larger node sizes, build in parallel using rayon.
+                        rayon::join(
+                            || Box::new(Self::new(left_half)),
+                            || Box::new(Self::new(right_half)),
+                        )
+                    }
+                };
+                Self::Interior {
+                    left,
+                    right,
+                    bbox: root_bbox,
+                }
             }
         }
     }

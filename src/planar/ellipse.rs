@@ -22,6 +22,7 @@ impl Region2D for EllipseRegion {
     fn sample(&self, u: f64, v: f64) -> (f64, f64) {
         let r = u.sqrt();
         let theta = v * 2.0 * PI;
-        (r * theta.cos(), r * theta.sin())
+        let (sin_theta, cos_theta) = theta.sin_cos();
+        (r * cos_theta, r * sin_theta)
     }
 }

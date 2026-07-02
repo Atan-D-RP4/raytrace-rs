@@ -322,8 +322,9 @@ pub fn random_cosine_direction<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     let r2: f64 = rng.random();
 
     let phi = 2.0 * std::f64::consts::PI * r1;
-    let x = phi.cos() * r2.sqrt();
-    let y = phi.sin() * r2.sqrt();
+    let (sin_phi, cos_phi) = phi.sin_cos();
+    let x = cos_phi * r2.sqrt();
+    let y = sin_phi * r2.sqrt();
     let z = (1.0 - r2).sqrt();
 
     Vec3::from(x, y, z)

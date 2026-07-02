@@ -170,9 +170,10 @@ pub struct RotateY {
 impl RotateY {
     pub fn new(angle: f64) -> Self {
         let radians = angle.to_radians();
+        let (sin_theta, cos_theta) = radians.sin_cos();
         Self {
-            sin_theta: radians.sin(),
-            cos_theta: radians.cos(),
+            sin_theta,
+            cos_theta,
         }
     }
 }

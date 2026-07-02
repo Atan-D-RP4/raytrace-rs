@@ -80,7 +80,8 @@ impl Bsdf for GlossyMaterial {
             .sqrt();
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
         let phi = 2.0 * PI * u1;
-        let h_local = Vec3::from(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        let h_local = Vec3::from(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
 
         let onb = Onb::build_from_normal(si.shading_normal());
         let h_world = onb.local_to_world(h_local);
