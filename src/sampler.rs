@@ -15,7 +15,7 @@ pub trait Sampler: Send + Sync {
     fn sample(&self, n: u32, d: u32) -> f64;
 }
 
-const MAX_DIMS: usize = 512;
+const MAX_DIMS: usize = 21200;
 
 /// Joe & Kuo 2008 direction numbers, left-aligned u32, lazy-initialized.
 static DIRS: LazyLock<[[u32; 32]; MAX_DIMS]> = LazyLock::new(compute_dirs);
@@ -57,7 +57,7 @@ fn compute_dirs() -> [[u32; 32]; MAX_DIMS] {
 
         let mut v = [0u32; 32];
         for k in 0..s {
-            v[k] = m[k] << (32 - s);
+            v[k] = m[k] << (32 - (k + 1));
         }
         for k in s..32 {
             let mut val = v[k - s] ^ (v[k - s] >> s);

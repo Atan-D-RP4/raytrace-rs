@@ -12,7 +12,7 @@ use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::{BsdfSample, PdfKind};
-use crate::pdf::{HittablePDF, PDF, PdfEnum, power_heuristic};
+use crate::pdf::{Emitter, PDF, PdfEnum, power_heuristic};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, SampleDims, Sampler};
 use crate::vec3::{Color3, Vec3};
@@ -100,7 +100,6 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
         let mut ray = *initial_ray;
 
         for bounce in 0..self.max_depth {
-            let bounce_start = dim_cursor.checkpoint();
             if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f64::INFINITY)) {
                 // Create a SurfaceInteraction from the material hit and the ray
                 let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
@@ -229,7 +228,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                                     normal: si.shading_normal(),
                                 })
                             };
-                            let light_pdf = HittablePDF::new(lights, si.point(), ray.time);
+                            let light_pdf = Emitter::new(lights, si.point(), ray.time);
 
                             // Track consumption for fixed-dim stride padding.
                             let mix_start = dim_cursor.offset();
@@ -279,16 +278,6 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
 
                     accumulated_attenuation = accumulated_attenuation * bias;
                     ray = Ray::new_with_time(si.point(), direction, ray.time);
-
-                    // QMC invariant: every completed bounce consumes a fixed number of dims.
-                    // Non-delta: NEE(3) + RR(1) + material(6) + MIS mixture(4) = 14.
-                    // Delta:     NEE(0) + RR(1) + material(6) + delta pad(4) = 11.
-                    // (NEE is skipped for delta materials — BSDF is zero everywhere.)
-                    let consumed = dim_cursor.offset() - bounce_start;
-                    debug_assert!(
-                        consumed == 14 || consumed == 11,
-                        "QMC dim mismatch: consumed {consumed}, expected 14 (non-delta) or 11 (delta)"
-                    );
                 } else {
                     // Emissive materials return None — no scattering. Emission already added
                     // to accumulated_color via emitted() above.

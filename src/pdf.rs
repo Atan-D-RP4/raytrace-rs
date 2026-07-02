@@ -216,15 +216,15 @@ impl<S: Sampler> PDF<S> for CosinePDF {
     }
 }
 
-pub struct HittablePDF<'a> {
+pub struct Emitter<'a> {
     objects: &'a [Arc<dyn Sampleable>],
     origin: Point3,
     time: f64,
 }
 
-impl<'a> HittablePDF<'a> {
+impl<'a> Emitter<'a> {
     pub fn new(objects: &'a [Arc<dyn Sampleable>], origin: Point3, time: f64) -> Self {
-        HittablePDF {
+        Emitter {
             objects,
             origin,
             time,
@@ -232,7 +232,7 @@ impl<'a> HittablePDF<'a> {
     }
 }
 
-impl<'a, S: Sampler> PDF<S> for HittablePDF<'a> {
+impl<'a, S: Sampler> PDF<S> for Emitter<'a> {
     fn value(&self, direction: Vec3) -> f64 {
         if self.objects.is_empty() {
             return 0.0;

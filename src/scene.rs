@@ -27,7 +27,7 @@ pub struct Scene {
     /// All intersectable objects in the scene, including lights.
     objects: Vec<Arc<dyn Intersectable>>,
     /// Objects whose directions are worth sampling toward (area lights).
-    /// Used by `HittablePDF` for MIS. Delta materials (glass, metal) should
+    /// Used by `EmitterPDF` for MIS. Delta materials (glass, metal) should
     /// NOT be included — they have no meaningful PDF for importance sampling.
     important_objects: Vec<Arc<dyn Sampleable>>,
 }
@@ -53,7 +53,7 @@ impl Scene {
     /// Returns `(objects, important_objects)`.
     ///
     /// `important_objects` are geometry-only copies for importance sampling
-    /// via `HittablePDF` (area lights only — delta materials excluded).
+    /// via `EmitterPDF` (area lights only — delta materials excluded).
     pub fn into_objects(self) -> (Vec<Arc<dyn Intersectable>>, Vec<Arc<dyn Sampleable>>) {
         (self.objects, self.important_objects)
     }
@@ -106,7 +106,7 @@ impl Scene {
 
 impl Scene {
     /// Add an intersectable for intersection, optionally with a separate
-    /// importance target for sampling via `HittablePDF`.
+    /// importance target for sampling via `EmitterPDF`.
     ///
     /// Use separate objects when the importance target needs a different
     /// material (e.g., `Material::Void` for sampling, `Material::dielectric`
@@ -125,7 +125,7 @@ impl Scene {
     /// Register a sampleable as an importance target.
     ///
     /// Pushes to both `objects` (intersection) and `important_objects`
-    /// (importance sampling via `HittablePDF`).
+    /// (importance sampling via `EmitterPDF`).
     pub fn add_importance_target(&mut self, object: Arc<dyn Sampleable>) {
         self.important_objects.push(object.clone());
         self.objects.push(object);
