@@ -19,17 +19,33 @@
 - **v4.2 (2026-06-30)** — **Renamed `SobolStream` → `SampleStream`.** The trait
   produces correlated 2D pairs — works for Sobol, stratified grid, and future CMJ.
   Name reflects what it does, not one implementation.
-- **v4.3 (2026-06-30)** — **Kept `HittablePDF`.** Added `LightPDF` as a single-light
-  wrapper alongside `HittablePDF`. Light selection moves to integrator via `Rng::next()`.
-  `HittablePDF` remains for multi-light MIS and non-MIS contexts.
+- **v4.3 (2026-06-30)** — **Kept `EmitterPDF`.** Added `LightPDF` as a single-light
+  wrapper alongside `EmitterPDF`. Light selection moves to integrator via `Rng::next()`.
+  `EmitterPDF` remains for multi-light MIS and non-MIS contexts.
 
 ## Problem
 
 The current architecture uses a **single flat dimension space** (`DimCursor<S>`) shared
 across all sampling needs. Every consumer — camera, materials, RR, MIS, PDFs — pulls
 from the same linear counter. This forces Sobol dimensions to be consumed for tasks
-where Sobol provides zero benefit (discrete decisions, padding), destroying the very
-correlation structure that makes Sobol work.
+where Sobol provides zero benefit (discrete decisions, padding).
+
+**Context:** A prior Sobol direction-number bug and a 512-dim cap made this waste
+appear catastrophic. With the bug fixed (`v[k] = m[k] << (32 - (k + 1))`) and
+`MAX_DIMS = 21200` (full Joe & Kuo dataset), the absolute waste is ~0.1% per path.
+The fix is **not** about convergence speed — it's about architectural correctness:
+
+1. **Corruption of Sobol structure** — Discrete decisions (RR, light selection, MIS
+   selection) consume Sobol pairs that could stratify the next direction sample.
+   Bounce N's direction starts at a dim offset far from bounce N-1's direction,
+   diluting the low-discrepancy property across roles that don't benefit from it.
+
+2. **Fixed stride padding** — Early-terminating paths (dielectric, max-attenuation
+   cutoff) waste remaining dims in the 11-dim block. A dielectric bounce uses 1
+   dim but consumes 11.
+
+3. **MLT incompatibility** — The `sample(n, d)` interface is fundamentally
+   incompatible with MLT's mutable state vector with accept/reject.
 
 ### Current dimension consumption (per bounce)
 
@@ -50,10 +66,15 @@ correlation structure that makes Sobol work.
 |-------|------|--------|--------|
 | RR coin flip | 1 | Hash RNG | `rng.next()` |
 | Material lobe selection | 1 | Hash RNG | `rng.next()` |
-| Material direction (2D) | 2 | Sobol | `sobol.next_2d()` |
+| Material direction (2D) | 2 | SampleStream | `stream.next_2d()` |
 | MIS strategy selection | 1 | Hash RNG | `rng.next()` |
-| MIS direction (from selected PDF) | 2 | Sobol | `sobol.next_2d()` |
+| MIS direction (from selected PDF) | 2 | SampleStream | `stream.next_2d()` |
 | **Total** | **7** | — | **100% useful** |
+
+With `MAX_DIMS = 21200`, the absolute Sobol waste from discrete decisions is small
+(~0.06% of available dims per path). But the two-stream design still wins: discrete
+decisions don't consume correlated pairs, there's no fixed stride padding, and MLT
+can plug in without fake `sample(n, d)` implementations.
 
 ### Per-material breakdown
 
@@ -314,9 +335,9 @@ impl PDF for PdfEnum {
 }
 ```
 
-#### 6. HittablePDF and LightPDF
+#### 6. EmitterPDF and LightPDF
 
-`HittablePDF` is **kept** — it handles the general multi-light case. A new
+`EmitterPDF` is **kept** — it handles the general multi-light case. A new
 `LightPDF` wraps a single light source for when the integrator has already
 selected which light to sample:
 
@@ -357,7 +378,7 @@ let light_idx = (rng.next() * lights.len() as f64
 let light_pdf = LightPDF::new(&lights[light_idx], si.point(), ray.time);
 ```
 
-`HittablePDF` remains available for contexts where internal selection is
+`EmitterPDF` remains available for contexts where internal selection is
 preferred (e.g., non-MIS light sampling, or when the number of lights is
 small enough that selection overhead is negligible).
 
@@ -763,7 +784,7 @@ No `dyn` anywhere — the compiler monomorphizes for `MltStream`.
 | File | Change | Risk |
 |------|--------|------|
 | `src/sampler.rs` | Add `SampleStream` + `Rng` traits, `SampleStreamWriter`, `HashRng` | Low |
-| `src/pdf.rs` | Remove `S` from `PDF<S>`, `PdfEnum<S>`. Add `LightPDF` alongside existing `HittablePDF` | Medium |
+| `src/pdf.rs` | Remove `S` from `PDF<S>`, `PdfEnum<S>`. Add `LightPDF` alongside existing `EmitterPDF` | Medium |
 | `src/integrator/mod.rs` | Change `Integrator<S>` → `Integrator<S, R>`. Update `li()` signature | Medium |
 | `src/integrator/path_tracer.rs` | Rewrite `li()` to use two streams. Update `mis_sample` | High |
 | `src/camera/mod.rs` | Update `CameraSampler::new_sampled()` to take `(stream, rng)` | Low |
@@ -776,7 +797,7 @@ No `dyn` anywhere — the compiler monomorphizes for `MltStream`.
 | # | Step | Files | Risk | Breaking? |
 |---|------|-------|------|-----------|
 | 1 | Add `SampleStream` + `Rng` traits + impls for all samplers | sampler.rs | Low | No |
-| 2 | Add `LightPDF` alongside existing `HittablePDF` | pdf.rs | Low | No |
+| 2 | Add `LightPDF` alongside existing `EmitterPDF` | pdf.rs | Low | No |
 | 3 | Change `PDF` trait: remove `S`, accept `(u,v)` | pdf.rs, all PDF impls | Medium | Yes |
 | 4 | Change `PdfEnum<S>` → `PdfEnum` | pdf.rs | Medium | Yes |
 | 5 | Update `mis_sample` — remove generic, external selection | path_tracer.rs | Medium | Yes |
@@ -787,12 +808,17 @@ No `dyn` anywhere — the compiler monomorphizes for `MltStream`.
 | 10 | Update `CpuRenderer` generics and render loop | renderer/cpu.rs | Medium | Yes |
 | 11 | Remove `DimCursor` from hot path (keep for other uses) | sampler.rs | Low | No |
 
+**Note:** The per-bounce dim invariant test added to `src/integrator/mod.rs` (replacing
+the `debug_assert!`) should be removed in step 9. The two-stream architecture uses
+variable dimension consumption per bounce — the fixed-dim test will be incorrect
+after the refactor.
+
 ### Migration Strategy
 
 **Phase 1 (non-breaking):** Add `SampleStream` + `Rng` traits alongside existing
 `Sampler`. Implement `SampleStreamWriter`, `HashRng`, and add `SampleStream` +
 `Rng` impls to `NaiveRandomSampler` and `StratifiedRandomSampler`. Add `LightPDF`
-alongside existing `HittablePDF`. All existing code continues to work.
+alongside existing `EmitterPDF`. All existing code continues to work.
 
 **Phase 2 (mechanical):** Change `PDF` trait to remove generic. Update all impls.
 This is the biggest change but is mostly find-and-replace. Update `PdfEnum`.
@@ -807,14 +833,13 @@ Simplify `SampleDims`. Update integrator to use `LightPDF` for MIS.
 
 | Issue | Before | After |
 |-------|--------|-------|
-| Sobol waste | 71% of dims wasted | 0% waste |
-| Fixed stride | 11 dims/bounce always | Variable, minimal (1-7) |
-| Role switching | Same dim = different role | Each stream has one role |
-| Camera waste | 3/5 dims wasted | 0 dims wasted |
-| HittablePDF waste | 1 selection dim wasted for single-light | `LightPDF` skips selection, `HittablePDF` kept for multi-light |
+| Sobol structure | Discrete decisions dilute correlation pairs | Each stream has one role, pairs stratify directions |
+| Fixed stride | 11 dims/bounce always, padding on early termination | Variable, minimal (1-7) |
+| Camera waste | 3/5 dims wasted (time is hash-quality) | Time from hash, AA/lens from stream |
+| EmitterPDF waste | 1 selection dim for single-light | `LightPDF` skips selection, `HittablePDF` kept for multi-light |
 | Dynamic dispatch | `dyn` on hot path (v3 proposal) | Zero `dyn` — compiler monomorphizes |
-| Code complexity | Generic `S` everywhere | Concrete stream types |
-| Performance | Unnecessary dim consumption | Minimal consumption |
+| Code complexity | Generic `S` everywhere, 11-dim debug_assert | Concrete stream types, no fixed stride |
+| MLT compatibility | Requires fake `sample(n, d)` | Clean `SampleStream + Rng` interface |
 | Integrator generic | `Integrator<S: Sampler>` | `Integrator<S, R>` (no `S: Sampler`) |
 | PDF generic | `PDF<S: Sampler>` | `PDF` (no generic at all) |
 

@@ -495,7 +495,7 @@ SamplerFactory trait:
   create() → Self::Sampler
 
 SobolSampler:
-  Joe & Kuo 2008 direction numbers (512 dims)
+  Joe & Kuo 2008 direction numbers (2048 dims)
   Gray-code recurrence for O(1) per-sample advance
   Thread-local GrayCodeCache with digital shift scrambling
 
@@ -528,7 +528,7 @@ DimCursor<S: Sampler>:
 | Light sample | 2 |
 | RR / padding | 2 |
 
-**Sobol dimension safety**: 512 dims / 11 dims-per-bounce ≈ 46 bounces — sufficient for all practical scenes.
+**Sobol dimension safety**: 2048 dims / 11 dims-per-bounce ≈ 186 bounces — far beyond any practical path tracer usage.
 
 #### Comparison
 
@@ -537,11 +537,11 @@ DimCursor<S: Sampler>:
 | API | Pure `sample(n,d)` (stateless, Sync) | Stateful `Get1D()`, `Get2D()` | Stateful class | Stateful `SequenceID` | Stateful plugin |
 | Thread safety | Thread-local cache + pure fn | Clone per thread | Per-thread RNG | Per-thread state | Clone per thread |
 | Determinism | Same `(n,d)` → same value | Same sequence per pixel | Per-pixel + random pass | Pixel+purpose hash | Plugin-dependent |
-| Primary sequence | Sobol (512d, Gray-code) | Multiple (Sobol, Halton, PMJ, etc.) | Sobol | CMJ/PMJ + hash | Multiple (Independent, Stratified, Sobol, etc.) |
+| Primary sequence | Sobol (2048d, Gray-code) | Multiple (Sobol, Halton, PMJ, etc.) | Sobol | CMJ/PMJ + hash | Multiple (Independent, Stratified, Sobol, etc.) |
 | Scrambling | Digital shift (per-dim hash) | Owen, FastOwen, PermuteDigits | None (pixel jitter) | Precomputed tables | None |
 | Dim management | `DimCursor<S>` auto-advancing + debug_assert | Implicit (sampler tracks dim) | Per engine | Per purpose | Per plugin |
 | Blue noise | No | ✅ BlueNoiseSampler, ZSampler | No | ✅ Precomputed tables | No |
-| Max dims | 512 | Unbounded | Unbounded | Precomputed | Unbounded |
+| Max dims | 2048 (21200 available in data file) | Unbounded | Unbounded | Precomputed | Unbounded |
 
 **Design note**: The pure `sample(n,d)` API is architecturally distinct from every production renderer surveyed — all use stateful sampler APIs. The stateless approach is advantageous for GPU (no per-thread sampler state to maintain) and enables trivial determinism verification (`same n,d → same result`).
 

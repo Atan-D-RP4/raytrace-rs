@@ -114,7 +114,7 @@ All tests are standard Rust unit tests embedded in `#[cfg(test)] mod tests` bloc
 | `sphere.rs` | 171 | Zero tests. Ray-sphere intersection, moving sphere, sphere sampling/PDF. |
 | `planar/mod.rs` + regions (8 files) | 313+ | Zero tests. Quad/Tri/Ellipse intersection, PDF values, UV mapping. |
 | `transform.rs` | 215 | Zero tests. Translate/RotateY correctness, AABB after transform. |
-| `pdf.rs` | 237 | Zero tests. CosinePDF, GGXSamplePDF, HittablePDF, MixturePDF value/generate. |
+| `pdf.rs` | 237 | Zero tests. CosinePDF, GGXSamplePDF, EmitterPDF, MixturePDF value/generate. |
 | `integrator/path_tracer.rs` | 162 | Zero tests. Li() correctness, variance, bounce behavior, background handling. |
 | `camera/perspective.rs` | 183 | Zero tests. Ray generation, jitter bounds, defocus disk, resolution edge cases. |
 | `main.rs` | 572 | Zero tests. CLI args parsing, scene selection, headless vs live mode. |
