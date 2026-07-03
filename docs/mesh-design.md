@@ -11,7 +11,7 @@ ______________________________________________________________________
   No mesh infrastructure exists. Design targets single-material meshes
   (most common case) with extension path for per-face materials.
 - **v2 (2026-06-29)** — Bi-directional audit against 4 existing design docs
-  (denoiser.md, adaptive-sampling.md, ARCH_HYBRID.md, samplestream-refactor.md).
+  (denoiser.md, adaptive-sampling.md, renderer_arch.md, samplestream-refactor.md).
   Fixed scene integration (Arc-based dual reg), added cross-doc refs,
   documented rasterizer tension as deferred integration point.
 
@@ -488,8 +488,8 @@ ______________________________________________________________________
    for near-zero barycentric coordinates. Required for production quality
    but can be deferred to Phase 2.
 
-5. **ARCH_HYBRID TriangleRasterizer ↔ mesh triangle access.**
-   ARCH_HYBRID.md §2 describes a `TriangleRasterizer` that iterates all
+5. **renderer_arch TriangleRasterizer ↔ mesh triangle access.**
+   renderer_arch.md §2 describes a `TriangleRasterizer` that iterates all
    world triangles by vertex transform → clip → rasterize. A `MeshShape`
    (single `Shape3D`) is opaque to per-triangle iteration — the rasterizer
    cannot extract vertex data from it. This is a deferred integration point:
@@ -506,7 +506,7 @@ ______________________________________________________________________
 
 | Doc | Relationship to Mesh | Status |
 |---|---|---|
-| `ARCH_HYBRID.md` §2, §9 | `SampleableEnum` needs `Mesh` variant (additive). `TriangleRasterizer` needs mesh triangle access (deferred, see §7.5). Primitive registration pattern matches. | ✅ Compatible, 2 tensions documented |
+| `renderer_arch.md` §2, §9 | `SampleableEnum` needs `Mesh` variant (additive). `TriangleRasterizer` needs mesh triangle access (deferred, see §7.5). Primitive registration pattern matches. | ✅ Compatible, 2 tensions documented |
 | `denoiser.md` | Denoiser post-processes film output. Orthogonal to geometry. No shared interfaces. | ✅ No conflict |
 | `adaptive-sampling.md` | Variance estimation + convergence criteria. Orthogonal to geometry types. | ✅ No conflict |
 | `samplestream-refactor.md` | `SampleStreamEnum` replaces `DimCursor` in integrator signatures. Mesh uses `Sampleable` (non-generic, raw params). | ✅ No conflict |

@@ -843,9 +843,9 @@ Simplify `SampleDims`. Update integrator to use `LightPDF` for MIS.
 | Integrator generic | `Integrator<S: Sampler>` | `Integrator<S, R>` (no `S: Sampler`) |
 | PDF generic | `PDF<S: Sampler>` | `PDF` (no generic at all) |
 
-## Cross-reference: ARCH_HYBRID.md
+## Cross-reference: renderer_arch.md
 
-This refactor is compatible with the hybrid architecture in `docs/ARCH_HYBRID.md`:
+This refactor is compatible with the hybrid architecture in `docs/renderer_arch.md`:
 
 - The `Integrator` trait changes from `Integrator<S: Sampler>` to
   `Integrator<S: SampleStream, R: Rng>` — still generic, still zero-cost, but
@@ -860,4 +860,4 @@ This refactor is compatible with the hybrid architecture in `docs/ARCH_HYBRID.md
 - `Sampleable` de-generic — takes `(u, v)` directly ✓
 - Camera/Renderer/Integrator extraction from monolithic camera.rs ✓
 - Constant Mediums QMC integration ✓
-- ARCH_HYBRID.md audit — consistent ✓
+- renderer_arch.md audit — consistent ✓

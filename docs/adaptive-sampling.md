@@ -15,9 +15,9 @@ ______________________________________________________________________
   6 conflicts: raw_data() variance format, overlay_radiance() behavior, VarianceEstimator
   dependency, per-channel variance, double-denoising guard, progressive preview.
   Added cross-references in §5.1/§5.3/§5.4/§5.5/§6.
-- **v5 (2026-06-28)** — Three-document audit with `docs/ARCH_HYBRID.md` and
+- **v5 (2026-06-28)** — Three-document audit with `docs/renderer_arch.md` and
   `docs/denoiser.md`. Added `pixels` dual semantics note (sum vs mean after
-  denoising) in §0.1. Added ARCH_HYBRID cross-reference for unified dependency order.
+  denoising) in §0.1. Added renderer_arch cross-reference for unified dependency order.
 - **v6 (2026-06-28)** — Static dispatch audit. Replaced `&dyn ConvergenceCriterion`
   with `ConvergenceCriterionKind` enum + `From` impls. Replaced `&dyn Film` with
   generic `F: Film` on `SamplingPolicy` trait.

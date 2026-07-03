@@ -924,7 +924,7 @@ This document intersects with two other design docs:
 
 ### vs `docs/denoiser.md`
 
-| ARCH_HYBRID Section | Denoiser Section | Relationship |
+| renderer_arch Section | Denoiser Section | Relationship |
 |---------------------|------------------|--------------|
 | Film trait (§2) | §Phase 1 — `apply_denoiser()` | Denoiser adds method to Film trait |
 | CpuRenderer (§2) | §6 — `film.apply_denoiser()` call | CpuRenderer gains one line after sampling loop |
@@ -941,7 +941,7 @@ for cache-friendly sequential access during denoiser passes.
 This document's `GBuffer<'a>` stores `SurfaceInteraction<'a>` produced by the
 visibility generator. These are different abstractions at different layers:
 
-- **GBuffer** (ARCH_HYBRID): visibility buffer, produced by `VisibilityGenerator`,
+- **GBuffer** (renderer_arch): visibility buffer, produced by `VisibilityGenerator`,
   consumed by `RasterRenderer`/`HybridRenderer`. Stores the full surface interaction
   including material reference.
 - **DenoiserFeatures** (denoiser.md): per-pixel shading features, produced by the
@@ -950,7 +950,7 @@ visibility generator. These are different abstractions at different layers:
 
 ### vs `docs/adaptive-sampling.md`
 
-| ARCH_HYBRID Section | Adaptive Sampling Section | Relationship |
+| renderer_arch Section | Adaptive Sampling Section | Relationship |
 |---------------------|--------------------------|--------------|
 | CpuRenderer (§2) | §0.4 — render loop | Adaptive sampling modifies the same loop that gains `apply_denoiser()` |
 | RgbFilm (§1) | §2a — VarianceEstimator | VarianceEstimator extraction may change RgbFilm internals |
@@ -958,7 +958,7 @@ visibility generator. These are different abstractions at different layers:
 
 ### vs `docs/samplestream-refactor.md`
 
-| ARCH_HYBRID Section | SampleStream Section | Relationship |
+| renderer_arch Section | SampleStream Section | Relationship |
 |---------------------|---------------------|--------------|
 | Integrator\<W, S> (§2) | §4 — SampleStreamEnum enum | Integrator gains `SampleStreamEnum<S>` parameter (enum, not `dyn`) |
 | CpuRenderer\<I, S, Fact> (§2) | §6 — De-generic CpuRenderer | SampleStream may remove `S` and `Fact` generics, creates `IndexedSamplerStream` internally |
@@ -976,15 +976,15 @@ trait and `VisibilityGenerator` trait are unaffected.
 
 | Order | What | Source Doc | Breaking? |
 |-------|------|------------|-----------|
-| 1 | SampleableEnum + From impls | ARCH_HYBRID.md §2 | No |
-| 2 | Integrator\<W, S> generic over world | ARCH_HYBRID.md §2 | No |
+| 1 | SampleableEnum + From impls | renderer_arch.md §2 | No |
+| 2 | Integrator\<W, S> generic over world | renderer_arch.md §2 | No |
 | 3 | SampleStreamEnum\<S> enum + IndexedSamplerStream | samplestream-refactor.md Step 1 | No |
 | 4 | PdfEnum\<S> (already exists, keep) | pdf.rs | No |
 | 5 | §2a VarianceEstimator extraction | adaptive-sampling.md | No |
 | 6 | Denoiser trait + NoDenoiser + RgbFilm\<D> | denoiser.md Phase 0-1 | No |
 | 7 | BilateralDenoiser | denoiser.md Phase 1 | No |
-| 8 | RasterCamera + GBuffer + VisibilityGenerator\<W> | ARCH_HYBRID.md Steps 1-6 | No |
-| 9 | RasterRenderer + HybridRenderer | ARCH_HYBRID.md Steps 7-8 | No |
+| 8 | RasterCamera + GBuffer + VisibilityGenerator\<W> | renderer_arch.md Steps 1-6 | No |
+| 9 | RasterRenderer + HybridRenderer | renderer_arch.md Steps 7-8 | No |
 | 10 | A-Trous wavelet + DenoiserFeatures | denoiser.md Phase 2 | No |
 | 11 | OIDN integration (optional) | denoiser.md Phase 3 | No |
 
