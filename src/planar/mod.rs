@@ -261,7 +261,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         let point = origin + direction;
         let hit = Hit::new(time, point, point, self.normal, None);
         let si = SurfaceInteraction::new(hit, self.normal, front_face, self.material());
-        let emission = self.material().emitted(&si);
+        let emission = si.emission();
 
         crate::hittable::LightSample {
             direction,

@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::vec3::Vec3;
+use crate::vec3::{Color3, Vec3};
 
 /// Represents a ray-object intersection hit, containing geometric information about the
 /// intersection point.
@@ -75,23 +75,35 @@ impl Hit {
 /// TODO(type-safety): Point3/Vec3/Color3 are aliases today, so these fields can still be mixed up
 /// accidentally. Typed newtypes would catch that at compile time.
 pub struct SurfaceInteraction<'si> {
+    /// Geometric hit information, including position, normal, and UV coordinates.
     hit: Hit,
+    /// Shading normal at the hit point, which may differ from the geometric normal due to
+    /// normal mapping or other shading effects. Must be unit length.
     shading_normal: Vec3,
+    /// Indicates whether the ray hit the front face of the surface (true) or the back face (false).
     front_face: bool,
+    /// Reference to the material of the intersected surface.
     material: &'si Material,
+    /// Emission at this surface point, precomputed at construction.
+    /// For non-emissive materials this is always `Color3::ZERO`.
+    emission: Color3,
 }
 
 impl<'si> SurfaceInteraction<'si> {
     pub fn new(hit: Hit, shading_normal: Vec3, front_face: bool, material: &'si Material) -> Self {
-        Self {
+        let mut si = Self {
             hit,
             shading_normal,
             front_face,
             material,
-        }
+            emission: Color3::ZERO,
+        };
+        si.emission = material.emitted(&si);
+        si
     }
 
     /// Construct from a MaterialHit, resolving front_face and shading_normal.
+    #[inline]
     pub fn from_material_hit(mat_hit: MaterialHit<'si>, ray: &Ray) -> Self {
         let geometric_normal = mat_hit.hit.geometric_normal;
         let mut si = Self {
@@ -99,8 +111,10 @@ impl<'si> SurfaceInteraction<'si> {
             shading_normal: geometric_normal,
             front_face: false,
             material: mat_hit.material,
+            emission: Color3::ZERO,
         };
         si.set_face_normal(ray);
+        si.emission = si.material.emitted(&si);
         si
     }
 
@@ -121,6 +135,10 @@ impl<'si> SurfaceInteraction<'si> {
     }
     pub fn front_face(&self) -> bool {
         self.front_face
+    }
+    /// Emission radiance at this surface point (precomputed).
+    pub fn emission(&self) -> Color3 {
+        self.emission
     }
     pub fn material(&self) -> &'si Material {
         self.material
@@ -161,8 +179,11 @@ impl<'si> SurfaceInteraction<'si> {
     }
 }
 
+/// Represents a ray-object intersection hit along with a reference to the intersected material.
 pub struct MaterialHit<'a> {
+    /// Geometric hit information, including position, normal, and UV coordinates.
     pub hit: Hit,
+    /// Reference to the material of the intersected surface.
     pub material: &'a Material,
 }
 

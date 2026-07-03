@@ -160,7 +160,7 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<
         let front_face = sample.normal.dot(&(-light_unit)) > 0.0;
         let hit = Hit::new(time, point, point, sample.normal, None);
         let si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material());
-        sample.emission = self.material().emitted(&si);
+        sample.emission = si.emission();
         sample
     }
 }

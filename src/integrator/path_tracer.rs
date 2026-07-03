@@ -105,8 +105,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
                 let material = si.material();
 
-                // Compute the emitted light from the material at the intersection point
-                let emission = material.emitted(&si);
+                // Precomputed emission at the intersection point
+                let emission = si.emission();
                 // Accumulate the emitted light, scaled by the current attenuation
                 accumulated_color += accumulated_attenuation * emission;
                 // Outgoing direction (away from the surface) is the negative of the ray direction

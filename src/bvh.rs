@@ -183,15 +183,15 @@ impl BvhNode {
                     Ordering::Less => {
                         // For small node sizes, build sequentially to avoid thread overhead.
                         (
-                            Box::new(Self::new(left_half)),
-                            Box::new(Self::new(right_half)),
+                            Box::new(Self::new_inner(left_half)),
+                            Box::new(Self::new_inner(right_half)),
                         )
                     }
                     Ordering::Greater | Ordering::Equal => {
                         // For larger node sizes, build in parallel using rayon.
                         rayon::join(
-                            || Box::new(Self::new(left_half)),
-                            || Box::new(Self::new(right_half)),
+                            || Box::new(Self::new_inner(left_half)),
+                            || Box::new(Self::new_inner(right_half)),
                         )
                     }
                 };

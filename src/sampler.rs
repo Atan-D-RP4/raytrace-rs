@@ -17,22 +17,25 @@ pub trait Sampler: Send + Sync {
 
 const MAX_DIMS: usize = 21200;
 
-/// Joe & Kuo 2008 direction numbers, left-aligned u32, lazy-initialized.
-static DIRS: LazyLock<[[u32; 32]; MAX_DIMS]> = LazyLock::new(compute_dirs);
+/// Joe & Kuo 2008 direction numbers for Sobol' sequences, left-aligned u32, lazy-initialized. Boxed
+/// to avoid a 2.7 MB stack allocation (21200 × 32 × 4 bytes).
+static DIRS: LazyLock<Box<[[u32; 32]; MAX_DIMS]>> = LazyLock::new(compute_dirs);
 
 /// Parse Joe & Kuo direction numbers from the bundled dataset.
 ///
 /// File format: `d s a m_1 ... m_s` (dimension, degree, primitive poly, values).
-fn compute_dirs() -> [[u32; 32]; MAX_DIMS] {
+fn compute_dirs() -> Box<[[u32; 32]; MAX_DIMS]> {
     let file = include_str!("../new-joe-kuo-6.21201");
-    let mut dirs = [[0u32; 32]; MAX_DIMS];
+    // Initialize all directions to zero, then fill in the first 32 bits of each dimension.
+    let mut directions = vec![[0u32; 32]; MAX_DIMS];
 
     // Van der Corput (dim 0): V[j] = 1 << (31 - j)
-    for d in 0..32 {
-        dirs[0][d] = 1u32 << (31 - d);
-    }
+    (0..32).for_each(|j| {
+        directions[0][j] = 1u32 << (31 - j);
+    });
 
     let mut dim_idx = 2usize; // file starts at dimension 2
+    // Skip the header line and parse each subsequent line for direction numbers.
     for line in file.lines().skip(1) {
         if line.trim().is_empty() {
             continue;
@@ -72,7 +75,7 @@ fn compute_dirs() -> [[u32; 32]; MAX_DIMS] {
         if d_val >= 2 {
             let sob_dim = d_val - 1;
             if sob_dim < MAX_DIMS {
-                dirs[sob_dim] = v;
+                directions[sob_dim] = v;
             }
         }
         dim_idx += 1;
@@ -80,7 +83,10 @@ fn compute_dirs() -> [[u32; 32]; MAX_DIMS] {
             break;
         }
     }
-    dirs
+    directions
+        .into_boxed_slice()
+        .try_into()
+        .expect("DIRS length mismatch")
 }
 
 /// Conversion from u32 to [0,1).
@@ -309,25 +315,20 @@ impl SamplerFactory for StratifiedSamplerFactory {
     }
 }
 
-/// Auto-advancing dimension cursor for sequential sample access.
+/// Cursor for consuming dimensions from a sampler.
 ///
-/// Replaces `&mut u32` with a safe wrapper that advances on each access,
-/// preventing dimension aliasing when callers forget to increment.
-///
-/// Use with `Sampler::sample(n, cursor.next())` to consume dimensions sequentially:
-///
-/// let mut dims = DimCursor::new(4);
-/// let u = sampler.sample(n, dims.next());
-/// let v = sampler.sample(n, dims.next());
-/// assert_eq!(dims.offset(), 2);
-/// // dims is now at offset 2; next caller starts at dim 6
-///
+/// The cursor tracks the current dimension offset and sample index, allowing
+/// for sequential sampling across multiple dimensions and samples.
 #[derive(Clone, Debug)]
 pub struct DimCursor<S: Sampler> {
+    /// The base dimension index for this cursor.
     base: u32,
+    /// The current offset from the base dimension.
     offset: u32,
-    pub sample_idx: u32,
-    pub sampler: S,
+    /// The current sample index for this cursor.
+    sample_idx: u32,
+    /// The sampler used to generate samples.
+    sampler: S,
 }
 
 impl<S: Sampler> DimCursor<S> {
@@ -562,17 +563,5 @@ mod tests {
             same < 4,
             "Different pixels should produce different samples"
         );
-    }
-
-    #[test]
-    fn sobol_is_sync_and_send() {
-        fn assert_sync<T: Sync>() {}
-        fn assert_send<T: Send>() {}
-        assert_sync::<SobolQmcSampler>();
-        assert_send::<SobolQmcSampler>();
-        assert_sync::<NaiveRandomSampler>();
-        assert_send::<NaiveRandomSampler>();
-        assert_sync::<StratifiedRandomSampler>();
-        assert_send::<StratifiedRandomSampler>();
     }
 }

@@ -59,6 +59,17 @@ use crate::sampler::SampleDims;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
+fn blackbody(temp: f64) -> Color3 {
+    // Planck's law: spectral radiance of a blackbody at temperature T.
+    // This is a simplified approximation for RGB color. For more accurate
+    // rendering, use spectral rendering or a proper color matching function.
+    let t = temp.clamp(1000.0, 10000.0);
+    let r = ((t / 1000.0).powf(3.0) * 0.5).clamp(0., 1.);
+    let g = ((t / 1000.0).powf(2.0) * 0.7).clamp(0., 1.);
+    let b = ((t / 1000.0).powf(1.5) * 1.0).clamp(0., 1.);
+    Color3::from(r, g, b)
+}
+
 /// Material sample result for one bounce.
 ///
 /// [`Delta`]: integrator uses direction and throughput directly.
@@ -579,7 +590,7 @@ impl Material {
     /// Area light with a texture for spatial emission variation.
     pub fn light_textured(tex: Arc<dyn Texture>) -> Self {
         Material::DiffuseLight(DiffuseLightMaterial {
-            emit: Color3::ZERO,
+            emit: blackbody(6500.0), // default white light
             tex: Some(tex),
         })
     }

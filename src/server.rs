@@ -3,6 +3,7 @@ use crate::film::SharedFramebuffer;
 use futures_lite::AsyncWriteExt;
 use futures_lite::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use smol::net::TcpListener;
+use tracing::info;
 
 pub struct Prepend<S: AsyncRead + AsyncWrite + Unpin> {
     inner: S,
@@ -98,7 +99,9 @@ ws.onmessage = (e) => {
 }
 
 pub async fn run(framebuffer: SharedFramebuffer) -> std::io::Result<()> {
-    let listener = TcpListener::bind("0.0.0.0:3000").await?;
+    let addr = "0.0.0.0:3000";
+    let listener = TcpListener::bind(addr).await?;
+    info!("Server listening on http://{}", addr);
     loop {
         let (mut stream, addr) = listener.accept().await?;
         println!("Accepted connection from {}", addr);
