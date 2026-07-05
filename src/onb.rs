@@ -10,18 +10,24 @@ pub struct Onb {
 }
 
 impl Onb {
-    pub fn build_from_normal(normal: Vec3) -> Self {
+    /// Constructs an orthonormal basis (ONB) from a given normal vector.
+    ///
+    /// Uses the classic method of constructing an ONB from a normal vector. The resulting basis
+    /// vectors are guaranteed to be orthogonal and normalized.
+    pub fn build_from_normal_legacy(normal: Vec3) -> Self {
         debug_assert!(
             !normal.near_zero(),
             "ONB from zero normal produces NaN basis"
         );
         let normal = normal.unit_vector();
+        // Choose a vector that is not parallel to the normal vector
         let a = if normal.x.abs() < 0.9 {
             Vec3::from(1.0, 0.0, 0.0)
         } else {
             Vec3::from(0.0, 1.0, 0.0)
         };
 
+        // Compute the tangent and bitangent vectors using the cross product
         let v = normal.cross(&a).unit_vector();
         let u = v.cross(&normal);
         let w = normal;
@@ -29,7 +35,11 @@ impl Onb {
         Onb { u, v, w }
     }
 
-    pub fn build_from_normal_revised(normal: Vec3) -> Self {
+    /// Constructs an orthonormal basis (ONB) from a given normal vector.
+    ///
+    /// Uses the branchless or Pixar method for constructing the ONB, which is more efficient and numerically stable.
+    /// Reference: Duff et al., "Building an Orthonormal Basis, Revisited," JCGT 2017
+    pub fn build_from_normal(normal: Vec3) -> Self {
         debug_assert!(
             !normal.near_zero(),
             "ONB from zero normal produces NaN basis"
@@ -55,6 +65,7 @@ impl Onb {
         local.x * self.u + local.y * self.v + local.z * self.w
     }
 
+    /// Transforms a world-space vector to local-space (in tangent space) using the ONB basis.
     pub fn world_to_local(&self, world: Vec3) -> Vec3 {
         Vec3::from(world.dot(&self.u), world.dot(&self.v), world.dot(&self.w))
     }

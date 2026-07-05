@@ -13,6 +13,9 @@ const BVH_BIN_SIZE: usize = 32;
 /// The threshold number of objects in a BVH node above which we will build child nodes in parallel
 /// using rayon.
 const BVH_PARALLEL_THRESHOLD: usize = 64;
+/// The threshold number of objects in a BVH node below which we will create a leaf node instead
+/// of splitting further. This is a tradeoff between tree depth and leaf size.
+const BVH_LEAF_THRESHOLD: usize = 4;
 
 /// A binary BVH node for accelerating ray-scene intersection queries.
 ///
@@ -23,6 +26,11 @@ pub enum BvhNode {
     Interior {
         left: Box<BvhNode>,
         right: Box<BvhNode>,
+        bbox: Aabb,
+    },
+    LeafN {
+        objects: [Arc<dyn Intersectable>; BVH_LEAF_THRESHOLD],
+        count: usize,
         bbox: Aabb,
     },
     Leaf {
@@ -71,19 +79,16 @@ impl BvhNode {
                     bbox: centroids[0].1,
                 }
             }
-            2 => {
+            2..BVH_LEAF_THRESHOLD => {
                 trace!(object_count = obj_span, "bvh leaf");
-                let left = Box::new(Self::Leaf {
-                    object: centroids[0].0.clone(),
-                    bbox: centroids[0].1,
-                });
-                let right = Box::new(Self::Leaf {
-                    object: centroids[1].0.clone(),
-                    bbox: centroids[1].1,
-                });
-                Self::Interior {
-                    left,
-                    right,
+                let mut leaf_objects =
+                    core::array::from_fn(|_| Arc::new(BvhNode::Empty) as Arc<dyn Intersectable>);
+                for (i, (object, _, _)) in centroids.iter().enumerate() {
+                    leaf_objects[i] = object.clone();
+                }
+                Self::LeafN {
+                    objects: leaf_objects,
+                    count: obj_span,
                     bbox: root_bbox,
                 }
             }
@@ -160,6 +165,37 @@ impl BvhNode {
                     }
                 }
 
+                let root_sa = root_bbox.surface_area();
+                let trav_cost = root_sa * 0.5;
+                let leaf_cost = root_sa * obj_span as f64;
+
+                if best_cost.is_finite() && best_cost + trav_cost < leaf_cost {
+                    trace!(
+                        object_count = obj_span,
+                        best_cost, best_axis, best_split, "splitting bvh node with SAH"
+                    );
+                } else {
+                    trace!(
+                        object_count = obj_span,
+                        best_cost, best_axis, best_split, "not splitting bvh node with SAH"
+                    );
+                    // Not worth splitting — pack into a multi-object leaf.
+                    // Only pack if we can fit all objects; otherwise force split below.
+                    if obj_span <= BVH_LEAF_THRESHOLD {
+                        let mut leaf_objects = core::array::from_fn(|_| {
+                            Arc::new(BvhNode::Empty) as Arc<dyn Intersectable>
+                        });
+                        for (i, (object, _, _)) in centroids.iter().enumerate() {
+                            leaf_objects[i] = object.clone();
+                        }
+                        return Self::LeafN {
+                            objects: leaf_objects,
+                            count: obj_span,
+                            bbox: root_bbox,
+                        };
+                    }
+                }
+
                 trace!(
                     object_count = obj_span,
                     best_axis, best_split, "splitting bvh node with SAH"
@@ -209,7 +245,6 @@ impl Intersectable for BvhNode {
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         match self {
             Self::Empty => None,
-            Self::Leaf { object, .. } => object.intersect(ray, ray_t),
             Self::Interior { left, right, bbox } => {
                 if !bbox.hit(ray, ray_t) {
                     return None;
@@ -224,6 +259,28 @@ impl Intersectable for BvhNode {
                 );
                 hit_right.or(hit_left)
             }
+            Self::Leaf { object, .. } => object.intersect(ray, ray_t),
+            Self::LeafN {
+                objects,
+                count,
+                bbox,
+                ..
+            } => {
+                if !bbox.hit(ray, ray_t) {
+                    return None;
+                }
+                let mut closest_hit: Option<MaterialHit> = None;
+                let mut closest_time = ray_t.max;
+                for object in objects[..*count].iter() {
+                    if let Some(hit) =
+                        object.intersect(ray, Interval::from(ray_t.min, closest_time))
+                    {
+                        closest_time = hit.hit.time;
+                        closest_hit = Some(hit);
+                    }
+                }
+                closest_hit
+            }
         }
     }
 }
@@ -232,7 +289,8 @@ impl Bounded for BvhNode {
     fn bounding_box(&self) -> Aabb {
         match self {
             Self::Empty => Aabb::new(),
-            Self::Leaf { bbox, .. } | Self::Interior { bbox, .. } => *bbox,
+            Self::Interior { bbox, .. } | Self::Leaf { bbox, .. } => *bbox,
+            Self::LeafN { bbox, .. } => *bbox,
         }
     }
 }

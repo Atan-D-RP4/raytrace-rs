@@ -23,8 +23,6 @@ use raytrace_rs::renderer::Renderer;
 use raytrace_rs::sampler::{SobolSamplerFactory, StratifiedSamplerFactory};
 use raytrace_rs::scene::Scene;
 
-const WIDTH: u32 = 800;
-
 struct WindowState {
     /// IMPORTANT:
     /// surface must be dropped before window
@@ -408,18 +406,25 @@ fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, 
     // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
     let mut config = *scene.config();
 
-    config.image_width = std::env::var("RT_WIDTH")
+    // Allow env-var overrides for fast iteration during debugging.
+    if let Some(width) = std::env::var("RT_WIDTH")
         .ok()
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(WIDTH as i32);
-    config.samples_per_pixel = std::env::var("RT_SAMPLES")
+    {
+        config.image_width = width;
+    }
+    if let Some(spp) = std::env::var("RT_SAMPLES")
         .ok()
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1000);
-    config.max_depth = std::env::var("RT_DEPTH")
+    {
+        config.samples_per_pixel = spp;
+    }
+    if let Some(depth) = std::env::var("RT_DEPTH")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(50);
+    {
+        config.max_depth = depth;
+    }
 
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
@@ -498,18 +503,24 @@ fn headless_render(scene: Scene, scene_name: &str) {
     let mut config = *scene.config();
 
     // Allow env-var overrides for fast iteration during debugging.
-    config.image_width = std::env::var("RT_WIDTH")
+    if let Some(width) = std::env::var("RT_WIDTH")
         .ok()
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(WIDTH as i32);
-    config.samples_per_pixel = std::env::var("RT_SAMPLES")
+    {
+        config.image_width = width;
+    }
+    if let Some(spp) = std::env::var("RT_SAMPLES")
         .ok()
         .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(1000);
-    config.max_depth = std::env::var("RT_DEPTH")
+    {
+        config.samples_per_pixel = spp;
+    }
+    if let Some(depth) = std::env::var("RT_DEPTH")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(50);
+    {
+        config.max_depth = depth;
+    }
 
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);

@@ -171,18 +171,6 @@ impl FlatBvh {
                 flat_nodes.push(FlatBvhNode::leaf([0.0; 3], [0.0; 3], 0, 0));
                 idx
             }
-            BvhNode::Leaf { object, bbox } => {
-                let prim_offset = primitives.len() as u32;
-                primitives.push(object);
-                let idx = flat_nodes.len() as u32;
-                flat_nodes.push(FlatBvhNode::leaf(
-                    [bbox.x.min, bbox.y.min, bbox.z.min],
-                    [bbox.x.max, bbox.y.max, bbox.z.max],
-                    prim_offset,
-                    1,
-                ));
-                idx
-            }
             BvhNode::Interior { left, right, bbox } => {
                 let idx = flat_nodes.len() as u32;
                 // Reserve slot; children will be emitted next, then we patch.
@@ -201,6 +189,36 @@ impl FlatBvh {
                 flat_nodes[idx as usize].child_or_count = left_idx;
                 flat_nodes[idx as usize].right_or_unused = right_idx;
 
+                idx
+            }
+            BvhNode::LeafN {
+                objects,
+                count,
+                bbox,
+                ..
+            } => {
+                let prim_offset = primitives.len() as u32;
+                let prim_count = count as u32;
+                primitives.extend(objects.iter().take(count).cloned());
+                let idx = flat_nodes.len() as u32;
+                flat_nodes.push(FlatBvhNode::leaf(
+                    [bbox.x.min, bbox.y.min, bbox.z.min],
+                    [bbox.x.max, bbox.y.max, bbox.z.max],
+                    prim_offset,
+                    prim_count,
+                ));
+                idx
+            }
+            BvhNode::Leaf { object, bbox } => {
+                let prim_offset = primitives.len() as u32;
+                primitives.push(object);
+                let idx = flat_nodes.len() as u32;
+                flat_nodes.push(FlatBvhNode::leaf(
+                    [bbox.x.min, bbox.y.min, bbox.z.min],
+                    [bbox.x.max, bbox.y.max, bbox.z.max],
+                    prim_offset,
+                    1,
+                ));
                 idx
             }
         }
