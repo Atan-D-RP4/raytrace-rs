@@ -253,6 +253,7 @@ impl<'a, S: Sampler> PDF<S> for Emitter<'a> {
         }
         // Selection: 1 QMC sample to pick a light
         let u_select = dim_offset.next_sample();
+        // Clamp to [0, N) to avoid out-of-bounds index when u_select == 1.0
         let index =
             (u_select * self.objects.len() as f64).min(self.objects.len() as f64 - 1e-15) as usize;
         // Direction: 2 QMC samples for (u, v)

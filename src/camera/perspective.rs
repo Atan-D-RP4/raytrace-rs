@@ -3,6 +3,8 @@ use crate::vec3::{Color3, Point3, Vec3};
 
 use super::{Camera, CameraRay};
 
+const WIDTH: i32 = 800;
+
 /// User-facing camera configuration.
 ///
 /// This is scene/build-time data. Runtime/precomputed values live in [`Camera`].
@@ -27,6 +29,7 @@ impl CameraConfig {
     /// Creates a zero-initialized config; scenes usually set all fields explicitly.
     pub fn new() -> Self {
         Self {
+            image_width: WIDTH,
             exposure: 1.0,
             ..Default::default()
         }
