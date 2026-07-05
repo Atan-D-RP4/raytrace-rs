@@ -50,6 +50,7 @@ pub use metal::MetalMaterial;
 
 use gpu::GPU_NONE;
 use gpu::write_node;
+use rand::RngExt;
 
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -57,10 +58,14 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::sampler::SampleDims;
 use crate::texture::Texture;
+use crate::vec3::refract;
 use crate::vec3::{Color3, Vec3, reflect};
 
-/// Fresnel r0 for the Coated material's hardcoded IOR of 1.5.
-pub(super) const COATED_R0: f64 = 0.04;
+/// Maximum number of internal bounces for a Coated material. Each bounce
+/// consumes a random number and may require additional PDF evaluation. The
+/// integrator will terminate the path if this limit is exceeded to avoid infinite
+/// recursion in the case of very low Fresnel reflectance.
+const MAX_INTERNAL_BOUNCES: usize = 4;
 
 /// GGX/Trowbridge-Reitz normal distribution function (NDF).
 ///
@@ -253,6 +258,12 @@ pub enum Material {
         substrate: Box<dyn Bsdf>,
         /// Top layer (thin dielectric, reflects some light via Fresnel).
         coating: Box<dyn Bsdf>,
+        /// Refractive index of the coating layer (used for Fresnel).
+        coating_ior: f64,
+        /// Tint color of the coating layer (used for Fresnel).
+        coating_tint: Color3,
+        /// Thickness of the coating layer (used for absorption in the coating).
+        thickness: f64,
     },
     /// Custom material provided by a library consumer.
     Custom(Box<dyn Bsdf>),
@@ -273,9 +284,18 @@ impl Clone for Material {
                 b: b.clone_box(),
                 weight: *weight,
             },
-            Material::Coated { substrate, coating } => Material::Coated {
+            Material::Coated {
+                substrate,
+                coating,
+                coating_ior,
+                coating_tint,
+                thickness,
+            } => Material::Coated {
                 substrate: substrate.clone_box(),
                 coating: coating.clone_box(),
+                coating_ior: *coating_ior,
+                coating_tint: *coating_tint,
+                thickness: *thickness,
             },
             Material::Custom(inner) => Material::Custom(inner.clone_box()),
         }
@@ -347,54 +367,88 @@ impl Material {
             }
             Material::Coated {
                 substrate,
-                coating: _coating,
+                coating: _,
+                coating_ior,
+                coating_tint,
+                thickness,
             } => {
-                // NOTE: `_coating` is intentionally unused in `sample()` because
-                // the outer Fresnel branch handles coating reflection directly
-                // (delta BSDF). The coating IS used in `eval()` and `pdf()` for
-                // MIS weighting — this is correct because the coating's eval/pdf
-                // return zero for non-specular directions, so the mixture resolves
-                // identically. If the coating BSDF ever gains a non-delta component,
-                // this branch will need to be updated to keep sample/eval/pdf
-                // consistent.
-                let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, COATED_R0);
-                if dims.u < f {
-                    // Compute coating reflection directly — delegating to the
-                    // dielectric's sample() would apply a second Fresnel check
-                    // (on dimension v) causing double-counting or selecting
-                    // refraction when the outer branch already chose reflection.
-                    //
-                    // MC weight: Fresnel f is both branch probability and delta
-                    // BSDF value (lossless dielectric), so f/f = 1.
-                    let wi = reflect(&-wo, &si.shading_normal());
-                    Some(BsdfSample::Delta {
-                        wi,
-                        f_cos: Color3::from(1., 1., 1.),
-                    })
-                } else {
-                    // Transmit through coating; importance-sample substrate with
-                    // transmission probability (1-f) weight.
-                    let mut bsdf = substrate.sample(
-                        wo,
-                        si,
-                        SampleDims {
-                            u: dims.v,
-                            v: dims.w,
-                            w: dims.x,
-                            x: dims.y,
-                            y: dims.z,
-                            z: dims.z,
-                        },
-                    )?;
-                    match &mut bsdf {
-                        BsdfSample::Delta { f_cos, .. } => {
-                            *f_cos /= 1.0 - f;
-                        }
-                        BsdfSample::NonDelta { .. } => {}
-                    }
-                    Some(bsdf)
+                let mut rng = rand::rng();
+                let n = si.shading_normal();
+                let mut throughput = Color3::from(1.0, 1.0, 1.0);
+
+                // Fresnel split at coating-air boundary (top interface)
+                let cos_wo = wo.dot(&n).abs();
+                let f_top = fresnel_schlick(cos_wo, fresnel_r0(*coating_ior));
+                if rng.random::<f64>() < f_top {
+                    // Reflect off the coating, i.e., exit immediately
+                    return Some(BsdfSample::Delta {
+                        wi: reflect(&-wo, &n),
+                        f_cos: throughput,
+                    });
                 }
+
+                // Transmit into the coating layer
+                let mut wi = refract(&-wo, &n, 1.0 / *coating_ior);
+                // Beer's law absorption per crossing in the coating layer
+                let path_len = *thickness / wi.dot(&n).abs();
+                throughput *= coating_tint.x.powf(path_len.abs())
+                    * coating_tint.y.powf(path_len.abs())
+                    * coating_tint.z.powf(path_len.abs());
+
+                // Bounce internally between coating and substrate interfaces
+                for _ in 0..MAX_INTERNAL_BOUNCES {
+                    // Sample the substrate material (scatter upwards)
+                    let sub_dims = SampleDims {
+                        u: dims.v,
+                        v: dims.w,
+                        w: dims.x,
+                        x: dims.y,
+                        y: dims.z,
+                        z: dims.z,
+                    };
+                    // wi instead of wo because the substrate sees the incoming direction from the
+                    // coating layer
+                    // sub.wi points upward (away from substrate, toward coating top)
+                    let sub = substrate.sample(wi, si, sub_dims)?;
+
+                    match sub {
+                        BsdfSample::Delta {
+                            wi: wi_internal,
+                            f_cos: f_cos_internal,
+                        } => {
+                            // Fresnel split at top interface (coating-air boundary)
+                            let cos_wi_internal = wi_internal.dot(&n).abs();
+                            let f_top_internal =
+                                fresnel_schlick(cos_wi_internal, fresnel_r0(*coating_ior));
+
+                            if rng.random::<f64>() < f_top_internal {
+                                // Internal reflection, i.e., back down into the coating layer
+                                wi = reflect(&wi_internal, &n);
+                                throughput *= coating_tint.x.powf(path_len.abs())
+                                    * coating_tint.y.powf(path_len.abs())
+                                    * coating_tint.z.powf(path_len.abs());
+                            } else {
+                                // Transmit out of the coating layer, i.e., exit to air
+                                throughput *= coating_tint.x.powf(path_len.abs())
+                                    * coating_tint.y.powf(path_len.abs())
+                                    * coating_tint.z.powf(path_len.abs());
+                                let exit_dir = refract(&-wi_internal, &n, *coating_ior);
+                                return Some(BsdfSample::Delta {
+                                    wi: exit_dir,
+                                    f_cos: throughput * f_cos_internal,
+                                });
+                            }
+                        }
+                        // NonDelta: substrate scattered into a non-specular direction, exit to air
+                        BsdfSample::NonDelta { pdf_kinds, count } => {
+                            // NonDelta — propagates to integrator for MIS.
+                            // The Fresnel weight (1-F)² is applied in eval().
+                            return Some(BsdfSample::NonDelta { pdf_kinds, count });
+                        }
+                    }
+                }
+
+                None
             }
         }
     }
@@ -417,10 +471,65 @@ impl Material {
                 let w = *weight;
                 (1.0 - w) * a.eval(wo, wi, si) + w * b.eval(wo, wi, si)
             }
-            Material::Coated { substrate, coating } => {
-                let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, COATED_R0);
-                f * coating.eval(wo, wi, si) + (1.0 - f) * substrate.eval(wo, wi, si)
+            Material::Coated {
+                substrate,
+                coating,
+                coating_ior,
+                coating_tint,
+                thickness,
+            } => {
+                let sn = si.shading_normal();
+                let cos_wo = wo.dot(&sn).abs();
+                let cos_wi = wi.dot(&sn).abs();
+                let r0 = fresnel_r0(*coating_ior);
+
+                // Direct coating reflection (zero for delta coating except at mirror).
+                let direct_coat = coating.eval(wo, wi, si);
+
+                // Fresnel reflectance at the coating-air interface for outgoing and incoming
+                // directions.
+                let fresnel_o = 1.0 - fresnel_schlick(cos_wo, r0);
+                let fresnel_i = 1.0 - fresnel_schlick(cos_wi, r0);
+
+                // Path lengths through the coating layer for outgoing and incoming directions.
+                let path_o = *thickness / cos_wo.max(1e-10);
+                let path_i = *thickness / cos_wi.max(1e-10);
+
+                // Absorption in the coating layer (Beer's law) for outgoing and incoming paths.
+                let coating_absorption_o = Color3::from(
+                    coating_tint.x.powf(path_o),
+                    coating_tint.y.powf(path_o),
+                    coating_tint.z.powf(path_o),
+                );
+                let coating_absorption_i = Color3::from(
+                    coating_tint.x.powf(path_i),
+                    coating_tint.y.powf(path_i),
+                    coating_tint.z.powf(path_i),
+                );
+
+                // Transmission coefficient/components through the coating layer (Beer's law).
+                let t_o = coating_absorption_o * fresnel_o;
+                let t_i = coating_absorption_i * fresnel_i;
+
+                // Substrate contribution (single bounce, attenuated by coating absorption).
+                let substrate_direct = substrate.eval(wo, wi, si);
+
+                // Inter-reflection correction(geometric series approximation):
+                // coating-substrate-coating path (single bounce).
+                // Uses averaged reflectances since the exact direction changes per bounce.
+                let avg_cos = 0.5;
+                // Fresnel reflectance at the coating-substrate interface for the internal bounce.
+                let r_top_internal = fresnel_schlick(avg_cos, r0);
+                // Average substrate reflectance (per channel) for the internal bounce.
+                let r_sub_avg =
+                    (substrate_direct.x + substrate_direct.y + substrate_direct.z) / 3.0;
+                // Geometric series tail r + r² + r³ + … for multi-bounce inter-reflection,
+                // where r = r_sub_avg × r_top_internal. The 1.0 + series below gives 1/(1-r).
+                let series =
+                    r_sub_avg * r_top_internal / (1.0 - (r_sub_avg * r_top_internal)).max(1e-10);
+                // Total contribution: direct coating reflection + transmitted substrate reflection
+                // + inter-reflection correction.
+                direct_coat + t_o * substrate_direct * t_i * (1.0 + series)
             }
         }
     }
@@ -439,10 +548,11 @@ impl Material {
             Material::Mix { a, b, weight } => {
                 (1.0 - weight) * a.pdf(wo, wi, si) + weight * b.pdf(wo, wi, si)
             }
-            Material::Coated { substrate, coating } => {
-                let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, COATED_R0);
-                f * coating.pdf(wo, wi, si) + (1.0 - f) * substrate.pdf(wo, wi, si)
+            Material::Coated { substrate, .. } => {
+                // Delegate to the substrate's PDF. The coating is a delta distribution (perfect
+                // specular), so it doesn't contribute to the PDF for non-specular directions. The
+                // integrator should handle the Fresnel weighting.
+                substrate.pdf(wo, wi, si)
             }
         }
     }
@@ -468,14 +578,12 @@ impl Material {
                     a.pdf_kind(wo, si)
                 }
             }
-            Material::Coated { substrate, coating } => {
-                let cos_o = wo.dot(&si.shading_normal()).abs();
-                let f = fresnel_schlick(cos_o, COATED_R0);
-                if f > 0.5 {
-                    coating.pdf_kind(wo, si)
-                } else {
-                    substrate.pdf_kind(wo, si)
-                }
+            Material::Coated { substrate, .. } => {
+                // Delegate to the coating's PDF kind. The coating is a delta distribution (perfect
+                // specular), so it will return None for non-specular directions. The integrator
+                // should handle the Fresnel weighting and the substrate's PDF for non-specular
+                // directions.
+                substrate.pdf_kind(wo, si)
             }
         }
     }
@@ -495,7 +603,9 @@ impl Material {
                 let w = *weight;
                 (1.0 - w) * a.emitted(si) + w * b.emitted(si)
             }
-            Material::Coated { substrate, coating } => {
+            Material::Coated {
+                substrate, coating, ..
+            } => {
                 // No view direction available in emitted(), so we can't compute
                 // a proper Fresnel term. Sum both — in practice coatings don't
                 // emit, so this just returns the substrate's emission.
@@ -510,9 +620,9 @@ impl Material {
         match self {
             Material::DiffuseLight(_) => true,
             Material::Mix { a, b, .. } => a.is_emissive() || b.is_emissive(),
-            Material::Coated { substrate, coating } => {
-                substrate.is_emissive() || coating.is_emissive()
-            }
+            Material::Coated {
+                substrate, coating, ..
+            } => substrate.is_emissive() || coating.is_emissive(),
             _ => false,
         }
     }
@@ -525,7 +635,9 @@ impl Material {
             Material::Metal(inner) => inner.fuzz < 1e-4,
             Material::Glossy(inner) => inner.roughness < 1e-4,
             Material::Mix { a, b, .. } => a.is_delta() && b.is_delta(),
-            Material::Coated { substrate, coating } => substrate.is_delta() && coating.is_delta(),
+            Material::Coated {
+                substrate, coating, ..
+            } => substrate.is_delta() && coating.is_delta(),
             Material::Custom(inner) => inner.is_delta(),
             _ => false,
         }
@@ -718,6 +830,9 @@ impl Material {
         Material::Coated {
             substrate: Box::new(self) as Box<dyn Bsdf>,
             coating: Box::new(coat) as Box<dyn Bsdf>,
+            coating_ior: 1.5,
+            coating_tint: Color3::from(1.0, 1.0, 1.0),
+            thickness: 0.01,
         }
     }
 

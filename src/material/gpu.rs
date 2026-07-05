@@ -104,10 +104,25 @@ pub(super) fn write_node(mat: &Material, buf: &mut GpuMaterialBuffer) -> u32 {
             });
             buf.nodes.len() as u32 - 1
         }
-        Material::Coated { substrate, coating } => {
+        Material::Coated {
+            substrate,
+            coating,
+            coating_ior,
+            coating_tint,
+            thickness,
+        } => {
             let child_a = substrate.serialize_gpu(buf);
             let child_b = coating.serialize_gpu(buf);
+
             let param_offset = buf.params.len() as u32;
+            buf.push_params(&[
+                *coating_ior,
+                coating_tint.x,
+                coating_tint.y,
+                coating_tint.z,
+                *thickness,
+            ]);
+
             buf.nodes.push(GpuMaterialNode {
                 material_type: GpuMaterialType::Coated as u32,
                 param_offset,
