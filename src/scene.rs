@@ -7,6 +7,7 @@ use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::flat_bvh::FlatBvh;
 use crate::hittable::{Intersectable, Sampleable};
+use crate::material::Bsdf;
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
 use crate::shape::{moving_sphere, sphere};
@@ -954,6 +955,81 @@ impl Scene {
             Vec3::from(0., 0., 12.),
             Material::light(Color3::from(6.0, 6.0, 6.0)),
         );
+
+        scene.config.aspect_ratio = 16.0 / 9.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 100;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 38.0;
+        scene.config.look_from = Point3::from(0., 3.5, 16.);
+        scene.config.look_at = Point3::from(0., 1., 7.);
+        scene.config.vup = Vec3::from(0., 1., 0.);
+        scene.config.focus_distance = 10.0;
+        scene.config.defocus_angle = 0.0;
+        scene.config.background = Color3::from(0.1, 0.1, 0.1);
+
+        scene
+    }
+
+    pub fn coated_balls() -> Self {
+        let mut scene = Self::new();
+
+        let ground = Material::lambertian_color(0.5, 0.5, 0.5);
+        scene.add_quad(
+            Point3::from(-5., 0., 0.),
+            Vec3::from(10., 0., 0.),
+            Vec3::from(0., 0., 12.),
+            ground,
+        );
+
+        // Sphere 1 — gold metal (low fuzz)
+        let coated_metal = Material::metal(Color3::from(0.1, 0.1, 0.7) * 2., 0.1).coated(
+            Material::dielectric_tinted(1.4, Color3::from(0.1, 0.7, 0.1) * 2.),
+        );
+        scene.add_sphere(Point3::from(-2., 1., 4.), 1.0, coated_metal);
+
+        // Sphere 2 — perlin noise (unique pattern)
+        let perlin_tex: Arc<dyn Texture> = Arc::new(
+            MappedTexture::new(Arc::new(NoiseTexture::new()))
+                .with_mapping3d(TextureMapping3D::point_scale_uniform(1. / 4.)),
+        );
+        let coated_perlin =
+            Material::lambertian(perlin_tex).coated(Material::light(Color3::from(0.5, 0.3, 0.7)));
+        scene.add_sphere(Point3::from(2., 1., 4.), 1.0, coated_perlin);
+
+        // Sphere 3 — blue-emitting glass (light under dielectric coating)
+        let coated_glass =
+            Material::light(Color3::from(0.2, 0.4, 0.9)).coated(Material::dielectric(1.5));
+        scene.add_sphere(Point3::from(0., 1., 8.), 1.0, coated_glass);
+
+        // Sphere 4 — pink-emitting glass (light under dielectric coating)
+        let light_coated_glass =
+            Material::light(Color3::from(0.9, 0.2, 0.6)).coated(Material::dielectric(1.5));
+        scene.add_sphere(Point3::from(0., 3., 8.), 1.0, light_coated_glass);
+
+        // Sphere 5 — red glossy
+        let coated_glossy = Material::glossy(Color3::from(1., 0.0, 0.0), 0.5, 1.5);
+        let coated_glossy = Material::Coated {
+            substrate: Box::new(coated_glossy) as Box<dyn Bsdf>,
+            coating: Box::new(Material::dielectric(1.5)) as Box<dyn Bsdf>,
+            coating_tint: Color3::from(1., 0.0, 0.0),
+            coating_ior: 1.5,
+            thickness: 0.20,
+        };
+        scene.add_sphere(Point3::from(2., 1., 10.), 1., coated_glossy);
+
+        // Sphere 6 — cyan-teal mix
+        let coated_mixed = Material::Coated {
+            substrate: Box::new(
+                Material::metal(Color3::from(0.1, 0.7, 0.8), 0.0)
+                    .mix(Material::glossy(Color3::from(0.1, 0.9, 0.6), 0.5, 1.5), 0.5),
+            ) as Box<dyn Bsdf>,
+            coating: Box::new(Material::dielectric(1.5)) as Box<dyn Bsdf>,
+            coating_tint: Color3::from(0.1, 0.9, 0.6),
+            coating_ior: 1.5,
+            thickness: 0.20,
+        };
+        scene.add_sphere(Point3::from(-2., 1., 10.), 0.8, coated_mixed);
 
         scene.config.aspect_ratio = 16.0 / 9.0;
         scene.config.image_width = 800;

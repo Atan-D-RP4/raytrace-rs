@@ -356,12 +356,14 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         "quads" => Scene::quads(),
         "random_world" => Scene::random_world(),
         "composition_demo" => Scene::composition_demo(),
+        "coated_balls" => Scene::coated_balls(),
         other => {
             error!(scene = %other, "unknown scene");
             eprintln!("Available scenes:");
             eprintln!("  cornell_box, cornell_box_const_meds, complex_scene,");
             eprintln!("  simple_light, simple_world, earth_sphere, noisy_spheres,");
             eprintln!("  checkered_spheres, quads, random_world, composition_demo");
+            eprintln!("  coated_balls");
             std::process::exit(1);
         }
     };
@@ -435,8 +437,11 @@ fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, 
     let (width, height) = camera.image_resolution();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new_with(width, height)));
 
-    renderer.set_threshold_abs(5e-7);
-    renderer.set_threshold_rel(1e-4);
+    renderer.set_threshold_abs(1e-7);
+    renderer.set_threshold_rel(1e-5);
+
+    // Disable adaptive sampling for headless mode to ensure full sample count is rendered.
+    // renderer.set_min_samples_before_adapt(u32::MAX);
     renderer.set_min_samples_before_adapt(128);
 
     let fb = framebuffer.clone();
@@ -530,8 +535,8 @@ fn headless_render(scene: Scene, scene_name: &str) {
         CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);
     let (width, height) = camera.image_resolution();
 
-    renderer.set_threshold_abs(5e-7);
-    renderer.set_threshold_rel(1e-4);
+    renderer.set_threshold_abs(1e-7);
+    renderer.set_threshold_rel(1e-5);
 
     // Disable adaptive sampling for headless mode to ensure full sample count is rendered.
     // renderer.set_min_samples_before_adapt(u32::MAX);

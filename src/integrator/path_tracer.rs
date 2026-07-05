@@ -156,7 +156,9 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 // Accumulate emission with MIS weight to avoid double-counting with NEE.
                 // At bounce 0 or after a delta bounce, no previous scatter exists that could
                 // overlap with NEE, so emission is added at full weight (PBRT convention).
-                let emission = si.emission();
+                // Outgoing direction (away from the surface) is the negative of the ray direction.
+                let wo = -ray.direction.unit_vector();
+                let emission = material.emitted(wo, &si); // NEE uses wo-aware emission (e.g., Beer's law for coated)
                 if bounce == 0 || prev_was_delta {
                     accumulated_color += accumulated_attenuation * emission;
                 } else {
@@ -169,8 +171,6 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     let w_emit = power_heuristic(prev_bsdf_pdf, sum_sq);
                     accumulated_color += w_emit * accumulated_attenuation * emission;
                 }
-                // Outgoing direction (away from the surface) is the negative of the ray direction
-                let wo = -ray.direction.unit_vector();
 
                 // Sample the material to get the next ray and attenuation
                 let max_attenuation = accumulated_attenuation

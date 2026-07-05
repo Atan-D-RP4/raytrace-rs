@@ -158,6 +158,21 @@ impl Bsdf for GlossyMaterial {
         })
     }
 
+    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
+        let albedo = self
+            .tex
+            .as_ref()
+            .map(|t| t.value(&si.texture_coords()))
+            .unwrap_or(self.albedo);
+        let albedo_avg = (albedo.x + albedo.y + albedo.z) / 3.0;
+        let cos_theta = wo.dot(&si.shading_normal()).abs();
+        let f = fresnel_schlick(cos_theta, self.r0);
+        // Base color × Fresnel gives the specular reflectance; roughness adds
+        // a small boost from multiple scattering making the surface appear brighter.
+        let roughness_boost = self.roughness * 0.25;
+        (albedo_avg * f + roughness_boost).min(1.0)
+    }
+
     fn is_delta(&self) -> bool {
         self.roughness < 1e-4
     }

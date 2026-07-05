@@ -116,6 +116,10 @@ impl Bsdf for MetalMaterial {
 
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+        // If the material is effectively a mirror, return zero for arbitrary directions.
+        if self.fuzz < 1e-4 {
+            return Color3::ZERO;
+        }
         let albedo = self
             .tex
             .as_ref()
@@ -138,6 +142,10 @@ impl Bsdf for MetalMaterial {
 
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
+        // If the material is effectively a mirror, return zero for arbitrary directions.
+        if self.fuzz < 1e-4 {
+            return 0.0;
+        }
         let alpha = (self.fuzz * self.fuzz).clamp(0.001, 1.0);
         let h = (wo + wi).unit_vector();
         let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
@@ -159,6 +167,16 @@ impl Bsdf for MetalMaterial {
                 alpha: (self.fuzz * self.fuzz).clamp(0.001, 1.0),
             })
         }
+    }
+
+    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
+        let cos_theta = wo.dot(&si.shading_normal()).abs();
+        // For a smooth conductor, reflectance ≈ Fresnel(θ) — the GGX lobe
+        // is narrow, so most energy is at the mirror direction. Roughness
+        // increases the effective reflectance due to multiple scattering.
+        let f = fresnel_schlick(cos_theta, self.r0);
+        let roughness_boost = self.fuzz * 0.25;
+        (f + roughness_boost).min(1.0)
     }
 
     fn is_delta(&self) -> bool {

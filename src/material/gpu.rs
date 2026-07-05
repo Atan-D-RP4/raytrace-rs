@@ -113,7 +113,6 @@ pub(super) fn write_node(mat: &Material, buf: &mut GpuMaterialBuffer) -> u32 {
         } => {
             let child_a = substrate.serialize_gpu(buf);
             let child_b = coating.serialize_gpu(buf);
-
             let param_offset = buf.params.len() as u32;
             buf.push_params(&[
                 *coating_ior,
@@ -122,7 +121,6 @@ pub(super) fn write_node(mat: &Material, buf: &mut GpuMaterialBuffer) -> u32 {
                 coating_tint.z,
                 *thickness,
             ]);
-
             buf.nodes.push(GpuMaterialNode {
                 material_type: GpuMaterialType::Coated as u32,
                 param_offset,

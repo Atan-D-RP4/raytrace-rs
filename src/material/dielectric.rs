@@ -73,6 +73,16 @@ impl Bsdf for DielectricMaterial {
         None
     }
 
+    /// Estimate the reflectance fraction for the coating layer. This is used in
+    /// the integrator to determine how much light is reflected vs transmitted.
+    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
+        let cos_theta = wo.dot(&si.shading_normal()).abs();
+        // Only the reflective fraction of the dielectric is returned to the
+        // coating; transmitted light goes into the substrate and doesn't
+        // contribute to the inter-reflection series.
+        fresnel_schlick(cos_theta, self.r0)
+    }
+
     fn is_delta(&self) -> bool {
         true
     }

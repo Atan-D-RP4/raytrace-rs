@@ -98,7 +98,7 @@ impl<'si> SurfaceInteraction<'si> {
             material,
             emission: Color3::ZERO,
         };
-        si.emission = material.emitted(&si);
+        si.emission = material.emitted(Vec3::ZERO, &si);
         si
     }
 
@@ -114,7 +114,8 @@ impl<'si> SurfaceInteraction<'si> {
             emission: Color3::ZERO,
         };
         si.set_face_normal(ray);
-        si.emission = si.material.emitted(&si);
+        let wo = -ray.direction.unit_vector();
+        si.emission = si.material.emitted(wo, &si);
         si
     }
 
@@ -139,6 +140,10 @@ impl<'si> SurfaceInteraction<'si> {
     /// Emission radiance at this surface point (precomputed).
     pub fn emission(&self) -> Color3 {
         self.emission
+    }
+    /// Override the precomputed emission (used by sample_light to pass correct wo).
+    pub fn set_emission(&mut self, emission: Color3) {
+        self.emission = emission;
     }
     pub fn material(&self) -> &'si Material {
         self.material

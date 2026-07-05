@@ -159,7 +159,12 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<
         // Front face: light normal faces toward the shaded surface.
         let front_face = sample.normal.dot(&(-light_unit)) > 0.0;
         let hit = Hit::new(time, point, point, sample.normal, None);
-        let si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material());
+        let mut si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material());
+        // Re-compute emission with the correct outgoing direction (from light toward
+        // shaded surface). The constructor uses Vec3::ZERO which skips coating attenuation
+        // in Coated::emitted().
+        let wo = -light_unit;
+        si.set_emission(si.material().emitted(wo, &si));
         sample.emission = si.emission();
         sample
     }

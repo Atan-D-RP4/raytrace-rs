@@ -50,7 +50,7 @@ impl Bsdf for DiffuseLightMaterial {
     }
 
     /// Returns the emission color if the hit is on the front face, zero otherwise.
-    fn emitted(&self, si: &SurfaceInteraction) -> Color3 {
+    fn emitted(&self, _wo: Vec3, si: &SurfaceInteraction) -> Color3 {
         if si.front_face() {
             self.tex
                 .as_ref()

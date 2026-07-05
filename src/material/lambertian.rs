@@ -77,6 +77,17 @@ impl Bsdf for LambertianMaterial {
         })
     }
 
+    fn reflectance_estimate(&self, _wo: Vec3, si: &SurfaceInteraction) -> f64 {
+        let albedo = self
+            .tex
+            .as_ref()
+            .map(|t| t.value(&si.texture_coords()))
+            .unwrap_or(self.albedo);
+        // Lambertian directional-hemispherical reflectance = albedo (exact:
+        // ∫ (albedo/π) * cos θ dω = albedo). Average across RGB channels.
+        (albedo.x + albedo.y + albedo.z) / 3.0
+    }
+
     fn clone_box(&self) -> Box<dyn Bsdf> {
         Box::new(self.clone())
     }
