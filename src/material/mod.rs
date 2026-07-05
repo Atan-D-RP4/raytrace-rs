@@ -59,6 +59,48 @@ use crate::sampler::SampleDims;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
+/// Fresnel r0 for the Coated material's hardcoded IOR of 1.5.
+pub(super) const COATED_R0: f64 = 0.04;
+
+/// GGX/Trowbridge-Reitz normal distribution function (NDF).
+///
+/// Returns the probability density that a microfacet has half-vector H aligned
+/// with the surface normal. `alpha` is roughness²; controls specular lobe width.
+pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
+    if cos_theta_h <= 0.0 {
+        return 0.0;
+    }
+    let a2 = alpha * alpha;
+    let denom = cos_theta_h * cos_theta_h * (a2 - 1.0) + 1.0;
+    a2 / (PI * denom * denom)
+}
+
+/// Smith's geometry function (Schlick-GGX approximation).
+///
+/// Models microfacet self-shadowing at grazing angles. Returns a multiplier
+/// in [0, 1]. `roughness` is RMS surface slope (not squared).
+pub(super) fn geometry_schlick_ggx(cos_theta: f64, roughness: f64) -> f64 {
+    if cos_theta <= 0.0 {
+        return 0.0;
+    }
+    let k = (roughness + 1.0).powi(2) / 8.0;
+    cos_theta / (cos_theta * (1.0 - k) + k)
+}
+
+/// Precomputed Fresnel reflectance at normal incidence for a given IOR.
+#[inline(always)]
+pub(super) fn fresnel_r0(ior: f64) -> f64 {
+    ((1.0 - ior) / (1.0 + ior)).powi(2)
+}
+
+/// Schlick Fresnel reflectance for unpolarized light.
+///
+/// Approximates the fraction of light reflected at a dielectric interface.
+/// Approaches 1 at grazing angles. `r0` is reflectance at normal incidence.
+pub(super) fn fresnel_schlick(cos_theta: f64, r0: f64) -> f64 {
+    r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
+}
+
 fn blackbody(temp: f64) -> Color3 {
     // Planck's law: spectral radiance of a blackbody at temperature T.
     // This is a simplified approximation for RGB color. For more accurate
@@ -71,9 +113,6 @@ fn blackbody(temp: f64) -> Color3 {
 }
 
 /// Material sample result for one bounce.
-///
-/// [`Delta`]: integrator uses direction and throughput directly.
-/// [`NonDelta`]: integrator samples from mixture PDF; only [`PdfKind`] matters.
 #[derive(Clone, Copy, Debug)]
 pub enum BsdfSample {
     /// Perfect specular — used directly without MIS weighting.
@@ -83,7 +122,7 @@ pub enum BsdfSample {
         /// BSDF × cosine. Tint for dielectrics, white for lossless coatings.
         f_cos: Color3,
     },
-    /// Non-specular — integrator evaluates the BRDF and uses MIS weighting.
+    /// Non-specular — integrator evaluates the BSDF and uses MIS weighting.
     /// `count` indicates how many PDF descriptors are valid (1 for leaf, up to 2 for Mix).
     NonDelta {
         /// Up to 2 surface PDF descriptors (first from chosen child, second from other).
@@ -119,18 +158,29 @@ pub enum PdfKind {
     Delta,
 }
 
-/// BSDF sampling interface. Public so library consumers can implement custom materials.
+/// BSDF sampling interface — reflection (BRDF), transmission (BTDF),
+/// or volumetric scattering. The returned [`BsdfSample`] encodes the
+/// scattered direction and BSDF×cosine throughput.
+///
+/// Custom materials implement this and integrate via [`Material::Custom`].
 pub trait Bsdf: Send + Sync {
     /// Sample an outgoing direction. Returns `None` for pure emitters.
+    /// wo: Outgoing direction (surface → camera), world space.
+    /// wi: Incoming direction (surface → light), world space.
     fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample>;
 
     /// Evaluate the BSDF for an externally-sampled direction pair.
+    /// wo: Outgoing direction (surface → camera), world space.
+    /// wi: Incoming direction (surface → light), world space.
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3;
 
     /// Evaluate the material's sampling PDF for a given direction pair.
+    /// wo: Outgoing direction (surface → camera), world space.
+    /// wi: Incoming direction (surface → light), world space.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64;
 
     /// Returns the sampling PDF kind for MIS strategy selection.
+    ///  wo: Outgoing direction (surface → camera), world space.
     fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }
@@ -186,7 +236,7 @@ pub enum Material {
     DiffuseLight(DiffuseLightMaterial),
     /// Isotropic scattering medium.
     Isotropic(IsotropicMaterial),
-    /// Glossy microfacet BRDF (GGX).
+    /// Glossy microfacet BSDF (GGX).
     Glossy(GlossyMaterial),
     /// Stochastic mix of two materials. `weight` is the probability of choosing `b`.
     Mix {
@@ -608,7 +658,7 @@ impl Material {
         })
     }
 
-    /// Glossy microfacet BRDF (GGX).
+    /// Glossy microfacet BSDF (GGX).
     pub fn glossy(albedo: Color3, roughness: f64, ior: f64) -> Self {
         Material::Glossy(GlossyMaterial {
             albedo,
@@ -641,7 +691,7 @@ impl Material {
         })
     }
 
-    /// Glossy microfacet BRDF with a textured albedo.
+    /// Glossy microfacet BSDF with a textured albedo.
     pub fn glossy_textured(tex: Arc<dyn Texture>, roughness: f64, ior: f64) -> Self {
         Material::Glossy(GlossyMaterial {
             albedo: Color3::ZERO,
@@ -684,48 +734,6 @@ impl Material {
         write_node(self, &mut buf);
         buf
     }
-}
-
-/// GGX/Trowbridge-Reitz normal distribution function (NDF).
-///
-/// Returns the probability density that a microfacet has half-vector H aligned
-/// with the surface normal. `alpha` is roughness²; controls specular lobe width.
-pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
-    if cos_theta_h <= 0.0 {
-        return 0.0;
-    }
-    let a2 = alpha * alpha;
-    let denom = cos_theta_h * cos_theta_h * (a2 - 1.0) + 1.0;
-    a2 / (PI * denom * denom)
-}
-
-/// Smith's geometry function (Schlick-GGX approximation).
-///
-/// Models microfacet self-shadowing at grazing angles. Returns a multiplier
-/// in [0, 1]. `roughness` is RMS surface slope (not squared).
-pub(super) fn geometry_schlick_ggx(cos_theta: f64, roughness: f64) -> f64 {
-    if cos_theta <= 0.0 {
-        return 0.0;
-    }
-    let k = (roughness + 1.0).powi(2) / 8.0;
-    cos_theta / (cos_theta * (1.0 - k) + k)
-}
-
-/// Precomputed Fresnel reflectance at normal incidence for a given IOR.
-#[inline(always)]
-pub(super) fn fresnel_r0(ior: f64) -> f64 {
-    ((1.0 - ior) / (1.0 + ior)).powi(2)
-}
-
-/// Fresnel r0 for the Coated material's hardcoded IOR of 1.5.
-pub(super) const COATED_R0: f64 = 0.04;
-
-/// Schlick Fresnel reflectance for unpolarized light.
-///
-/// Approximates the fraction of light reflected at a dielectric interface.
-/// Approaches 1 at grazing angles. `r0` is reflectance at normal incidence.
-pub(super) fn fresnel_schlick(cos_theta: f64, r0: f64) -> f64 {
-    r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
 }
 
 #[cfg(test)]

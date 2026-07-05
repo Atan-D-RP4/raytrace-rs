@@ -1,11 +1,11 @@
-//! GGX microfacet dielectric BRDF (glossy reflection).
+//! GGX microfacet dielectric BSDF (glossy reflection).
 //!
 //! Similar to the metal BRDF but models dielectric surfaces (plastic, coated
 //! wood, ceramic) rather than conductors. The key difference is that the
 //! Fresnel term uses the material's IOR to determine the reflection/transmission
 //! ratio, and the result is multiplied by the surface albedo.
 //!
-//! BRDF (same Cook-Torrance model as metal):
+//! BSDF (same Cook-Torrance model as metal):
 //!
 //! ```text
 //! f(ωo, ωi) = albedo · F · D · G / (4 · cos_o · cos_i)
@@ -28,7 +28,7 @@ use crate::sampler::SampleDims;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
-/// Glossy microfacet BRDF (GGX).
+/// Glossy microfacet BSDF (GGX).
 #[derive(Clone)]
 pub struct GlossyMaterial {
     /// Base reflectance color. Multiplied by the Cook-Torrance BRDF value.
