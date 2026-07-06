@@ -15,7 +15,7 @@ use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
-use crate::material::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
+use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 use crate::material::{GPU_NONE, PdfKind};
 use crate::sampler::SampleDims;
 
@@ -30,7 +30,12 @@ pub struct DiffuseLightMaterial {
 
 impl Bsdf for DiffuseLightMaterial {
     /// Pure emitter — no scattering, always returns `None`.
-    fn sample(&self, _wo: Vec3, _si: &SurfaceInteraction, _dims: SampleDims) -> Option<BsdfSample> {
+    fn scatter(
+        &self,
+        _wo: Vec3,
+        _si: &SurfaceInteraction,
+        _dims: SampleDims,
+    ) -> Option<BsdfScatter> {
         None
     }
 

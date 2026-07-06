@@ -118,7 +118,7 @@ fn blackbody(temp: f64) -> Color3 {
 
 /// Material sample result for one bounce.
 #[derive(Clone, Copy, Debug)]
-pub enum BsdfSample {
+pub enum BsdfScatter {
     /// Perfect specular — used directly without MIS weighting.
     Delta {
         /// Scattered direction (toward camera for reflection, through surface for refraction).
@@ -162,16 +162,16 @@ pub enum PdfKind {
     Delta,
 }
 
-/// BSDF sampling interface — reflection (BRDF), transmission (BTDF),
-/// or volumetric scattering. The returned [`BsdfSample`] encodes the
-/// scattered direction and BSDF×cosine throughput.
+/// Bi-directional scattering distribution function (BSDF) sampling interface — reflection (BRDF),
+/// transmission (BTDF), or volumetric scattering. The returned [`BsdfSample`] encodes the scattered
+/// direction and BSDF×cosine throughput.
 ///
 /// Custom materials implement this and integrate via [`Material::Custom`].
 pub trait Bsdf: Send + Sync {
     /// Sample an outgoing direction. Returns `None` for pure emitters.
     /// wo: Outgoing direction (surface → camera), world space.
     /// wi: Incoming direction (surface → light), world space.
-    fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample>;
+    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter>;
 
     /// Evaluate the BSDF for an externally-sampled direction pair.
     /// wo: Outgoing direction (surface → camera), world space.
@@ -323,21 +323,21 @@ impl Clone for Material {
 
 impl Material {
     /// Sample this material. Returns `None` for emitters or invalid directions.
-    pub fn sample(
+    pub fn scatter(
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
         dims: SampleDims,
-    ) -> Option<BsdfSample> {
+    ) -> Option<BsdfScatter> {
         match self {
             Material::Void => None,
-            Material::Lambertian(inner) => inner.sample(wo, si, dims),
-            Material::Metal(inner) => inner.sample(wo, si, dims),
-            Material::Dielectric(inner) => inner.sample(wo, si, dims),
-            Material::DiffuseLight(inner) => inner.sample(wo, si, dims),
-            Material::Isotropic(inner) => inner.sample(wo, si, dims),
-            Material::Glossy(inner) => inner.sample(wo, si, dims),
-            Material::Custom(inner) => inner.sample(wo, si, dims),
+            Material::Lambertian(inner) => inner.scatter(wo, si, dims),
+            Material::Metal(inner) => inner.scatter(wo, si, dims),
+            Material::Dielectric(inner) => inner.scatter(wo, si, dims),
+            Material::DiffuseLight(inner) => inner.scatter(wo, si, dims),
+            Material::Isotropic(inner) => inner.scatter(wo, si, dims),
+            Material::Glossy(inner) => inner.scatter(wo, si, dims),
+            Material::Custom(inner) => inner.scatter(wo, si, dims),
             Material::Mix { a, b, weight } => {
                 let (chosen, selection_prob) = if dims.u < *weight {
                     (b.as_ref() as &dyn Bsdf, *weight)
@@ -347,7 +347,7 @@ impl Material {
                 // Dims: `u` consumed for selection, pass v-w for child directional
                 // sampling, x-y-z as padding. `z` is recycled for child's z — no
                 // material reads z, so the dependency is semantically harmless.
-                let mut result = chosen.sample(
+                let mut result = chosen.scatter(
                     wo,
                     si,
                     SampleDims {
@@ -365,10 +365,10 @@ impl Material {
                 // are sampled from the integrator's mixture PDF, which doesn't depend
                 // on the Mix's internal selection — eval() handles the blend.
                 match &mut result {
-                    BsdfSample::Delta { f_cos, .. } => {
+                    BsdfScatter::Delta { f_cos, .. } => {
                         *f_cos /= selection_prob;
                     }
-                    BsdfSample::NonDelta { pdf_kinds, count } => {
+                    BsdfScatter::NonDelta { pdf_kinds, count } => {
                         let other = if dims.u < *weight {
                             a.as_ref()
                         } else {
@@ -409,7 +409,7 @@ impl Material {
                 let f_top = fresnel_schlick(cos_wo, fresnel_r0(*coating_ior));
                 if dims.u < f_top {
                     // Reflect off the coating, i.e., exit immediately
-                    return Some(BsdfSample::Delta {
+                    return Some(BsdfScatter::Delta {
                         wi: reflect(&-wo, &n),
                         f_cos: throughput,
                     });
@@ -423,7 +423,7 @@ impl Material {
                 let ri = 1.0 / *coating_ior;
                 if ri * ri * sin2_in > 1.0 {
                     // TIR: no transmission into coating. Fresnel reflect instead.
-                    return Some(BsdfSample::Delta {
+                    return Some(BsdfScatter::Delta {
                         wi: reflect(&-wo, &n),
                         f_cos: throughput,
                     });
@@ -465,10 +465,10 @@ impl Material {
                     // sub.wi points upward (away from substrate, toward coating top)
                     // Negate wi: the substrate's sample() expects wo pointing OUTWARD
                     // (away from surface, toward coating), but wi points inward (toward substrate).
-                    let sub = substrate.sample(-wi, si, sub_dims)?;
+                    let sub = substrate.scatter(-wi, si, sub_dims)?;
 
                     match sub {
-                        BsdfSample::Delta {
+                        BsdfScatter::Delta {
                             wi: wi_internal,
                             f_cos: f_cos_internal,
                         } => {
@@ -508,7 +508,7 @@ impl Material {
                                     raw.y.min(bound.y),
                                     raw.z.min(bound.z),
                                 );
-                                return Some(BsdfSample::Delta {
+                                return Some(BsdfScatter::Delta {
                                     wi: exit_dir,
                                     f_cos,
                                 });
@@ -521,7 +521,7 @@ impl Material {
                         // internal-frame eval(). For non-GGX (Cosine/Lambertian),
                         // we pass through as NonDelta — the frame mismatch is benign
                         // because the Lambertian eval only depends on cos(θ) · dot(n, wi).
-                        BsdfSample::NonDelta {
+                        BsdfScatter::NonDelta {
                             pdf_kinds: sub_pdf_kinds,
                             count: sub_count,
                         } => {
@@ -627,7 +627,7 @@ impl Material {
                                         raw.y.min(bound.y),
                                         raw.z.min(bound.z),
                                     );
-                                    return Some(BsdfSample::Delta {
+                                    return Some(BsdfScatter::Delta {
                                         wi: exit_dir,
                                         f_cos,
                                     });
@@ -637,7 +637,7 @@ impl Material {
                             // Fallback for non-GGX substrates (Lambertian, etc.):
                             // Also for whenever a valid GGX half-vector produces a wrong hemisphere reflection
                             // (wi_int.dot(n) > 0.0) due to numerical issues or extreme angles.
-                            return Some(BsdfSample::NonDelta {
+                            return Some(BsdfScatter::NonDelta {
                                 // Cosine pdf_kind is frame-safe — the eval's cos(θ)
                                 // check works correctly regardless of refraction.
                                 pdf_kinds: [PdfKind::Cosine { normal: n }, PdfKind::Delta],
@@ -1021,8 +1021,8 @@ impl Material {
 }
 
 impl Bsdf for Material {
-    fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample> {
-        self.sample(wo, si, dims)
+    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
+        self.scatter(wo, si, dims)
     }
 
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
@@ -1357,12 +1357,12 @@ mod tests {
         // A simple custom material for testing.
         struct DummyBsdf;
         impl Bsdf for DummyBsdf {
-            fn sample(
+            fn scatter(
                 &self,
                 _wo: Vec3,
                 _si: &SurfaceInteraction,
                 _dims: SampleDims,
-            ) -> Option<BsdfSample> {
+            ) -> Option<BsdfScatter> {
                 None
             }
             fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {

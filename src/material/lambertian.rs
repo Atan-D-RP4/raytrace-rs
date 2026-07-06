@@ -19,7 +19,7 @@ use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
 use super::GPU_NONE;
-use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
+use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
 use crate::sampler::SampleDims;
 
 /// Diffuse (Lambertian) surface.
@@ -37,8 +37,13 @@ impl Bsdf for LambertianMaterial {
     /// Returns `Vec3::ZERO` as a direction placeholder. The integrator samples
     /// the actual direction from the cosine-weighted hemisphere PDF indicated by
     /// `pdf_kind`. The `f_cos` field carries the albedo (texture or solid color).
-    fn sample(&self, _wo: Vec3, si: &SurfaceInteraction, _dims: SampleDims) -> Option<BsdfSample> {
-        Some(BsdfSample::NonDelta {
+    fn scatter(
+        &self,
+        _wo: Vec3,
+        si: &SurfaceInteraction,
+        _dims: SampleDims,
+    ) -> Option<BsdfScatter> {
+        Some(BsdfScatter::NonDelta {
             pdf_kinds: [
                 PdfKind::Cosine {
                     normal: si.shading_normal(),

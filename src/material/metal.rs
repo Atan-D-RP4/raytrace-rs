@@ -30,7 +30,7 @@ use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3, reflect};
 
 use super::GPU_NONE;
-use super::{Bsdf, BsdfSample, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
+use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
 use crate::sampler::SampleDims;
 
 use super::{fresnel_schlick, geometry_schlick_ggx, ggx_d};
@@ -59,7 +59,7 @@ impl Bsdf for MetalMaterial {
     /// When `fuzz` is effectively zero (below 1e-4), the microsurface is a
     /// perfect mirror — returns `BsdfSample::Delta` so the integrator skips
     /// the mixture PDF and uses the reflected direction directly.
-    fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample> {
+    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
         if self.roughness < 1e-4 {
             let wi = reflect(&-wo, &si.shading_normal());
@@ -73,7 +73,7 @@ impl Bsdf for MetalMaterial {
                 .as_ref()
                 .map(|t| t.value(&si.texture_coords()))
                 .unwrap_or(self.albedo);
-            return Some(BsdfSample::Delta {
+            return Some(BsdfScatter::Delta {
                 wi,
                 f_cos: albedo_ * f,
             });
@@ -101,7 +101,7 @@ impl Bsdf for MetalMaterial {
             return None;
         }
 
-        Some(BsdfSample::NonDelta {
+        Some(BsdfScatter::NonDelta {
             pdf_kinds: [
                 PdfKind::Ggx {
                     wo,

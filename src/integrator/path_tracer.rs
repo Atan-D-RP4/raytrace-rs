@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::{BsdfSample, Material, PdfKind};
+use crate::material::{BsdfScatter, Material, PdfKind};
 use crate::pdf::{EmitterPDF, PDF, PdfEnum, power_heuristic};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, SampleDims, Sampler};
@@ -260,7 +260,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 let y_mat = dim_cursor.next_sample();
                 let z_mat = dim_cursor.next_sample();
 
-                if let Some(sample) = material.sample(
+                if let Some(scatter) = material.scatter(
                     wo,
                     &si,
                     SampleDims {
@@ -274,8 +274,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 ) {
                     let mut new_prev_was_delta = false;
                     let mut new_prev_bsdf_pdf = 0.0;
-                    let (direction, bias) = match sample {
-                        BsdfSample::Delta { wi, f_cos } => {
+                    let (direction, bias) = match scatter {
+                        BsdfScatter::Delta { wi, f_cos } => {
                             // Pad to fixed 4-dim stride so subsequent bounces use consistent
                             // Sobol dimensions regardless of this bounce's path structure.
                             for _ in 0..4 {
@@ -284,7 +284,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             new_prev_was_delta = true;
                             (wi, f_cos)
                         }
-                        BsdfSample::NonDelta { pdf_kinds, count } => {
+                        BsdfScatter::NonDelta { pdf_kinds, count } => {
                             // One-sample MIS with power heuristic (β=2).
                             // Selects one strategy uniformly, generates direction from it,
                             // evaluates ALL PDFs, computes weighted estimator:

@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::{
-    Bsdf, BsdfSample, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
     fresnel_schlick, geometry_schlick_ggx, ggx_d,
 };
 use crate::onb::Onb;
@@ -51,7 +51,7 @@ impl Bsdf for GlossyMaterial {
     /// When `roughness` is effectively zero (below 1e-4), the surface is a
     /// perfect mirror — returns `BsdfSample::Delta` so the integrator skips
     /// the mixture PDF and uses the reflected direction directly.
-    fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample> {
+    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
         if self.roughness < 1e-4 {
             let wi = reflect(&-wo, &si.shading_normal());
@@ -65,7 +65,7 @@ impl Bsdf for GlossyMaterial {
                 .as_ref()
                 .map(|t| t.value(&si.texture_coords()))
                 .unwrap_or(self.albedo);
-            return Some(BsdfSample::Delta {
+            return Some(BsdfScatter::Delta {
                 wi,
                 f_cos: albedo_ * f,
             });
@@ -92,7 +92,7 @@ impl Bsdf for GlossyMaterial {
             return None;
         }
 
-        Some(BsdfSample::NonDelta {
+        Some(BsdfScatter::NonDelta {
             pdf_kinds: [
                 PdfKind::Ggx {
                     wo,
