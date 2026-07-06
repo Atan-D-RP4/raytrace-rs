@@ -36,7 +36,7 @@ impl TextureMapping3D {
         let inv_scale = 1.0 / scale;
 
         Self::PointScale {
-            inv_scale: Vec3::from(inv_scale, inv_scale, inv_scale),
+            inv_scale: Vec3::new(inv_scale, inv_scale, inv_scale),
         }
     }
 

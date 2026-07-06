@@ -63,7 +63,7 @@ impl Bsdf for LambertianMaterial {
             .unwrap_or(self.albedo);
         let cos_theta = si.shading_normal().dot(&wi);
         if cos_theta < 0.0 {
-            Color3::from(0., 0., 0.)
+            Color3::new(0., 0., 0.)
         } else {
             attenuation * cos_theta / PI
         }

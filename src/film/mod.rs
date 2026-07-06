@@ -31,8 +31,8 @@ fn post_process(color: Color3, exposure: f64, tone_map: bool) -> [u8; 3] {
 
 #[inline(always)]
 const fn reinhard_tone_map(exposure: f64, color: Color3) -> Color3 {
-    let mapped = Vec3::from(color.x * exposure, color.y * exposure, color.z * exposure);
-    Color3::from(
+    let mapped = Vec3::new(color.x * exposure, color.y * exposure, color.z * exposure);
+    Color3::new(
         mapped.x / (1.0 + mapped.x),
         mapped.y / (1.0 + mapped.y),
         mapped.z / (1.0 + mapped.z),

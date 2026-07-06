@@ -102,7 +102,7 @@ impl Aabb {
     }
 
     pub fn centroid(&self) -> Point3 {
-        Point3::from(
+        Point3::new(
             0.5 * (self.x.min + self.x.max),
             0.5 * (self.y.min + self.y.max),
             0.5 * (self.z.min + self.z.max),

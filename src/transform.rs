@@ -180,12 +180,12 @@ impl RotateY {
 
 impl Transform for RotateY {
     fn ray(&self, ray: &Ray) -> Ray {
-        let origin = Point3::from(
+        let origin = Point3::new(
             (self.cos_theta * ray.origin.x) - (self.sin_theta * ray.origin.z),
             ray.origin.y,
             (self.sin_theta * ray.origin.x) + (self.cos_theta * ray.origin.z),
         );
-        let direction = Vec3::from(
+        let direction = Vec3::new(
             (self.cos_theta * ray.direction.x) - (self.sin_theta * ray.direction.z),
             ray.direction.y,
             (self.sin_theta * ray.direction.x) + (self.cos_theta * ray.direction.z),
@@ -194,17 +194,17 @@ impl Transform for RotateY {
     }
 
     fn hit(&self, hit: &mut Hit) {
-        hit.point = Point3::from(
+        hit.point = Point3::new(
             (self.cos_theta * hit.point.x) + (self.sin_theta * hit.point.z),
             hit.point.y,
             (-self.sin_theta * hit.point.x) + (self.cos_theta * hit.point.z),
         );
-        hit.mapping_point = Point3::from(
+        hit.mapping_point = Point3::new(
             (self.cos_theta * hit.mapping_point.x) + (self.sin_theta * hit.mapping_point.z),
             hit.mapping_point.y,
             (-self.sin_theta * hit.mapping_point.x) + (self.cos_theta * hit.mapping_point.z),
         );
-        hit.set_geometric_normal(Vec3::from(
+        hit.set_geometric_normal(Vec3::new(
             (self.cos_theta * hit.geometric_normal().x)
                 + (self.sin_theta * hit.geometric_normal().z),
             hit.geometric_normal().y,
@@ -214,8 +214,8 @@ impl Transform for RotateY {
     }
 
     fn bbox(&self, bbox: Aabb) -> Aabb {
-        let mut min = Point3::from(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-        let mut max = Point3::from(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
 
         (0..2)
             .flat_map(|i| (0..2).flat_map(move |j| (0..2).map(move |k| (i, j, k))))
@@ -231,7 +231,7 @@ impl Transform for RotateY {
                 let newx = self.cos_theta * x + self.sin_theta * z;
                 let newz = -self.sin_theta * x + self.cos_theta * z;
 
-                let tester = Vec3::from(newx, y, newz);
+                let tester = Vec3::new(newx, y, newz);
                 (0..=2).for_each(|c| {
                     min[c] = min[c].min(tester[c]);
                     max[c] = max[c].max(tester[c]);
@@ -242,7 +242,7 @@ impl Transform for RotateY {
 
     fn object_to_world_direction(&self, dir: Vec3) -> Vec3 {
         // Inverse of the forward rotation: transpose the matrix (negate sin_theta).
-        Vec3::from(
+        Vec3::new(
             (self.cos_theta * dir.x) + (self.sin_theta * dir.z),
             dir.y,
             (-self.sin_theta * dir.x) + (self.cos_theta * dir.z),
@@ -251,7 +251,7 @@ impl Transform for RotateY {
 
     fn world_to_object_point(&self, point: Point3) -> Point3 {
         // Inverse of the forward rotation: transpose the matrix (negate sin_theta).
-        Point3::from(
+        Point3::new(
             (self.cos_theta * point.x) - (self.sin_theta * point.z),
             point.y,
             (self.sin_theta * point.x) + (self.cos_theta * point.z),

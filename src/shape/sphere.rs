@@ -63,7 +63,7 @@ impl SphereShape {
         let (sin_phi, cos_phi) = phi.sin_cos();
         let z = 1.0 + r2 * ((1.0 - (radius * radius) / distance_squared).sqrt() - 1.0);
         let r = (1.0 - z * z).sqrt();
-        Vec3::from(r * cos_phi, r * sin_phi, z)
+        Vec3::new(r * cos_phi, r * sin_phi, z)
     }
 }
 
@@ -105,7 +105,7 @@ impl Shape3D for SphereShape {
     }
 
     fn bounding_box(&self) -> Aabb {
-        let rvec = Vec3::from(self.radius, self.radius, self.radius);
+        let rvec = Vec3::new(self.radius, self.radius, self.radius);
         let local = Aabb::from_points(&(-rvec), &(rvec));
         self.center.sweep_aabb(&local)
     }
@@ -122,7 +122,7 @@ impl Shape3D for SphereShape {
         let (sin_theta, cos_theta) = theta.sin_cos();
         let z = 1.0 - 2.0 * v;
         let r = (1.0 - z * z).sqrt();
-        let normal = Vec3::from(r * cos_theta, r * sin_theta, z);
+        let normal = Vec3::new(r * cos_theta, r * sin_theta, z);
         (center + normal * self.radius, normal)
     }
 

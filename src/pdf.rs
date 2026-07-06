@@ -37,7 +37,7 @@ pub fn power_heuristic(pdf_i: f64, pdf_sum_sq: f64) -> f64 {
 pub fn cosine_hemisphere_direction(u: f64, v: f64) -> Vec3 {
     // Concentric disk mapping: map (u,v) in [0,1)^2 to (x,y) on the unit disk.
     let (x, y) = concentric_disk(u, v);
-    Vec3::from(x, y, (1.0 - x * x - y * y).max(0.0).sqrt())
+    Vec3::new(x, y, (1.0 - x * x - y * y).max(0.0).sqrt())
 }
 
 /// Uniform hemisphere direction via spherical coordinates.
@@ -50,7 +50,7 @@ pub fn uniform_hemisphere_direction(u: f64, v: f64) -> Vec3 {
     let (sin_phi, cos_phi) = phi.sin_cos();
     let z = v;
     let r = (1.0 - z * z).max(0.0).sqrt();
-    Vec3::from(r * cos_phi, r * sin_phi, z)
+    Vec3::new(r * cos_phi, r * sin_phi, z)
 }
 
 /// Type-erased wrapper that delegates to a concrete PDF type.
@@ -143,7 +143,7 @@ impl<S: Sampler> PDF<S> for UniformSpherePDF {
         let (sin_phi, cos_phi) = phi.sin_cos();
         let z = 1.0 - 2.0 * v;
         let r = (1.0 - z * z).max(0.0).sqrt();
-        Vec3::from(r * cos_phi, r * sin_phi, z)
+        Vec3::new(r * cos_phi, r * sin_phi, z)
     }
 }
 
@@ -186,7 +186,7 @@ impl<S: Sampler> PDF<S> for UniformHemispherePDF {
         let (sin_phi, cos_phi) = phi.sin_cos();
         let z = v;
         let r = (1.0 - z * z).max(0.0).sqrt();
-        let local_dir = Vec3::from(r * cos_phi, r * sin_phi, z);
+        let local_dir = Vec3::new(r * cos_phi, r * sin_phi, z);
 
         self.uvw.local_to_world(local_dir)
     }
@@ -338,7 +338,7 @@ impl<S: Sampler> PDF<S> for GgxSamplePDF {
 
         // Local frame: x=bitangent, y=tangent, z=normal (matches ONB convention). Put cos_theta on
         // the normal axis (z).
-        let h_local = Vec3::from(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
+        let h_local = Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
 
         let h_world = self.onb.local_to_world(h_local);
 

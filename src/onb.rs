@@ -22,9 +22,9 @@ impl Onb {
         let normal = normal.unit_vector();
         // Choose a vector that is not parallel to the normal vector
         let a = if normal.x.abs() < 0.9 {
-            Vec3::from(1.0, 0.0, 0.0)
+            Vec3::new(1.0, 0.0, 0.0)
         } else {
-            Vec3::from(0.0, 1.0, 0.0)
+            Vec3::new(0.0, 1.0, 0.0)
         };
 
         // Compute the tangent and bitangent vectors using the cross product
@@ -49,12 +49,12 @@ impl Onb {
         let a = -1.0 / (sign + normal.z);
         let b = -normal.x * normal.y * a;
 
-        let u = Vec3::from(
+        let u = Vec3::new(
             1.0 + sign * normal.x * normal.x * a,
             sign * b,
             -sign * normal.x,
         );
-        let v = Vec3::from(b, sign + normal.y * normal.y * a, -normal.y);
+        let v = Vec3::new(b, sign + normal.y * normal.y * a, -normal.y);
         let w = normal;
 
         Onb { u, v, w }
@@ -67,6 +67,6 @@ impl Onb {
 
     /// Transforms a world-space vector to local-space (in tangent space) using the ONB basis.
     pub fn world_to_local(&self, world: Vec3) -> Vec3 {
-        Vec3::from(world.dot(&self.u), world.dot(&self.v), world.dot(&self.w))
+        Vec3::new(world.dot(&self.u), world.dot(&self.v), world.dot(&self.w))
     }
 }

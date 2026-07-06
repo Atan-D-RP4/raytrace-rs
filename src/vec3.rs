@@ -24,34 +24,29 @@ pub type Point3 = Vec3;
 pub type Color3 = Vec3;
 
 impl Vec3 {
-    pub const ZERO: Self = Self::from(0.0, 0.0, 0.0);
+    pub const ZERO: Self = Self::new(0.0, 0.0, 0.0);
 
-    pub const ONE: Self = Self::from(1.0, 1.0, 1.0);
+    pub const ONE: Self = Self::new(1.0, 1.0, 1.0);
 
-    pub const X: Self = Self::from(1.0, 0.0, 0.0);
-    pub const Y: Self = Self::from(0.0, 1.0, 0.0);
-    pub const Z: Self = Self::from(0.0, 0.0, 1.0);
-
-    #[inline(always)]
-    pub const fn new() -> Self {
-        Self::ZERO
-    }
+    pub const X: Self = Self::new(1.0, 0.0, 0.0);
+    pub const Y: Self = Self::new(0.0, 1.0, 0.0);
+    pub const Z: Self = Self::new(0.0, 0.0, 1.0);
 
     #[inline(always)]
-    pub const fn from(x: f64, y: f64, z: f64) -> Self {
+    pub const fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
 
     #[inline(always)]
     pub fn random() -> Self {
         let mut rng = rand::rng();
-        Self::from(rng.random(), rng.random(), rng.random())
+        Self::new(rng.random(), rng.random(), rng.random())
     }
 
     #[inline(always)]
     pub fn random_range(min: f64, max: f64) -> Self {
         let mut rng = rand::rng();
-        Self::from(
+        Self::new(
             rng.random_range(min..max),
             rng.random_range(min..max),
             rng.random_range(min..max),
@@ -258,7 +253,7 @@ impl std::fmt::Display for Vec3 {
 pub fn random_in_unit_disk() -> Vec3 {
     let mut rng = rand::rng();
     loop {
-        let point = Vec3::from(
+        let point = Vec3::new(
             rng.random_range(-1.0..1.0),
             rng.random_range(-1.0..1.0),
             0.0,
@@ -273,7 +268,7 @@ pub fn random_in_unit_disk() -> Vec3 {
 pub fn random_unit_vector() -> Vec3 {
     let mut rng = rand::rng();
     loop {
-        let point = Vec3::from(
+        let point = Vec3::new(
             rng.random_range(-1.0..1.0),
             rng.random_range(-1.0..1.0),
             rng.random_range(-1.0..1.0),
@@ -288,7 +283,7 @@ pub fn random_unit_vector() -> Vec3 {
 #[inline(always)]
 pub fn random_in_unit_disk_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     loop {
-        let point = Vec3::from(
+        let point = Vec3::new(
             rng.random_range(-1.0..1.0),
             rng.random_range(-1.0..1.0),
             0.0,
@@ -304,7 +299,7 @@ pub fn random_in_unit_disk_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 
 #[inline(always)]
 pub fn random_unit_vector_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     loop {
-        let point = Vec3::from(
+        let point = Vec3::new(
             rng.random_range(-1.0..1.0),
             rng.random_range(-1.0..1.0),
             rng.random_range(-1.0..1.0),
@@ -327,7 +322,7 @@ pub fn random_cosine_direction<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     let y = sin_phi * r2.sqrt();
     let z = (1.0 - r2).sqrt();
 
-    Vec3::from(x, y, z)
+    Vec3::new(x, y, z)
 }
 
 #[inline(always)]
@@ -337,7 +332,7 @@ pub fn random_cosine_direction2<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
         (u, v) = (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0));
     }
 
-    Vec3::from(u, v, (1.0 - u.powi(2) - v.powi(2)).sqrt())
+    Vec3::new(u, v, (1.0 - u.powi(2) - v.powi(2)).sqrt())
 }
 
 /// Shirley concentric disk mapping: maps `(u, v)` in `[0, 1)²` to a point on the

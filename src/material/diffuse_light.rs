@@ -41,7 +41,7 @@ impl Bsdf for DiffuseLightMaterial {
 
     /// No reflection — always zero.
     fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
-        Color3::from(0., 0., 0.)
+        Color3::new(0., 0., 0.)
     }
 
     /// No scattering PDF — always zero.
@@ -62,7 +62,7 @@ impl Bsdf for DiffuseLightMaterial {
                 .map(|t| t.value(&si.texture_coords()))
                 .unwrap_or(self.emit)
         } else {
-            Color3::from(0., 0., 0.)
+            Color3::new(0., 0., 0.)
         }
     }
 

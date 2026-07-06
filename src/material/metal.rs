@@ -89,7 +89,7 @@ impl Bsdf for MetalMaterial {
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
         let phi = 2.0 * PI * u1;
         let (sin_phi, cos_phi) = phi.sin_cos();
-        let h_local = Vec3::from(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
+        let h_local = Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
 
         let onb = Onb::build_from_normal(si.shading_normal());
         let h_world = onb.local_to_world(h_local);
@@ -132,7 +132,7 @@ impl Bsdf for MetalMaterial {
         let cos_o = wo.dot(&si.shading_normal()).max(0.0);
         let cos_i = wi.dot(&si.shading_normal()).max(0.0);
         if cos_h_o <= 0.0 || cos_o <= 0.0 || cos_i <= 0.0 {
-            return Color3::from(0., 0., 0.);
+            return Color3::new(0., 0., 0.);
         }
         let d = ggx_d(cos_h_n, alpha);
         let f = fresnel_schlick(cos_h_o, self.r0);

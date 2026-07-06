@@ -65,7 +65,7 @@ impl Bsdf for DielectricMaterial {
 
     /// Delta material — cannot evaluate at arbitrary directions. Returns zero.
     fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
-        Color3::from(0., 0., 0.)
+        Color3::new(0., 0., 0.)
     }
 
     /// Delta material — probability of any specific direction is zero.

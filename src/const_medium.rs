@@ -220,9 +220,9 @@ mod tests {
     #[test]
     fn ray_through_dense_medium_scatters() {
         let boundary = make_sphere(Vec3::ZERO, 1.0);
-        let vol = volume_only(boundary, 100.0, Color3::from(0.5, 0.5, 0.5));
+        let vol = volume_only(boundary, 100.0, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(Vec3::from(0., 0., 5.), Vec3::from(0., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
         let hit = vol.intersect(&ray, Interval::from(0.001, f64::INFINITY));
 
         assert!(
@@ -243,9 +243,9 @@ mod tests {
     #[test]
     fn ray_through_sparse_medium_passes_through() {
         let boundary = make_sphere(Vec3::ZERO, 1.0);
-        let vol = volume_only(boundary, 0.0001, Color3::from(0.5, 0.5, 0.5));
+        let vol = volume_only(boundary, 0.0001, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(Vec3::from(0., 0., 5.), Vec3::from(0., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
         let hit = vol.intersect(&ray, Interval::from(0.001, f64::INFINITY));
 
         assert!(
@@ -258,9 +258,9 @@ mod tests {
     #[test]
     fn volume_hit_has_zero_normal() {
         let boundary = make_sphere(Vec3::ZERO, 1.0);
-        let vol = volume_only(boundary, 100.0, Color3::from(0.5, 0.5, 0.5));
+        let vol = volume_only(boundary, 100.0, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(Vec3::from(0., 0., 5.), Vec3::from(0., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
         let hit = vol.intersect(&ray, Interval::from(0.001, f64::INFINITY));
 
         if let Some(h) = hit {

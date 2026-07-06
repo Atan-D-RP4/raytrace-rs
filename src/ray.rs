@@ -21,7 +21,7 @@ impl Ray {
             origin,
             direction,
             time: 0.,
-            inverse_direction: Vec3::from(1. / direction.x, 1. / direction.y, 1. / direction.z),
+            inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
         }
     }
 
@@ -34,7 +34,7 @@ impl Ray {
             origin,
             direction,
             time,
-            inverse_direction: Vec3::from(1. / direction.x, 1. / direction.y, 1. / direction.z),
+            inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
         }
     }
 

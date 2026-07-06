@@ -92,7 +92,7 @@ impl SolidColor {
     /// Construct RGB components.
     pub fn from_rgb(r: f64, g: f64, b: f64) -> Self {
         Self {
-            albedo: Color3::from(r, g, b),
+            albedo: Color3::new(r, g, b),
         }
     }
 }
@@ -154,7 +154,7 @@ impl ImageTexture {
 impl Texture for ImageTexture {
     fn value(&self, coords: &TextureCoords) -> Color3 {
         if self.image.height() == 0 {
-            return Color3::from(0., 1., 1.);
+            return Color3::new(0., 1., 1.);
         }
 
         let u = Interval::from(0., 1.).clamp(coords.u);
@@ -164,7 +164,7 @@ impl Texture for ImageTexture {
         let j = (v * self.image.height() as f64).min((self.image.height() - 1) as f64);
         let pixel = self.image.get_pixel(i as u32, j as u32);
 
-        Color3::from(pixel[0] as f64, pixel[1] as f64, pixel[2] as f64)
+        Color3::new(pixel[0] as f64, pixel[1] as f64, pixel[2] as f64)
     }
 }
 
@@ -197,7 +197,7 @@ impl Texture for NoiseTexture {
     /// - Turbulent: `Color3::from(1., 1., 1.) * self.noise.turbulence(&point, 7)`
     fn value(&self, coords: &TextureCoords) -> Color3 {
         let point = coords.tex_points.texture;
-        Color3::from(0.5, 0.5, 0.5)
+        Color3::new(0.5, 0.5, 0.5)
             * (1.0 + (point.z + (10.0 * self.noise.turbulence(point, 7))).sin())
     }
 }

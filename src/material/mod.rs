@@ -113,7 +113,7 @@ fn blackbody(temp: f64) -> Color3 {
     let r = ((t / 1000.0).powf(3.0) * 0.5).clamp(0., 1.);
     let g = ((t / 1000.0).powf(2.0) * 0.7).clamp(0., 1.);
     let b = ((t / 1000.0).powf(1.5) * 1.0).clamp(0., 1.);
-    Color3::from(r, g, b)
+    Color3::new(r, g, b)
 }
 
 /// Material sample result for one bounce.
@@ -197,7 +197,7 @@ pub trait Bsdf: Send + Sync {
     /// Should be zero for non-emissive materials. Emission is not a BSDF property, but this method
     /// is provided for convenience in integrators that treat it as such (e.g., DiffuseLight).
     fn emitted(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Color3 {
-        Color3::from(0., 0., 0.)
+        Color3::new(0., 0., 0.)
     }
 
     /// Returns `true` if this material emits light.
@@ -393,11 +393,11 @@ impl Material {
             } => {
                 let wo_global = wo;
                 let n = si.shading_normal();
-                let mut throughput = Color3::from(1.0, 1.0, 1.0);
+                let mut throughput = Color3::new(1.0, 1.0, 1.0);
 
                 // Clamp coating tint to [0, 1] per component.
                 // Values > 1 would amplify via powf (physically invalid Beer's law).
-                let coating_tint = Color3::from(
+                let coating_tint = Color3::new(
                     coating_tint.x.clamp(0.0, 1.0),
                     coating_tint.y.clamp(0.0, 1.0),
                     coating_tint.z.clamp(0.0, 1.0),
@@ -431,7 +431,7 @@ impl Material {
                 let mut wi = refract(&-wo, &n, ri);
                 // Beer's law absorption per crossing in the coating layer
                 let path_len = *thickness / wi.dot(&n).abs();
-                throughput = Color3::from(
+                throughput = Color3::new(
                     throughput.x * coating_tint.x.powf(path_len.abs()),
                     throughput.y * coating_tint.y.powf(path_len.abs()),
                     throughput.z * coating_tint.z.powf(path_len.abs()),
@@ -474,7 +474,7 @@ impl Material {
                         } => {
                             // Beer's law for the upward crossing through the coating layer
                             let path_len_up = *thickness / wi_internal.dot(&n).abs();
-                            throughput = Color3::from(
+                            throughput = Color3::new(
                                 throughput.x * coating_tint.x.powf(path_len_up.abs()),
                                 throughput.y * coating_tint.y.powf(path_len_up.abs()),
                                 throughput.z * coating_tint.z.powf(path_len_up.abs()),
@@ -493,7 +493,7 @@ impl Material {
                                 wi = reflect(&wi_internal, &n);
                                 // Beer's law for the downward crossing (back through the coating)
                                 let path_len_down = *thickness / wi.dot(&n).abs();
-                                throughput = Color3::from(
+                                throughput = Color3::new(
                                     throughput.x * coating_tint.x.powf(path_len_down.abs()),
                                     throughput.y * coating_tint.y.powf(path_len_down.abs()),
                                     throughput.z * coating_tint.z.powf(path_len_down.abs()),
@@ -503,7 +503,7 @@ impl Material {
                                 let exit_dir = refract(&wi_internal, &-n, *coating_ior);
                                 let raw = throughput * f_cos_internal;
                                 let bound = 2.0 * throughput;
-                                let f_cos = Vec3::from(
+                                let f_cos = Vec3::new(
                                     raw.x.min(bound.x),
                                     raw.y.min(bound.y),
                                     raw.z.min(bound.z),
@@ -561,7 +561,7 @@ impl Material {
                                 let phi = 2.0 * PI * u1;
                                 let (sin_phi, cos_phi) = phi.sin_cos();
                                 let h_local =
-                                    Vec3::from(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
+                                    Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
 
                                 let onb = Onb::build_from_normal(normal);
                                 let h_world = onb.local_to_world(h_local);
@@ -573,7 +573,7 @@ impl Material {
                                 if wi_int.dot(&n) > 0.0 {
                                     // Beer's law for the upward crossing
                                     let path_len_up = *thickness / wi_int.dot(&n).abs();
-                                    throughput = Color3::from(
+                                    throughput = Color3::new(
                                         throughput.x * coating_tint.x.powf(path_len_up.abs()),
                                         throughput.y * coating_tint.y.powf(path_len_up.abs()),
                                         throughput.z * coating_tint.z.powf(path_len_up.abs()),
@@ -590,7 +590,7 @@ impl Material {
                                         // Internal reflection — continue bouncing
                                         wi = reflect(&wi_int, &n);
                                         let path_len_down = *thickness / wi.dot(&n).abs();
-                                        throughput = Color3::from(
+                                        throughput = Color3::new(
                                             throughput.x * coating_tint.x.powf(path_len_down.abs()),
                                             throughput.y * coating_tint.y.powf(path_len_down.abs()),
                                             throughput.z * coating_tint.z.powf(path_len_down.abs()),
@@ -622,7 +622,7 @@ impl Material {
                                     // This is NOT a physically derived limit — it's a safety net.
                                     let raw = throughput * substrate_f * exit_fresnel;
                                     let bound = 2.0 * throughput;
-                                    let f_cos = Vec3::from(
+                                    let f_cos = Vec3::new(
                                         raw.x.min(bound.x),
                                         raw.y.min(bound.y),
                                         raw.z.min(bound.z),
@@ -737,17 +737,17 @@ impl Material {
                 // Absorption in the coating layer (Beer's law) for outgoing and incoming paths.
                 // Clamp tint components to [0, 1] to prevent amplification (tint > 1 would
                 // add energy via powf).
-                let tint = Color3::from(
+                let tint = Color3::new(
                     coating_tint.x.clamp(0.0, 1.0),
                     coating_tint.y.clamp(0.0, 1.0),
                     coating_tint.z.clamp(0.0, 1.0),
                 );
-                let coating_absorption_o = Color3::from(
+                let coating_absorption_o = Color3::new(
                     tint.x.powf(path_o),
                     tint.y.powf(path_o),
                     tint.z.powf(path_o),
                 );
-                let coating_absorption_i = Color3::from(
+                let coating_absorption_i = Color3::new(
                     tint.x.powf(path_i),
                     tint.y.powf(path_i),
                     tint.z.powf(path_i),
@@ -941,12 +941,12 @@ impl Material {
                 // Beer's law absorption through the coating at the INTERNAL angle
                 let cos_wo_int = wo_internal.dot(&sn).abs().max(1e-10);
                 let path_o = *thickness / cos_wo_int;
-                let tint = Color3::from(
+                let tint = Color3::new(
                     coating_tint.x.clamp(0.0, 1.0),
                     coating_tint.y.clamp(0.0, 1.0),
                     coating_tint.z.clamp(0.0, 1.0),
                 );
-                let coating_absorption = Color3::from(
+                let coating_absorption = Color3::new(
                     tint.x.powf(path_o),
                     tint.y.powf(path_o),
                     tint.z.powf(path_o),
@@ -1071,7 +1071,7 @@ impl Material {
     /// Lambertian diffuse material from a solid color.
     pub fn lambertian_color(r: f64, g: f64, b: f64) -> Self {
         Material::Lambertian(LambertianMaterial {
-            albedo: Color3::from(r, g, b),
+            albedo: Color3::new(r, g, b),
             tex: None,
         })
     }
@@ -1110,7 +1110,7 @@ impl Material {
     pub fn dielectric(ior: f64) -> Self {
         Material::Dielectric(DielectricMaterial {
             ior,
-            tint: Color3::from(1., 1., 1.),
+            tint: Color3::new(1., 1., 1.),
             r0: fresnel_r0(ior),
         })
     }
@@ -1210,7 +1210,7 @@ impl Material {
         // Extract IOR and tint from dielectric coat if possible.
         let (coating_ior, coating_tint) = match &coat {
             Material::Dielectric(d) => (d.ior, d.tint),
-            _ => (1.5, Color3::from(1.0, 1.0, 1.0)),
+            _ => (1.5, Color3::new(1.0, 1.0, 1.0)),
         };
         Material::Coated {
             substrate: Box::new(self) as Box<dyn Bsdf>,
@@ -1262,7 +1262,7 @@ mod tests {
     #[test]
     fn gpu_buffer_mix() {
         let mat = Material::lambertian_color(0.5, 0.3, 0.1)
-            .mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0), 0.5);
+            .mix(Material::metal(Color3::new(0.9, 0.9, 0.9), 0.0), 0.5);
         let buf = mat.to_gpu_buffer();
         assert_eq!(buf.nodes.len(), 3);
         // Last node is the mix itself.
@@ -1295,11 +1295,8 @@ mod tests {
     #[test]
     fn gpu_buffer_nested() {
         let inner = Material::lambertian_color(0.5, 0.5, 0.5)
-            .mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.5), 0.5);
-        let mat = inner.coated(Material::dielectric_tinted(
-            1.5,
-            Color3::from(1.0, 0.8, 0.8),
-        ));
+            .mix(Material::metal(Color3::new(0.9, 0.9, 0.9), 0.5), 0.5);
+        let mat = inner.coated(Material::dielectric_tinted(1.5, Color3::new(1.0, 0.8, 0.8)));
         let buf = mat.to_gpu_buffer();
         // inner is 3 nodes (lambertian, metal, mix). coated adds 1
         // (dielectric) + 1 (coat) = 2 more = 5 total.
@@ -1324,11 +1321,11 @@ mod tests {
     fn gpu_buffer_all_types() {
         let materials = vec![
             Material::lambertian_color(0.5, 0.5, 0.5),
-            Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0),
+            Material::metal(Color3::new(0.9, 0.9, 0.9), 0.0),
             Material::dielectric(1.5),
-            Material::light(Color3::from(4.0, 4.0, 4.0)),
-            Material::isotropic(Color3::from(0.5, 0.5, 0.5)),
-            Material::glossy(Color3::from(0.9, 0.9, 0.9), 0.3, 1.5),
+            Material::light(Color3::new(4.0, 4.0, 4.0)),
+            Material::isotropic(Color3::new(0.5, 0.5, 0.5)),
+            Material::glossy(Color3::new(0.9, 0.9, 0.9), 0.3, 1.5),
         ];
         for mat in &materials {
             let buf = mat.to_gpu_buffer();
@@ -1341,8 +1338,8 @@ mod tests {
     #[test]
     fn gpu_buffer_lambertian_textured() {
         let mat = Material::Lambertian(LambertianMaterial {
-            albedo: Color3::from(0.5, 0.5, 0.5),
-            tex: Some(Arc::new(SolidColor::new(Color3::from(0.7, 0.3, 0.1)))),
+            albedo: Color3::new(0.5, 0.5, 0.5),
+            tex: Some(Arc::new(SolidColor::new(Color3::new(0.7, 0.3, 0.1)))),
         });
         let buf = mat.to_gpu_buffer();
         assert_eq!(buf.nodes.len(), 1);
@@ -1366,7 +1363,7 @@ mod tests {
                 None
             }
             fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
-                Color3::from(0., 0., 0.)
+                Color3::new(0., 0., 0.)
             }
             fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
                 0.0

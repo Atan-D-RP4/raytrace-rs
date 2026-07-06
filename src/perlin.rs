@@ -28,7 +28,7 @@ pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
             let fv = if j == 1 { v } else { 1.0 - v };
             for (k, c_ijk) in c_ij.iter().enumerate() {
                 let fw = if k == 1 { w } else { 1.0 - w };
-                let weight = Vec3::from(u - i as f64, v - j as f64, w - k as f64);
+                let weight = Vec3::new(u - i as f64, v - j as f64, w - k as f64);
                 accum += fu * fv * fw * c_ijk.dot(&weight);
             }
         }
@@ -70,7 +70,7 @@ impl Perlin {
         let v = p.y - j as f64;
         let w = p.z - k as f64;
 
-        let mut c = [[[Vec3::new(); 2]; 2]; 2];
+        let mut c = [[[Vec3::ZERO; 2]; 2]; 2];
 
         c.iter_mut().enumerate().for_each(|(di, x)| {
             x.iter_mut().enumerate().for_each(|(dj, y)| {

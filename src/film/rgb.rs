@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn variance_converges_for_constant_samples() {
         let mut film = RgbFilm::new((4, 4), 1.0, false);
-        let constant = Color3::from(0.5, 0.3, 0.2);
+        let constant = Color3::new(0.5, 0.3, 0.2);
 
         // Add many identical samples — variance should shrink to zero.
         for _ in 0..1000 {
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn variance_infinity_for_single_sample() {
         let mut film = RgbFilm::new((2, 2), 1.0, false);
-        film.add_sample(0, 0, Color3::from(1.0, 0.5, 0.2));
+        film.add_sample(0, 0, Color3::new(1.0, 0.5, 0.2));
 
         let variance = film.pixel_variance(0);
         assert!(
@@ -257,10 +257,10 @@ mod tests {
     #[test]
     fn variance_positive_for_varying_samples() {
         let mut film = RgbFilm::new((2, 2), 1.0, false);
-        film.add_sample(0, 0, Color3::from(0.0, 0.0, 0.0));
-        film.add_sample(0, 0, Color3::from(1.0, 1.0, 1.0));
-        film.add_sample(0, 0, Color3::from(0.0, 0.0, 0.0));
-        film.add_sample(0, 0, Color3::from(1.0, 1.0, 1.0));
+        film.add_sample(0, 0, Color3::new(0.0, 0.0, 0.0));
+        film.add_sample(0, 0, Color3::new(1.0, 1.0, 1.0));
+        film.add_sample(0, 0, Color3::new(0.0, 0.0, 0.0));
+        film.add_sample(0, 0, Color3::new(1.0, 1.0, 1.0));
 
         let variance = film.pixel_variance(0);
         assert!(
@@ -276,7 +276,7 @@ mod tests {
 
         // Pixel 0: many identical samples (low variance → converged)
         for _ in 0..200 {
-            film.add_sample(0, 0, Color3::from(0.5, 0.5, 0.5));
+            film.add_sample(0, 0, Color3::new(0.5, 0.5, 0.5));
         }
         // Pixel 1: no samples → should not converge
         // (pixel stays at ZERO with count=0)
@@ -293,7 +293,7 @@ mod tests {
         // Fill all pixels with at least one sample.
         for y in 0..2 {
             for x in 0..3 {
-                film.add_sample(x, y, Color3::from(0.5, 0.5, 0.5));
+                film.add_sample(x, y, Color3::new(0.5, 0.5, 0.5));
             }
         }
         let rgb = film.to_rgb8();

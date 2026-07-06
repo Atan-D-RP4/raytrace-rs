@@ -177,7 +177,7 @@ impl Camera for PerspectiveCamera {
         let ray_direction = pixel_sampler - ray_origin;
         Some(CameraRay {
             ray: Ray::new_with_time(ray_origin, ray_direction, sample.time),
-            weight: Color3::from(1.0, 1.0, 1.0),
+            weight: Color3::new(1.0, 1.0, 1.0),
         })
     }
 

@@ -402,7 +402,7 @@ mod tests {
     fn flat_bvh_empty() {
         let bvh: BvhNode = BvhNode::Empty;
         let flat = FlatBvh::from(bvh);
-        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(0., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(0., 0., -1.), 0.0);
         assert!(
             flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_none()
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn flat_bvh_single_sphere() {
         let sphere: Arc<dyn Intersectable> = Arc::new(sphere(
-            Vec3::from(0., 0., -2.),
+            Vec3::new(0., 0., -2.),
             0.5,
             Material::lambertian_color(0.8, 0.2, 0.2),
         ));
@@ -426,14 +426,14 @@ mod tests {
         assert_eq!(flat.node_count(), 1);
 
         // Ray toward the sphere.
-        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(0., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(0., 0., -1.), 0.0);
         assert!(
             flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_some()
         );
 
         // Ray missing the sphere.
-        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(10., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(10., 0., -1.), 0.0);
         assert!(
             flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_none()
@@ -443,12 +443,12 @@ mod tests {
     #[test]
     fn flat_bvh_two_spheres() {
         let s1: Arc<dyn Intersectable> = Arc::new(sphere(
-            Vec3::from(-1., 0., -2.),
+            Vec3::new(-1., 0., -2.),
             0.5,
             Material::lambertian_color(1.0, 0.0, 0.0),
         ));
         let s2: Arc<dyn Intersectable> = Arc::new(sphere(
-            Vec3::from(1., 0., -2.),
+            Vec3::new(1., 0., -2.),
             0.5,
             Material::lambertian_color(0.0, 1.0, 0.0),
         ));
@@ -474,21 +474,21 @@ mod tests {
         assert_eq!(flat.node_count(), 3); // 1 interior + 2 leaves
 
         // Hit left sphere (at -1, 0, -2).
-        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(-1., 0., -2.).unit_vector(), 0.0);
+        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(-1., 0., -2.).unit_vector(), 0.0);
         assert!(
             flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_some()
         );
 
         // Hit right sphere (at 1, 0, -2).
-        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(1., 0., -2.).unit_vector(), 0.0);
+        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(1., 0., -2.).unit_vector(), 0.0);
         assert!(
             flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_some()
         );
 
         // Hit neither.
-        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::from(0., 10., -1.), 0.0);
+        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(0., 10., -1.), 0.0);
         assert!(
             flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
                 .is_none()
@@ -503,24 +503,24 @@ mod tests {
 
         // Build a small scene: 3 spheres at different positions.
         let s1: Arc<dyn Intersectable> = Arc::new(sphere(
-            Vec3::from(-2., 0., -3.),
+            Vec3::new(-2., 0., -3.),
             0.5,
             Material::lambertian_color(1.0, 0.0, 0.0),
         ));
         let s2: Arc<dyn Intersectable> = Arc::new(sphere(
-            Vec3::from(0., 0., -3.),
+            Vec3::new(0., 0., -3.),
             0.5,
             Material::lambertian_color(0.0, 1.0, 0.0),
         ));
         let s3: Arc<dyn Intersectable> = Arc::new(sphere(
-            Vec3::from(2., 0., -3.),
+            Vec3::new(2., 0., -3.),
             0.5,
             Material::lambertian_color(0.0, 0.0, 1.0),
         ));
         let s4: Arc<dyn Intersectable> = Arc::new(quad(
-            Vec3::from(-3., -1., -5.),
-            Vec3::from(6., 0., 0.),
-            Vec3::from(0., 2., 0.),
+            Vec3::new(-3., -1., -5.),
+            Vec3::new(6., 0., 0.),
+            Vec3::new(0., 2., 0.),
             Material::lambertian_color(0.5, 0.5, 0.5),
         ));
 
@@ -531,17 +531,17 @@ mod tests {
         // Test several rays: some hit, some miss.
         let test_rays = vec![
             // Hit sphere at (-2, 0, -3)
-            (Vec3::ZERO, Vec3::from(-2., 0., -3.).unit_vector(), true),
+            (Vec3::ZERO, Vec3::new(-2., 0., -3.).unit_vector(), true),
             // Hit sphere at (0, 0, -3)
-            (Vec3::ZERO, Vec3::from(0., 0., -3.).unit_vector(), true),
+            (Vec3::ZERO, Vec3::new(0., 0., -3.).unit_vector(), true),
             // Hit sphere at (2, 0, -3)
-            (Vec3::ZERO, Vec3::from(2., 0., -3.).unit_vector(), true),
+            (Vec3::ZERO, Vec3::new(2., 0., -3.).unit_vector(), true),
             // Hit quad at z=-5
-            (Vec3::ZERO, Vec3::from(0., 0., -1.), true),
+            (Vec3::ZERO, Vec3::new(0., 0., -1.), true),
             // Miss everything (shoot upward)
-            (Vec3::ZERO, Vec3::from(0., 10., 0.), false),
+            (Vec3::ZERO, Vec3::new(0., 10., 0.), false),
             // Miss everything (shoot far to the side, away from all objects)
-            (Vec3::from(10., 0., 0.), Vec3::from(0., 1., 0.), false),
+            (Vec3::new(10., 0., 0.), Vec3::new(0., 1., 0.), false),
         ];
 
         for (origin, direction, should_hit) in test_rays {
