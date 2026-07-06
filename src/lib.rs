@@ -2,6 +2,7 @@ pub mod aabb;
 pub mod bvh;
 pub mod camera;
 pub mod const_medium;
+pub mod distributions;
 pub mod film;
 pub mod flat_bvh;
 pub mod hittable;

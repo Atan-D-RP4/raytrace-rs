@@ -5,6 +5,7 @@ use rand::RngExt;
 use crate::bvh::BvhNode;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
+use crate::distributions::EnvironmentMap;
 use crate::flat_bvh::FlatBvh;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::material::Bsdf;
@@ -32,6 +33,9 @@ pub struct Scene {
     /// Used by `EmitterPDF` for MIS. Delta materials (glass, metal) should
     /// NOT be included — they have no meaningful PDF for importance sampling.
     important_objects: Vec<Arc<dyn Sampleable>>,
+    /// Optional environment map for background lighting. If present, it will be used
+    /// to provide lighting information for rays that do not hit any objects in the scene.
+    env_map: Option<Arc<EnvironmentMap>>, // Environment map for background lighting
 }
 
 impl Scene {
@@ -40,7 +44,17 @@ impl Scene {
             config: CameraConfig::new(),
             objects: Vec::new(),
             important_objects: Vec::new(),
+            env_map: None,
         }
+    }
+
+    pub fn with_env_map(mut self, env_map: Arc<EnvironmentMap>) -> Self {
+        self.env_map = Some(env_map);
+        self
+    }
+
+    pub fn env_map(&self) -> Option<&Arc<EnvironmentMap>> {
+        self.env_map.as_ref()
     }
 
     pub fn with_config(mut self, config: CameraConfig) -> Self {
@@ -703,14 +717,18 @@ impl Scene {
     }
 
     pub fn random_world() -> Self {
-        let mut scene = Self::new();
+        let scene = Self::new();
+
+        let mut scene = scene.with_env_map(Arc::new(EnvironmentMap::new(
+            image::open("./kiara_1_dawn_4k.hdr").unwrap().into(),
+        )));
 
         let ground_material = Material::lambertian(checker_texture(
             0.32,
-            Color3::from(0.2, 0.4, 0.1),
-            Color3::from(0.9, 0.9, 0.9),
+            Color3::new(0.2, 0.4, 0.1),
+            Color3::new(0.9, 0.9, 0.9),
         ));
-        scene.add_sphere(Point3::from(0., -1000., 0.), 1000., ground_material);
+        scene.add_sphere(Point3::new(0., -1000., 0.), 1000., ground_material);
 
         for a in -21..21 {
             for b in -21..21 {

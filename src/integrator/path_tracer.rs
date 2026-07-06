@@ -9,6 +9,7 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
+use crate::distributions::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
@@ -81,22 +82,28 @@ fn mis_sample<S: Sampler>(
 /// Matches the mixture structure used in the scatter step (env + material PDFs, without light_pdf,
 /// since NEE handles light sampling separately).
 #[inline]
-fn bsdf_mixture_pdf(
+fn bsdf_mixture_pdf<S: Sampler>(
     wo: Vec3,
     wi: Vec3,
     si: &SurfaceInteraction,
-    material: &crate::material::Material,
+    material: &Material,
+    env_map: Option<&Arc<EnvironmentMap>>,
     is_volume: bool,
 ) -> f64 {
     // env_pdf value: UniformHemisphere (surfaces) or UniformSphere (volumes)
-    let env_value = if is_volume {
-        1.0 / (4.0 * PI)
-    } else {
-        let cos_theta = wi.dot(&si.shading_normal());
-        if cos_theta > 0.0 {
-            1.0 / (2.0 * PI)
-        } else {
-            0.0
+    let env_value = match env_map {
+        Some(env_map) => PdfEnum::<S>::environment(env_map.clone()).value(wi),
+        None => {
+            if is_volume {
+                1.0 / (4.0 * PI)
+            } else {
+                let cos_theta = wi.dot(&si.shading_normal());
+                if cos_theta > 0.0 {
+                    1.0 / (2.0 * PI)
+                } else {
+                    0.0
+                }
+            }
         }
     };
 
@@ -123,13 +130,15 @@ fn bsdf_mixture_pdf(
 pub struct PathTracingIntegrator {
     max_depth: u32,
     background: Color3,
+    env_map: Option<Arc<EnvironmentMap>>,
 }
 
 impl PathTracingIntegrator {
-    pub fn new(max_depth: u32, background: Color3) -> Self {
+    pub fn new(max_depth: u32, background: Color3, env_map: Option<Arc<EnvironmentMap>>) -> Self {
         Self {
             max_depth,
             background,
+            env_map,
         }
     }
 }
@@ -215,8 +224,14 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             &EmitterPDF::new(lights, si.point(), ray.time),
                             light_unit,
                         );
-                        let bsdf_pdf_at_nee =
-                            bsdf_mixture_pdf(wo, light_unit, &si, material, is_volume);
+                        let bsdf_pdf_at_nee = bsdf_mixture_pdf::<S>(
+                            wo,
+                            light_unit,
+                            &si,
+                            material,
+                            self.env_map.as_ref(),
+                            is_volume,
+                        );
                         let sum_sq_nee =
                             light_pdf_at_nee * light_pdf_at_nee + bsdf_pdf_at_nee * bsdf_pdf_at_nee;
                         let w_nee = power_heuristic(light_pdf_at_nee, sum_sq_nee);
@@ -300,12 +315,17 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             // - light_pdf is excluded — NEE handles light sampling separately.
 
                             // PdfEnum dispatches via match on a hand-rolled enum (zero-cost).
-                            let env_pdf: PdfEnum<S> = if is_volume {
-                                PdfEnum::new(&crate::material::PdfKind::UniformSphere)
-                            } else {
-                                PdfEnum::new(&PdfKind::UniformHemisphere {
-                                    normal: si.shading_normal(),
-                                })
+                            let env_pdf: PdfEnum<S> = match self.env_map {
+                                Some(ref env_map) => PdfEnum::environment(env_map.clone()),
+                                None => {
+                                    if is_volume {
+                                        PdfEnum::new(&crate::material::PdfKind::UniformSphere)
+                                    } else {
+                                        PdfEnum::new(&PdfKind::UniformHemisphere {
+                                            normal: si.shading_normal(),
+                                        })
+                                    }
+                                }
                             };
 
                             // Track consumption for fixed-dim stride padding.
@@ -366,8 +386,13 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     return accumulated_color;
                 }
             } else {
+                let background_color = if let Some(env_map) = &self.env_map {
+                    env_map.le(ray.direction.unit_vector())
+                } else {
+                    self.background
+                };
                 // Ray missed the world geometry — accumulate background and terminate.
-                return accumulated_color + accumulated_attenuation * self.background;
+                return accumulated_color + accumulated_attenuation * background_color;
             }
         }
 

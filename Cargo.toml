@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "hdr"] }
 profiling = "1.0.17"
 rand = { version = "0.10.0", default-features = false, features = ["std", "thread_rng"] }
 rayon = "1.11.0"

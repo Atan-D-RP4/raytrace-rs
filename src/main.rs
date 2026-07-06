@@ -430,7 +430,11 @@ fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, 
 
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
-    let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
+    let integrator = PathTracingIntegrator::new(
+        config.max_depth,
+        config.background,
+        scene.env_map().cloned(),
+    );
     let sampler_factory = SobolSamplerFactory;
     let mut renderer =
         CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);
@@ -529,7 +533,11 @@ fn headless_render(scene: Scene, scene_name: &str) {
 
     let camera = PerspectiveCamera::from_config(&config);
     let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
-    let integrator = PathTracingIntegrator::new(config.max_depth, config.background);
+    let integrator = PathTracingIntegrator::new(
+        config.max_depth,
+        config.background,
+        scene.env_map().cloned(),
+    );
     let sampler_factory = StratifiedSamplerFactory::new(config.samples_per_pixel.isqrt() as u32);
     let mut renderer =
         CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);

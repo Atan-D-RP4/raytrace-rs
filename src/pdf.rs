@@ -1,6 +1,7 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
+use crate::distributions::EnvironmentMap;
 use crate::hittable::Sampleable;
 use crate::material::PdfKind;
 use crate::material::ggx_d;
@@ -67,6 +68,7 @@ enum PdfEnumInner {
     Ggx(GgxSamplePDF),
     UniformSphere(UniformSpherePDF),
     UniformHemisphere(UniformHemispherePDF),
+    Environment(Arc<EnvironmentMap>),
 }
 
 impl<S: Sampler> PDF<S> for PdfEnum<S> {
@@ -78,6 +80,21 @@ impl<S: Sampler> PDF<S> for PdfEnum<S> {
             PdfEnumInner::UniformHemisphere(p) => {
                 <UniformHemispherePDF as PDF<S>>::value(p, direction)
             }
+            PdfEnumInner::Environment(env_map) => {
+                let w = direction.unit_vector();
+                let theta = w.y.acos();
+                let phi = w.z.atan2(w.x);
+                let u = phi / (2.0 * PI);
+                let u = u - u.floor();
+                let v = theta / PI;
+                let width = env_map.width();
+                let height = env_map.height();
+                let i = (u * width as f64).floor() as usize % width;
+                let j = (v * height as f64).floor() as usize % height;
+                let pdf_domain = env_map.pdf(i, j);
+                let sin_theta = theta.sin().max(1e-10);
+                pdf_domain / (sin_theta * 2.0 * PI * PI)
+            }
         }
     }
     fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
@@ -87,6 +104,14 @@ impl<S: Sampler> PDF<S> for PdfEnum<S> {
             PdfEnumInner::UniformSphere(p) => <UniformSpherePDF as PDF<S>>::generate(p, dim_offset),
             PdfEnumInner::UniformHemisphere(p) => {
                 <UniformHemispherePDF as PDF<S>>::generate(p, dim_offset)
+            }
+            PdfEnumInner::Environment(env_map) => {
+                let (col, row, _) =
+                    env_map.sample(dim_offset.next_sample(), dim_offset.next_sample());
+                let theta = (row as f64 + 0.5) / env_map.height() as f64 * PI;
+                let phi = (col as f64 + 0.5) / env_map.width() as f64 * 2.0 * PI;
+                let sin_theta = theta.sin();
+                Vec3::new(sin_theta * phi.cos(), theta.cos(), sin_theta * phi.sin())
             }
         }
     }
@@ -108,6 +133,14 @@ impl<S: Sampler> PdfEnum<S> {
         };
         PdfEnum {
             inner,
+            _s: std::marker::PhantomData,
+        }
+    }
+
+    /// Construct an environment map PDF strategy.
+    pub fn environment(env: Arc<EnvironmentMap>) -> Self {
+        PdfEnum {
+            inner: PdfEnumInner::Environment(env),
             _s: std::marker::PhantomData,
         }
     }
