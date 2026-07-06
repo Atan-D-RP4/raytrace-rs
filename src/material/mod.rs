@@ -443,7 +443,9 @@ impl Material {
                 let internal_dims = [dims.v, dims.w, dims.x, dims.y, dims.z];
 
                 // Bounce internally between coating and substrate interfaces
-                for bounce_idx in 0..MAX_INTERNAL_BOUNCES {
+                for (bounce_idx, internal_dim) in
+                    internal_dims.iter().enumerate().take(MAX_INTERNAL_BOUNCES)
+                {
                     // Sample the substrate material (scatter upwards)
                     // Each bounce gets a shifted QMC dimension to preserve stratification.
                     let bounce_offset = bounce_idx as f64 * 0.123456789;
@@ -486,7 +488,7 @@ impl Material {
                             let f_top_internal =
                                 fresnel_schlick(cos_wi_internal, fresnel_r0(*coating_ior));
 
-                            if tir || internal_dims[bounce_idx] < f_top_internal {
+                            if tir || *internal_dim < f_top_internal {
                                 // Must reflect (TIR) or stochastic Fresnel reflection.
                                 wi = reflect(&wi_internal, &n);
                                 // Beer's law for the downward crossing (back through the coating)
@@ -584,7 +586,7 @@ impl Material {
                                     let f_top_int =
                                         fresnel_schlick(cos_wi_int, fresnel_r0(*coating_ior));
 
-                                    if tir || internal_dims[bounce_idx] < f_top_int {
+                                    if tir || *internal_dim < f_top_int {
                                         // Internal reflection — continue bouncing
                                         wi = reflect(&wi_int, &n);
                                         let path_len_down = *thickness / wi.dot(&n).abs();
@@ -1006,7 +1008,7 @@ impl Material {
     pub fn is_delta(&self) -> bool {
         match self {
             Material::Dielectric(_) => true,
-            Material::Metal(inner) => inner.fuzz < 1e-4,
+            Material::Metal(inner) => inner.roughness < 1e-4,
             Material::Glossy(inner) => inner.roughness < 1e-4,
             Material::Mix { a, b, .. } => a.is_delta() && b.is_delta(),
             Material::Coated {
@@ -1087,7 +1089,7 @@ impl Material {
         Material::Metal(MetalMaterial {
             albedo,
             tex: None,
-            fuzz,
+            roughness: fuzz,
             ior: 2.5,
             r0: fresnel_r0(2.5),
         })
@@ -1098,7 +1100,7 @@ impl Material {
         Material::Metal(MetalMaterial {
             albedo,
             tex: None,
-            fuzz,
+            roughness: fuzz,
             ior,
             r0: fresnel_r0(ior),
         })
@@ -1107,7 +1109,7 @@ impl Material {
     /// Glass / dielectric material with refractive index.
     pub fn dielectric(ior: f64) -> Self {
         Material::Dielectric(DielectricMaterial {
-            refractive_idx: ior,
+            ior,
             tint: Color3::from(1., 1., 1.),
             r0: fresnel_r0(ior),
         })
@@ -1116,7 +1118,7 @@ impl Material {
     /// Dielectric with a colored tint (absorption per channel).
     pub fn dielectric_tinted(ior: f64, tint: Color3) -> Self {
         Material::Dielectric(DielectricMaterial {
-            refractive_idx: ior,
+            ior,
             tint,
             r0: fresnel_r0(ior),
         })
@@ -1164,7 +1166,7 @@ impl Material {
         Material::Metal(MetalMaterial {
             albedo: Color3::ZERO,
             tex: Some(tex),
-            fuzz,
+            roughness: fuzz,
             ior: 2.5,
             r0: fresnel_r0(2.5),
         })
@@ -1175,7 +1177,7 @@ impl Material {
         Material::Metal(MetalMaterial {
             albedo: Color3::ZERO,
             tex: Some(tex),
-            fuzz,
+            roughness: fuzz,
             ior,
             r0: fresnel_r0(ior),
         })
@@ -1207,7 +1209,7 @@ impl Material {
     pub fn coated(self, coat: Material) -> Self {
         // Extract IOR and tint from dielectric coat if possible.
         let (coating_ior, coating_tint) = match &coat {
-            Material::Dielectric(d) => (d.refractive_idx, d.tint),
+            Material::Dielectric(d) => (d.ior, d.tint),
             _ => (1.5, Color3::from(1.0, 1.0, 1.0)),
         };
         Material::Coated {

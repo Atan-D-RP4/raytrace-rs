@@ -13,7 +13,7 @@ use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::{BsdfSample, Material, PdfKind};
-use crate::pdf::{Emitter, PDF, PdfEnum, power_heuristic};
+use crate::pdf::{EmitterPDF, PDF, PdfEnum, power_heuristic};
 use crate::ray::Ray;
 use crate::sampler::{DimCursor, SampleDims, Sampler};
 use crate::vec3::{Color3, Vec3};
@@ -163,8 +163,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     accumulated_color += accumulated_attenuation * emission;
                 } else {
                     // Compute the light's solid-angle PDF for the continuation direction.
-                    let light_pdf_emit = <Emitter as PDF<S>>::value(
-                        &Emitter::new(lights, ray.origin, ray.time),
+                    let light_pdf_emit = <EmitterPDF as PDF<S>>::value(
+                        &EmitterPDF::new(lights, ray.origin, ray.time),
                         ray.direction.unit_vector(),
                     );
                     let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + light_pdf_emit * light_pdf_emit;
@@ -211,8 +211,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                         // MIS weight: compare the light sampler's PDF against the BSDF mixture PDF
                         // at the NEE direction. This weights NEE proportionally to how much better
                         // it is than the continuation ray for this particular direction.
-                        let light_pdf_at_nee = <Emitter as PDF<S>>::value(
-                            &Emitter::new(lights, si.point(), ray.time),
+                        let light_pdf_at_nee = <EmitterPDF as PDF<S>>::value(
+                            &EmitterPDF::new(lights, si.point(), ray.time),
                             light_unit,
                         );
                         let bsdf_pdf_at_nee =

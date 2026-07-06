@@ -28,7 +28,7 @@ use crate::sampler::SampleDims;
 #[derive(Clone)]
 pub struct DielectricMaterial {
     /// Index of refraction (1.0 = air, 1.33 = water, 1.5 = glass, 2.42 = diamond).
-    pub refractive_idx: f64,
+    pub ior: f64,
     /// Optional tint color for colored glass. Pure white means no tint.
     pub tint: Color3,
     /// Precomputed Fresnel reflectance at normal incidence.
@@ -36,22 +36,27 @@ pub struct DielectricMaterial {
 }
 
 impl Bsdf for DielectricMaterial {
-    /// Compute refraction ratio from the two media, then use Fresnel to decide
-    /// between reflection and refraction. Returns the chosen direction with
-    /// unit attenuation (delta material — all energy goes one way).
+    /// Compute refraction ratio from the two media using Snell's Law.
+    /// Then use Fresnel to decide between reflection and refraction.
     fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample> {
+        // Determine the ratio of indices of refraction based on whether the ray is entering or exiting the material.
         let ri = if si.front_face() {
-            1.0 / self.refractive_idx
+            1.0 / self.ior
         } else {
-            self.refractive_idx
+            self.ior
         };
+        // Compute the cosine of the angle between the outgoing direction and the surface normal.
         let cos_theta = wo.dot(&si.shading_normal()).min(1.0);
+        // Compute the sine of the angle using the identity sin²(θ) + cos²(θ) = 1.
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+
+        // Use Fresnel's equations to determine the probability of reflection vs refraction.
         let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > dims.u {
             reflect(&-wo, &si.shading_normal())
         } else {
             refract(&-wo, &si.shading_normal(), ri)
         };
+        // Return the chosen direction with unit attenuation (delta material — all energy goes one way).
         Some(BsdfSample::Delta {
             wi: direction,
             f_cos: self.tint,
@@ -92,7 +97,7 @@ impl Bsdf for DielectricMaterial {
     }
 
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![self.refractive_idx];
+        let params = vec![self.ior];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {

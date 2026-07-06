@@ -22,14 +22,14 @@ pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
 
     let mut accum = 0.0;
     // Using for-loop instead of iterators for better optimization
-    for i in 0..2 {
+    for (i, c_i) in c.iter().enumerate() {
         let fu = if i == 1 { u } else { 1.0 - u };
-        for j in 0..2 {
+        for (j, c_ij) in c_i.iter().enumerate() {
             let fv = if j == 1 { v } else { 1.0 - v };
-            for k in 0..2 {
+            for (k, c_ijk) in c_ij.iter().enumerate() {
                 let fw = if k == 1 { w } else { 1.0 - w };
                 let weight = Vec3::from(u - i as f64, v - j as f64, w - k as f64);
-                accum += fu * fv * fw * c[i][j][k].dot(&weight);
+                accum += fu * fv * fw * c_ijk.dot(&weight);
             }
         }
     }

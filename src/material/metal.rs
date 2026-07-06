@@ -44,7 +44,7 @@ pub struct MetalMaterial {
     /// falls back to `albedo`.
     pub tex: Option<Arc<dyn Texture>>,
     /// Controls roughness: the GGX alpha is `fuzz²`. 0 = mirror, 1 = fully rough.
-    pub fuzz: f64,
+    pub roughness: f64,
     /// Index of refraction for the Fresnel term (typical metals: 2.5–3.0).
     pub ior: f64,
     /// Precomputed Fresnel reflectance at normal incidence.
@@ -61,7 +61,7 @@ impl Bsdf for MetalMaterial {
     /// the mixture PDF and uses the reflected direction directly.
     fn sample(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfSample> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
-        if self.fuzz < 1e-4 {
+        if self.roughness < 1e-4 {
             let wi = reflect(&-wo, &si.shading_normal());
             if wi.dot(&si.shading_normal()) <= 0.0 {
                 return None;
@@ -79,7 +79,7 @@ impl Bsdf for MetalMaterial {
             });
         }
 
-        let alpha = (self.fuzz * self.fuzz).clamp(0.001, 1.0);
+        let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         // Sample H from GGX NDF.
         let u1 = dims.u;
         let u2 = dims.v;
@@ -117,7 +117,7 @@ impl Bsdf for MetalMaterial {
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         // If the material is effectively a mirror, return zero for arbitrary directions.
-        if self.fuzz < 1e-4 {
+        if self.roughness < 1e-4 {
             return Color3::ZERO;
         }
         let albedo = self
@@ -125,7 +125,7 @@ impl Bsdf for MetalMaterial {
             .as_ref()
             .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
-        let alpha = (self.fuzz * self.fuzz).clamp(0.001, 1.0);
+        let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         let h = (wo + wi).unit_vector();
         let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
         let cos_h_o = wo.dot(&h).max(0.0);
@@ -136,17 +136,18 @@ impl Bsdf for MetalMaterial {
         }
         let d = ggx_d(cos_h_n, alpha);
         let f = fresnel_schlick(cos_h_o, self.r0);
-        let g = geometry_schlick_ggx(cos_o, self.fuzz) * geometry_schlick_ggx(cos_i, self.fuzz);
+        let g = geometry_schlick_ggx(cos_o, self.roughness)
+            * geometry_schlick_ggx(cos_i, self.roughness);
         albedo * f * d * g / (4.0 * cos_o)
     }
 
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         // If the material is effectively a mirror, return zero for arbitrary directions.
-        if self.fuzz < 1e-4 {
+        if self.roughness < 1e-4 {
             return 0.0;
         }
-        let alpha = (self.fuzz * self.fuzz).clamp(0.001, 1.0);
+        let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
         let h = (wo + wi).unit_vector();
         let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
         let cos_h_o = wo.dot(&h).max(0.0);
@@ -158,13 +159,13 @@ impl Bsdf for MetalMaterial {
 
     /// Returns the PDF kind for the GGX NDF if `fuzz` is non-zero, otherwise `None`.
     fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
-        if self.fuzz < 1e-4 {
+        if self.roughness < 1e-4 {
             None
         } else {
             Some(PdfKind::Ggx {
                 wo,
                 normal: si.shading_normal(),
-                alpha: (self.fuzz * self.fuzz).clamp(0.001, 1.0),
+                alpha: (self.roughness * self.roughness).clamp(0.001, 1.0),
             })
         }
     }
@@ -175,12 +176,12 @@ impl Bsdf for MetalMaterial {
         // is narrow, so most energy is at the mirror direction. Roughness
         // increases the effective reflectance due to multiple scattering.
         let f = fresnel_schlick(cos_theta, self.r0);
-        let roughness_boost = self.fuzz * 0.25;
+        let roughness_boost = self.roughness * 0.25;
         (f + roughness_boost).min(1.0)
     }
 
     fn is_delta(&self) -> bool {
-        self.fuzz < 1e-4
+        self.roughness < 1e-4
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {
@@ -192,7 +193,7 @@ impl Bsdf for MetalMaterial {
             self.albedo.x,
             self.albedo.y,
             self.albedo.z,
-            self.fuzz,
+            self.roughness,
             self.ior,
         ];
         let param_offset = buf.params.len() as u32;

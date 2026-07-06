@@ -16,18 +16,24 @@ use crate::texture::{Texture, TextureCoords};
 use crate::vec3::Color3;
 
 /// Compositional wrapper for mapping coordinates first, then evaluating the wrapped texture.
-pub struct MappedTexture {
+///
+/// The mapping pipeline is: 3D mapping → UV generation → 2D mapping → texture evaluation.
+pub struct MappedTexture<T: Texture> {
+    /// 2D mapping applied to UV coordinates after UV generation.
     mapping2d: TextureMapping2D,
+    /// 3D mapping applied to the texture-space point before UV generation.
     mapping3d: TextureMapping3D,
+    /// UV generation applied to the texture-space point after 3D mapping.
     uv_gen: UvGen,
-    texture: Arc<dyn Texture>,
+    /// The wrapped texture to evaluate after mapping.
+    texture: T,
 }
 
-impl MappedTexture {
+impl<T: Texture> MappedTexture<T> {
     /// Creates a texture with identity mapping pipeline (3D identity, no UV gen, 2D identity).
     /// Apply mappings via [`with_mapping3d`](Self::with_mapping3d),
     /// [`with_uv_gen`](Self::with_uv_gen), and [`with_mapping2d`](Self::with_mapping2d).
-    pub fn new(texture: Arc<dyn Texture>) -> Self {
+    pub fn new(texture: T) -> Self {
         Self {
             mapping2d: TextureMapping2D::Identity,
             mapping3d: TextureMapping3D::Identity,
@@ -52,7 +58,7 @@ impl MappedTexture {
     }
 }
 
-impl Texture for MappedTexture {
+impl<T: Texture> Texture for MappedTexture<T> {
     fn value(&self, coords: &TextureCoords) -> Color3 {
         // Apply 3D point mapping first (transforms the texture space).
         let tex_point = self.mapping3d.map_point(coords.tex_points.texture);

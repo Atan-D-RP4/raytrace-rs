@@ -18,7 +18,7 @@ use crate::vec3::{Color3, Point3, Vec3};
 use tracing::{info, trace};
 
 fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
-    let mapped_tex = MappedTexture::new(Arc::new(CheckerTexture::from_color(even, odd)));
+    let mapped_tex = MappedTexture::new(CheckerTexture::from_color(even, odd));
     let mapped_tex = mapped_tex.with_mapping3d(TextureMapping3D::point_scale_uniform(scale));
     Arc::new(mapped_tex)
 }
@@ -286,7 +286,7 @@ impl Scene {
 
         let emat: Arc<dyn Texture> = match ImageTexture::new("./earthmap.png") {
             Ok(tex) => {
-                let mapped_tex = MappedTexture::new(Arc::new(tex));
+                let mapped_tex = MappedTexture::new(tex);
                 Arc::new(mapped_tex)
             }
             Err(e) => panic!("Failed to load earthmap.png for complex_scene: {e:?}"),
@@ -298,7 +298,7 @@ impl Scene {
         );
 
         let pertext: Arc<dyn Texture> = Arc::new(
-            MappedTexture::new(Arc::new(NoiseTexture::new()))
+            MappedTexture::new(NoiseTexture::new())
                 .with_mapping3d(TextureMapping3D::point_scale_uniform(0.2)),
         );
         scene.add_sphere(
@@ -623,7 +623,7 @@ impl Scene {
         let mut scene = Self::new();
 
         let perlin_tex: Arc<dyn Texture> = Arc::new(
-            MappedTexture::new(Arc::new(NoiseTexture::new()))
+            MappedTexture::new(NoiseTexture::new())
                 .with_mapping3d(TextureMapping3D::point_scale_uniform(1. / 4.)),
         );
 
@@ -660,7 +660,7 @@ impl Scene {
             Ok(tex) => tex,
             Err(e) => panic!("Failed to load to image as Texture: {:?}", e),
         };
-        let image_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(Arc::new(image_tex)));
+        let image_tex: Arc<dyn Texture> = Arc::new(MappedTexture::new(image_tex));
         let checker = Material::lambertian(image_tex);
 
         scene.add_sphere(Point3::from(0., 0., 0.), 2., checker);
@@ -817,7 +817,7 @@ impl Scene {
             Point3::from(2., 4., -2.),
             1.5,
             Material::light_textured(Arc::new(
-                MappedTexture::new(Arc::new(NoiseTexture::new()))
+                MappedTexture::new(NoiseTexture::new())
                     .with_mapping3d(TextureMapping3D::point_scale_uniform(1. / 4.)),
             )),
         );
@@ -933,7 +933,7 @@ impl Scene {
             Material::metal(Color3::from(0.8, 0.8, 0.2), 0.1).coated(Material::dielectric(1.5)),
         );
         let perlin_tex: Arc<dyn Texture> = Arc::new(
-            MappedTexture::new(Arc::new(NoiseTexture::new()))
+            MappedTexture::new(NoiseTexture::new())
                 .with_mapping3d(TextureMapping3D::point_scale_uniform(1. / 4.)),
         );
         scene.add_sphere(
@@ -990,7 +990,7 @@ impl Scene {
 
         // Sphere 2 — perlin noise (unique pattern)
         let perlin_tex: Arc<dyn Texture> = Arc::new(
-            MappedTexture::new(Arc::new(NoiseTexture::new()))
+            MappedTexture::new(NoiseTexture::new())
                 .with_mapping3d(TextureMapping3D::point_scale_uniform(1. / 4.)),
         );
         let coated_perlin =
@@ -1008,9 +1008,9 @@ impl Scene {
         scene.add_sphere(Point3::from(0., 3., 8.), 1.0, light_coated_glass);
 
         // Sphere 5 — red glossy
-        let coated_glossy = Material::glossy(Color3::from(1., 0.0, 0.0), 0.5, 1.5);
         let coated_glossy = Material::Coated {
-            substrate: Box::new(coated_glossy) as Box<dyn Bsdf>,
+            substrate: Box::new(Material::glossy(Color3::from(1., 0.0, 0.0), 0.5, 1.5))
+                as Box<dyn Bsdf>,
             coating: Box::new(Material::dielectric(1.5)) as Box<dyn Bsdf>,
             coating_tint: Color3::from(1., 0.0, 0.0),
             coating_ior: 1.5,
