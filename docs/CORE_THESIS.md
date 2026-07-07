@@ -258,7 +258,7 @@ Ray → BVH → Spatial Domain → Domain-specific traversal
 
 The BLAS becomes `TriangleDomain` instead of `TriangleAccelerationStructure`.
 The SBT becomes the traversal `match` statement. The migration from software
-traversal to hardware RT (§6 Stage 13) is a change of routing mechanism, not a
+traversal to hardware RT (E8: Hardware Ray Tracing) is a change of routing mechanism, not a
 change of domain interface.
 
 ### The Strongest Architectural Insight
@@ -560,7 +560,7 @@ level and define the migration target.
 callable shaders. The SBT is the hardware dispatch table mapping BLAS types to
 intersection shaders — exactly what the traversal shader's `match leaf.type_tag`
 implements in software. The migration from software traversal to
-`vkCmdTraceRaysKHR` (§6 Stage 13) uses this extension.
+`vkCmdTraceRaysKHR` (E8: Hardware Ray Tracing) uses this extension.
 
 **DirectX Raytracing (DXR)**: Any-hit shaders, closest-hit shaders, miss
 shaders. The shader type hierarchy maps to Starlight's intersection function
@@ -1051,7 +1051,7 @@ HitBuffer and are composited over the GBuffer primary using a weighted blend.
 unconditionally (see §7). For fully-rasterized frames, this wastes compute. A
 later optimization pass reads GBuffer depth and dispatches traversal only for
 pixels with no raster coverage and for pixels needing secondary effects. This is
-tracked as a Stage 7 optimization, not deferred indefinitely.
+tracked as a render graph optimization (C11: Raster Path), not deferred indefinitely.
 
 ### 2.10 Power Foam Dual-Path Integration
 
@@ -1155,9 +1155,9 @@ ______________________________________________________________________
 > traversable `SpatialDomain`. The `VolumeInteraction` evolution (§4) and Path B
 > here are the same trigger.
 >
-> Path A is correct through Stage 9. Re-evaluate at Stage 10 when
-> `ConstantMedium` is fully implemented and volume rendering requirements are
-> concrete.
+> Path A is correct through the core renderer (C1–C17). Re-evaluate when
+> `ConstantMedium` (E3) is fully implemented and volume rendering requirements
+> are concrete.
 
 ______________________________________________________________________
 
@@ -1241,7 +1241,8 @@ ______________________________________________________________________
 > un-loaded worlds as `LeafHit::miss()` and the host queues loading for the next
 > frame. This is the standard streaming architecture.
 >
-> **When to implement:** Stage 12+. Not before worlds need to be dynamic.
+> **When to implement:** After portals (E2) are working and worlds need to be
+> dynamic.
 
 ______________________________________________________________________
 
@@ -1509,8 +1510,8 @@ fn intersect_sphere(ray: Ray, leaf: &SphereLeaf) -> Option<SurfaceInteraction> {
 
 #### Migration Path
 
-`Transform` trait and `TransformObject` wrapper removed in Stage 0. Existing
-scenes rewritten to store composed `Mat4` directly in leaf data. One-time
+`Transform` trait and `TransformObject` wrapper removed; scenes store composed
+`Mat4` directly in leaf data (C6). One-time
 migration, no behavioral change. `onb.rs` stays — used by BSDF evaluation, not
 by transforms.
 
@@ -1622,7 +1623,7 @@ alphaMode = "MASK"                          → raster path only (discard)
 
 OBJ is simpler and useful for quick testing and legacy scenes. Supports vertex
 positions/normals/UVs, face triangulation, group boundaries, MTL material
-mapping. OBJ support is implemented in Stage 2 alongside triangle mesh support.
+mapping. OBJ support is implemented alongside triangle mesh support (C14).
 
 #### Unified Loading Pipeline
 
@@ -1844,9 +1845,9 @@ ______________________________________________________________________
 > **ABI note:** This is a breaking change to `SurfaceInteraction`. Bump the
 > `starlight-types` major version. Both CPU and GPU implementations must update
 > simultaneously. The CPU path tracer is the reference for validating the
-> migration. Place a `// TODO(volume-interaction): split when ConstantMedium is implemented in Stage 8` comment in `interaction.rs` now.
+> migration. Place a `// TODO(volume-interaction): split when ConstantMedium (E3) is implemented` comment in `interaction.rs` now.
 >
-> **Why not now:** All leaf types through Stage 7 return surface hits. Adding
+> **Why not now:** All leaf types before `ConstantMedium` return surface hits. Adding
 > the hierarchy before needing it adds struct indirection with no benefit and
 > makes the ABI migration harder to sequence.
 
@@ -1898,245 +1899,296 @@ Nine invariants. Breaking any one collapses a load-bearing assumption.
 
 ______________________________________________________________________
 
-## 6. Implementation Sequence
+## 6. Feature Catalog
 
-Each stage produces a runnable, visually verifiable output. The existing CPU
-path tracer is never broken — it runs in parallel as the reference.
+This catalog defines every feature of the ideal Starlight renderer. Features are
+grouped into two tiers. **Core** features form the base high-performance
+renderer usable in real-world rendering pipelines: real-time preview in game
+engines (Bevy), offline rendering in content-creation tools (Blender, Maya,
+Houdini), and standalone headless rendering. **Extended** features are research
+and exploration targets — they deepen the engine's capability without being
+required for the core mission.
 
-The sequence follows Review 1's recommendation: CPU-only stages first, then
-incremental GPU stages, raster added *after* the full GPU path tracer is
-working. This ensures the compute path tracer is the reference for every pixel
-before raster is introduced.
+Each feature lists its prerequisites, which reference other features by ID.
+Features without prerequisites are foundational. The dependency graph at the end
+of this section shows the overall structure.
 
-**Evolution integration points are marked inline. These are not optional
-deferrals — they are scheduled architectural transitions with defined triggers.**
+The rendering math (BSDFs, MIS, path tracing, sampling) is from raytrace-rs,
+which serves as the reference for every GPU feature.
 
-______________________________________________________________________
+---
 
-### Stage 0 — Arena refactor + workspace setup + shared types crate
+### Core Features (Base Renderer)
 
-**Arena refactor**: Replace `Arc<dyn Hittable>` with `Vec<Box<dyn Hittable>>`
-in `Scene`. The BVH lifetime-borrows from the scene's object list. Automatic
-light detection via `is_emissive()`. Light BVH built from emissive indices.
-This eliminates Arc overhead, removes scattered allocations, moves storage
-toward GPU readiness.
+#### C1. Shared Types Crate (`starlight-types`)
+- **Prerequisites:** none
+- A `no_std` crate containing every type shared between CPU host and GPU shader:
+  `SurfaceInteraction`, `GpuBvhNode`, `GpuLeafType`, `GpuMaterialType/Node`,
+  `GpuTextureType/Node`, `Ray`, `LightNode`, `Mat4`, `Vec3`, `Aabb`. All
+  `repr(C)` with `bytemuck::Pod + Zeroable`. The `[f32; 3]` convention avoids
+  GLSL `vec3` alignment mismatch (§2.6).
+- Eliminates the `build.rs` GLSL header-emission approach. Type synchronization
+  between CPU and GPU is architectural rather than procedural.
 
-**Transform system cleanup**: Remove `Transform` trait and `TransformObject<T,O>`.
-Store `Mat4` directly in leaf data structs (§2.17). Rewrite existing `Translate`
-and `RotateY` scenes to composed `Mat4`.
+#### C2. Flat BVH Spatial Index
+- **Prerequisites:** C1
+- The spatial router — a flat BVH with 64-byte `repr(C)` nodes, iterative
+  traversal with a 64-entry explicit stack, near-child-first ordering for early
+  termination. Two entry points: `traverse(ray) → Option<SurfaceInteraction>`
+  for full hits and `occluded(ray) → bool` for short-circuit shadow rays.
+- The invariant is the *routing role*, not the BVH implementation. This BVH can
+  be replaced with hardware RT structures, sparse DAGs, or clipmap hierarchies
+  without changing anything above this layer.
 
-**Workspace setup**: Create the three-crate workspace. Move `material/gpu.rs`,
-`texture/gpu.rs`, and `flat_bvh.rs` GPU-facing types from `raytrace-rs` into
-`starlight-types`. Verify that `starlight-engine` re-imports them and the
-existing CPU renderer still compiles and produces identical output.
+#### C3. Leaf Node Dispatch System
+- **Prerequisites:** C1, C2
+- A `leaf_nodes!` macro (Niri pattern, §1.3) generates a `LeafNode` enum with
+  zero-cost static dispatch, `From<T>` for each variant, and exhaustive `match`
+  guarantees. Each leaf type implements `intersect()`, `aabb()`, `sample()`,
+  `pdf()`, and `gpu_serialize()`.
+- **Initial leaf types:** `AnalyticSphere`, `AnalyticAabb` (P0); `TriangleMesh`
+  (P1).
+- **Evolution (§2.4):** At the fifth leaf type, introduce the `SpatialDomain`
+  trait for plugin leaf types. The macro-generated enum remains for built-in
+  types. `LeafNode` gets a blanket `impl SpatialDomain`.
 
-Add `// TODO(volume-interaction): split when ConstantMedium is implemented in Stage 8` to `interaction.rs`. Add `// TODO(spatial-domain): introduce trait when fifth leaf type is working` to `leaf/mod.rs`. These comments are the
-formal record of the evolution commitments.
+#### C4. Material & BSDF System
+- **Prerequisites:** C1
+- A `Material` enum dispatching to 9 concrete types: 6 scattering
+  (Lambertian, Glossy/Microfacet, Metal, Dielectric, DiffuseLight,
+  ThinDielectric) + 3 composition (Mix, Coated, Custom). Each implements
+  `sample()`, `eval()`, `pdf()` following pbrt-v4 conventions. `BsdfSample`
+  carries `PdfKind` delta/non-delta for integrator routing.
+- **GPU serialization (§2.13):** Material tree flattened to
+  `Vec<GpuMaterialNode>` indexed by `material_id`. Composition materials
+  reference children by buffer index. GPU shader dispatches on
+  `GpuMaterialType` tag.
 
-______________________________________________________________________
+#### C5. Texture System
+- **Prerequisites:** C1
+- A `Texture` enum (SolidColor, Image, Noise, Mapped) evaluated on CPU;
+  `GpuTextureNode` with bindless descriptor index on GPU
+  (`VK_EXT_descriptor_indexing`). Uploaded with mipmaps; hardware bilinear/
+  anisotropic sampling via `VkSampler`.
 
-### Stage 1 — `LeafNode` enum + `SurfaceInteraction` (CPU only)
+#### C6. Transform System (Mat4 Everywhere)
+- **Prerequisites:** C1
+- Every leaf stores a `TransformPair { world_from_object: Mat4,
+  object_from_world: Mat4 }`. Inverse is computed once at scene load, stored
+  alongside the forward matrix. No runtime matrix inversion in the hot path.
+- Eliminates the `Transform` trait, `TransformObject<T,O>` generic, and
+  per-operation types (§2.17).
 
-Introduce the `leaf_nodes!` macro and `LeafNode` enum in `starlight-engine`.
-Replace `Arc<dyn Hittable>` in `BvhNode` leaves with `LeafNode`. Extract
-`SurfaceInteraction` from `HitRecord` (the `TODO(renderer-agnostic)` in
-`hittable.rs`). Verify identical render output from the CPU path tracer. This
-eliminates vtable dispatch from the BVH hot path.
+#### C7. GPU Compute Traversal Pass
+- **Prerequisites:** C1, C2, C3
+- A compute shader (`starlight-shaders/src/traversal.rs`, Rust compiled to
+  SPIR-V via rust-gpu) that dispatches one thread per pixel, walks the flat
+  BVH, matches `leaf.type_tag` against `GpuLeafType` variants, and calls the
+  appropriate leaf intersection function. Writes `SurfaceInteraction` to the
+  HitBuffer. The `occluded()` variant shares the traversal loop but returns
+  `bool` on first hit with no normals, UVs, or material lookups.
 
-______________________________________________________________________
+#### C8. Direct Lighting (NEE + Shadow Rays + MIS)
+- **Prerequisites:** C4, C7
+- GPU `ShadingPass` compute shader: sample a light from the light buffer,
+  sample a point on its surface, evaluate BSDF toward the light point, trace a
+  shadow ray via `occluded()`, compute MIS weight (power heuristic, Veach),
+  accumulate. Follows pbrt-v4's `SampleLd` pattern (§2.14).
 
-### Stage 2 — Triangle mesh support + OBJ loader (CPU only)
+#### C9. Indirect Lighting (Full Path Tracing)
+- **Prerequisites:** C8
+- Full GPU path tracer with bounce sampling, throughput accumulation, and
+  BSDF-importance-guided path construction. Russian roulette (survival ∝
+  `max(throughput)`, starting at bounce 5, floor at 0.05). Per-type bounce
+  limits: `max_diffuse_depth = 5`, `max_glossy_depth = 8`,
+  `max_specular_depth = 12`.
+- **Shared RNG:** Implemented in `starlight-types` with `#[cfg]` guards for
+  CPU vs GPU compilation.
 
-Add `TriangleMesh` leaf type with indexed vertex buffers and per-triangle index
-triples. Implement Möller–Trumbore ray-triangle intersection on CPU. Add a
-minimal OBJ parser: positions (`v`), normals (`vn`), UVs (`vt`), faces (`f`),
-material groups (`usemtl`). Verify by loading an OBJ file and rendering on the
-CPU path tracer.
+#### C10. Render Graph
+- **Prerequisites:** C1
+- Frostbite-style frame graph (GDC 2017, Falcor §1.11). `RenderNode` trait
+  with `reads()`/`writes()` resource declarations. Topological sort (Kahn's
+  algorithm). Automatic barrier insertion between passes with conflicting
+  resource access. Single `GRAPHICS | COMPUTE` queue initially.
+- **Pass types:** `SimulationPass`, `BvhCullPass`, `MeshRasterPass`,
+  `TraversalPass`, `ShadingPass`, `PostProcessPass`.
 
-The mesh data is serialized into the flat leaf data buffer as a
-`GpuTriangleMesh` struct. This is the third concrete leaf type (AnalyticSphere,
-AnalyticAabb, TriangleMesh).
+#### C11. Raster Path for Primary Visibility
+- **Prerequisites:** C2, C3, C10
+- `BvhCullPass` (compute, frustum cull BVH nodes → draw lists) +
+  `MeshRasterPass` (dynamic rendering, `VK_KHR_dynamic_rendering`, outputs
+  GBuffer). Primary visibility comes from the GBuffer; `TraversalPass` provides
+  secondary effects (reflections, AO, refractions) and primary fallback for
+  pixels without raster coverage. `ShadingPass` composites both under unified
+  PBR (§2.9).
 
-______________________________________________________________________
+#### C12. Light Buffer
+- **Prerequisites:** C3, C4
+- Lights discovered automatically at scene load by walking the `LeafNode` list
+  and collecting emissive leaves. `LightNode` with `leaf_index`, `area`,
+  `radiance [f32; 3]`, `luminance`. Uniform sampling for <50 lights.
+  Power-weighted CDF selection for 50+ lights. DLSCache (MoonRay) deferred
+  until many-light scenes exist (§2.16).
 
-### Stage 3 — rust-gpu shader crate baseline (first GPU leap)
+#### C13. glTF 2.0 Loader
+- **Prerequisites:** C3, C4, C5, C6
+- Loads glTF 2.0 scenes: JSON scene graph, binary buffer accessors, image
+  decoding. Maps PBR metallic-roughness to Starlight materials. Supports
+  `KHR_lights_punctual`. Extensions: clearcoat → `Coated`, transmission →
+  `Dielectric`, IOR → configurable IOR.
+- Pipeline: `GltfLoader` → `Scene { LeafNode[], Material[], Texture[],
+  Light[], Camera }` → `Scene::flatten()` → GPU buffers (§2.19).
 
-Add `starlight-shaders` to the workspace. Configure the rust-gpu toolchain.
-Write a trivial compute shader (one thread writes a gradient to a storage image)
-using `spirv-std` builtins. Load the compiled SPIR-V in a minimal `ash` Vulkan
-context and display the result. This validates the rust-gpu build pipeline
-before any shader logic is added.
+#### C14. OBJ Loader
+- **Prerequisites:** C3, C4
+- Minimal OBJ + MTL parser for quick testing and legacy scenes. Vertex
+  positions/normals/UVs, face triangulation, material groups.
 
-**Development discipline**: test each rust-gpu feature incrementally. Avoid
-heavy closures, iterators, or dynamic dispatch inside shaders early on.
-rust-gpu's subset of Rust has sharp edges; find them on trivial shaders, not on
-the traversal loop.
+#### C15. Post-Processing
+- **Prerequisites:** C10
+- `PostProcessPass` in the render graph: tonemapping (ACES/Reinhard), gamma
+  correction. Optional: TAA, bloom (for interactive preview).
 
-______________________________________________________________________
+#### C16. Camera System
+- **Prerequisites:** C1
+- Perspective camera with configurable FOV, aspect ratio, defocus disk (lens),
+  focus distance. Camera params uploaded as UBO per frame.
 
-### Stage 4 — Triangle mesh intersection on GPU
+#### C17. External Integrations
+- **Prerequisites:** C7, C8, C9, C10, C13 (the core renderer complete)
+- The core renderer is a portable library, not a monolithic application.
+  Integration-specific adapters translate each host application's scene
+  representation into `Scene` structs and invoke the renderer:
+  - **Bevy** — `StarlightPlugin` that plugs into Bevy's render graph. Passes
+    Bevy's mesh/material data via shared GPU buffers. Uses Bevy's ECS for
+    scene management; Starlight owns traversal and shading.
+  - **Blender** — `bpy.types.RenderEngine` subclass. Accepts Blender's mesh,
+    material, and light data through Python bindings. Produces
+    `bpy.types.Image` for Blender's compositor.
+  - **Maya** — Renderer plugin using `MHWRender` for viewport integration and
+    Maya's camera/image pipeline for production output.
+  - **Houdini** — Houdini digital asset (HDATM) or render bot accepting
+    geometry and materials from COP/VOP networks.
+  - **Shared boundary:** A C ABI or IPC boundary keeps the engine portable.
+    Adapters translate the host representation; the engine knows only `Scene`.
 
-Port Möller–Trumbore to the traversal shader. Upload the flat BVH, leaf data,
-and material buffers using `starlight-engine`'s `ResourcePool`. Output must
-match the CPU reference render for analytic spheres and triangle meshes.
+---
 
-This is the first `TraversalPass` implementation. All GPU types come from
-`starlight-types`. The `match leaf.type_tag` statement is live for the first
-time.
+### Extended Features (Advanced & Research)
 
-______________________________________________________________________
+Built on top of the core renderer. These represent research exploration,
+advanced quality-of-life, or specialized-domain capabilities.
 
-### Stage 5 — Direct lighting + shadow rays on GPU
+#### E1. SDF Volume Leaf Type
+- **Prerequisites:** C3
+- `GpuLeafType::SdfVolume`. Ray-marches a signed distance field to find the
+  surface intersection. Hardcoded sphere SDF initially; arbitrary SDF
+  combinations via CSG. The fourth leaf type.
 
-Add the `ShadingPass` as a GPU compute shader. Implement the direct lighting
-algorithm from §2.14: read HitBuffer, sample light, eval BSDF, trace shadow ray
-via `occluded()`, MIS weight, accumulate.
+#### E2. Portal Leaf Type
+- **Prerequisites:** C2, C3
+- `GpuLeafType::Portal`. Transforms the ray and recursively traverses a
+  sub-BVH. Bounded stack (32 entries, max portal depth 16). Cycle detection
+  via per-sub-BVH frame counter (§2.12).
 
-Extend the CPU path tracer to use explicit shadow rays with the same algorithm.
-Compare output pixel-by-pixel with the GPU. This is the first validation of the
-shading pipeline.
+#### E3. Constant Medium (Volumetric)
+- **Prerequisites:** C4, C7
+- `GpuLeafType::ConstantMedium`. Participating media with homogeneous density.
+  Returns volumetric scattering events alongside surface hits. Triggers the
+  `Interaction` / `SurfaceInteraction` / `VolumeInteraction` split (§4).
 
-**`occluded()` implementation note**: this must not be a modified
-`traverse_bvh()` that returns a `SurfaceInteraction`. It is a separate shader
-function sharing the traversal loop that returns `bool` on first hit. Verify at
-the SPIR-V level (inspect the compiled output) that the compiler is not
-generating dead normals/UV code in the `occluded()` path.
+#### E4. Power Foam Leaf Type
+- **Prerequisites:** C3, C7, C11
+- `PowerFoamCell` — bounded power diagram with Čech complex adjacency, dipole
+  face, detail-site displacement, spherical Voronoi directional radiance.
+  Dual-path: rasterizes dipole faces into GBuffer and participates in ray
+  traversal. The only leaf type active in both paths. Supports differentiable
+  reconstruction from images (§2.10).
 
-______________________________________________________________________
+#### E5. Fractal Leaf Type
+- **Prerequisites:** C3, C7
+- `GpuLeafType::Fractal`. Distance-estimator rendering of escape-time fractals
+  (Mandelbulb, Julia sets). SurfaceInteraction matches all other leaves.
 
-### Stage 6 — Indirect lighting, Russian roulette, bounce limits
+#### E6. Height Field Leaf Type
+- **Prerequisites:** C3, C7, E9
+- `GpuLeafType::HeightField`. Displaced surface driven by simulation state.
+  Reads simulation buffer(s) at intersection time.
 
-Complete the GPU path tracer with indirect lighting, Russian roulette (survival
-∝ `max(throughput)`, starting at bounce 5), and per-type bounce limits
-(`max_diffuse_depth`, `max_glossy_depth`, `max_specular_depth`). Use a shared
-RNG implementation in `starlight-types` with `#[cfg]` guards for CPU vs. GPU.
+#### E7. Differentiable Rendering Pipeline
+- **Prerequisites:** E4
+- Gradients through Power Foam rendering via differentiable site positions and
+  radii. Reconstruction from real images: loss from image comparison, gradient
+  back-propagation through foam rendering, Adam optimizer.
 
-This is the Starlight equivalent of pbrt-v4's `PathIntegrator`. The CPU path
-tracer in raytrace-rs is the reference implementation — identical algorithm,
-different execution target.
+#### E8. Hardware Ray Tracing Migration
+- **Prerequisites:** C7 (the GPU traversal it replaces)
+- Replace compute `TraversalPass` with `vkCmdTraceRaysKHR`. Leaf intersection
+  functions become callable shaders bound via the SBT. The `SurfaceInteraction`
+  ABI is unchanged. RT cores accelerate the geometry-agnostic routing; the
+  programmable domain-specific intersection stays in shader code (§1.13, Stage
+  13 in original sequence).
 
-> **Evolution trigger for Stage 6:** With the GPU path tracer complete, this is
-> also the point to add `SdfVolume` to the traversal shader (fourth leaf type).
-> At the fifth leaf type (e.g., `Fractal` or `HeightField`), create
-> `leaf/domain.rs` with the `SpatialDomain` trait as documented in §2.4.
-> Validate that both the enum dispatch and trait dispatch produce identical
-> output before proceeding to Stage 7.
+#### E9. Simulation Coupling
+- **Prerequisites:** C10
+- `SimulationPass` dispatching data-parallel GPU kernels for thermal diffusion,
+  fluid dynamics, fracture propagation. Simulation domains are external services
+  referenced by ID from leaf data. Render graph schedules simulation before
+  traversal with automatic barriers (§2.11).
 
-______________________________________________________________________
+#### E10. WorldHandle Capability System
+- **Prerequisites:** E2
+- Replaces `PortalFrame.world_id: u32` with `WorldHandle` capability (seL4
+  model, §1.7, §2.12). `WorldLoader` trait for lazy loading, network streaming,
+  procedural generation. GPU-side world table populated asynchronously by host.
 
-### Stage 7 — Render graph + raster path
+---
 
-Now that the full GPU path tracer works for every pixel, add raster as an
-optimization for primary visibility. Introduce `RenderGraph` with
-`FramePassNode`. Add `BvhCullPass` (compute, outputs draw lists) and
-`MeshRasterPass` (dynamic rendering, writes GBuffer). Add `ShadingPass` reading
-GBuffer + HitBuffer, applying the primary visibility arbitration rule.
+### Feature Dependency Graph
 
-Since the compute path tracer already produces correct output for every pixel,
-the GBuffer can be validated against ray-traced primary within tolerance. This
-reduces the risk of debugging two execution paths simultaneously.
+```
+C1  Shared Types        ───────────────────────────────────────────┐
+C2  Flat BVH            ────┐                                      │
+C3  LeafNode            ────┼─── C7 GPU Traversal ── C8 Direct    │
+C4  Material            ────┘                     │   Lighting    │
+C5  Texture             ────┐                     │       │       │
+C6  Transform           ────┘                     │       │       │
+                                                  C9 Indirect ────┤
+C10 Render Graph        ────────────────────────┐  Lighting       │
+                                                 │       │        │
+C11 Raster Path         ──── C2, C3, C10 ───────┘       │        │
+C12 Light Buffer        ──── C3, C4                     │        │
+C13 glTF Loader         ──── C3, C4, C5, C6           │        │
+C14 OBJ Loader          ──── C3, C4                    │        │
+C15 Post-Processing     ──── C10                       │        │
+C16 Camera              ──── C1                        │        │
+C17 Integrations        ──── Core Complete             │        │
+                                                       ▼        ▼
+                                              ┌──────────────────────┐
+                                              │   Core Renderer      │
+                                              │   (C1–C17)           │
+                                              └──────────────────────┘
+                                                        │
+                   ┌──────┬──────┬──────┬──────┬──────┬──┴──┬──────┐
+                   ▼      ▼      ▼      ▼      ▼      ▼     ▼
+                  E1    E2     E3     E4     E5     E6    E8
+                  SDF  Portal Medium Foam  Fractal HField HW RT
+                   │      │                       │
+                   │      ▼                       │
+                   │  E10 WorldHandle             │
+                   │                              ▼
+                   │                         E9 Simulation
+                   ▼
+                  E7 Differentiable
 
-**TraversalPass optimization (tracked here, not deferred):** Add a pre-pass that
-reads GBuffer depth and marks pixels as "raster-primary" or "ray-primary".
-Dispatch the `TraversalPass` only for ray-primary pixels and pixels needing
-secondary effects. This eliminates the full-screen unconditional dispatch noted
-in §2.9.
+```
 
-______________________________________________________________________
-
-### Stage 8 — Additional leaf types in shader + `Interaction` split
-
-Add `GpuLeafType::SdfVolume` (ray march a hardcoded sphere SDF). Add
-`GpuLeafType::Portal` with the bounded stack and cycle detection (§2.12).
-
-> **`Interaction` evolution trigger for Stage 8:** Add
-> `GpuLeafType::ConstantMedium`. At this point, the
-> `SurfaceInteraction`-is-surface-only limitation becomes concrete. Implement
-> the `Interaction` / `SurfaceInteraction` / `VolumeInteraction` split as
-> documented in §4. Bump the major version of `starlight-types`. Update both CPU
-> and GPU paths simultaneously. The CPU path tracer validates the migration —
-> identical output for surface leaves; `VolumeInteraction` code validated
-> against pbrt-v4's `ConstantMedium` output.
-
-At this point: one dispatch, multiple sovereign leaf types, portals working.
-This is the Starlight microkernel running.
-
-______________________________________________________________________
-
-### Stage 9 — Simulation coupling
-
-Add `SimulationPass` with `ThermalDomain` as the first domain type. Implement
-the thermal diffusion kernel in `starlight-shaders/src/simulation/thermal.rs`.
-Wire `HeightField` leaf to read the domain's output buffer. The render graph
-schedules `SimulationPass` before `TraversalPass` and inserts the barrier.
-Surface displaces from simulation in real time.
-
-> **Simulation tension review for Stage 9:** After implementing `ThermalDomain`
-> and `ConstantMedium`, evaluate whether simulation domains need to be spatially
-> queryable (Path B in §2.11). If participating media require temperature-driven
-> density queries during traversal, begin the `SpatialDomain` migration for
-> simulation domains. If thermal data is still only read by geometry leaves at
-> their surface, Path A remains correct.
-
-______________________________________________________________________
-
-### Stage 10 — Power Foam leaf
-
-Implement `RadiantFoamCell` first (unbounded Voronoi, ray tracing only).
-Validate the cell-walk traversal against the Power Foam paper's algorithm.
-Extend to `PowerFoamCell` with sphere bounds. Add `PowerFoamRasterPass`. The
-same leaf works in both execution paths from identical data. Implement brute-
-force adjacency first; add graph-walk only after profiling confirms it is the
-bottleneck.
-
-Add the differentiable training loop: loss from image comparisons, gradients
-through the foam rendering, Adam optimizer updating site positions, radii,
-directional radiance. Engine reconstructs Power Foam captures from real-world
-images.
-
-______________________________________________________________________
-
-### Stage 11 — glTF loader
-
-Implement `gltf.rs`: JSON scene graph parsing, binary buffer accessors, image
-decoding. Map glTF PBR metallic-roughness to Starlight materials (§2.19).
-Support `KHR_lights_punctual`.
-
-Implement `Scene::flatten()` — the unified conversion from CPU `Scene` to
-`GpuSceneBuffers`. Define the trait interfaces in `traits.rs`
-(`Intersectable`, `Shading`, `LightSampling`, `Texturing`) and implement them
-for CPU types. GPU shader functions follow the same interface by convention.
-
-Verify by loading the glTF spec sample models (Box, Duck, FlightHelmet).
-
-______________________________________________________________________
-
-### Stage 12 — `WorldHandle` capability (portal streaming)
-
-> **Trigger:** A scene requires worlds that are not pre-loaded at startup.
->
-> Introduce the `WorldLoader` trait and `WorldHandle` type as documented in
-> §2.12. Migrate `PortalFrame.world_id: u32` to `Portal.capability: WorldHandle`. Add a GPU-side world table populated asynchronously by the host.
-> The traversal shader marks un-loaded worlds as `LeafHit::miss()` for one frame
-> while loading is queued. Validate: pre-loaded worlds behave identically to
-> Stage 8 portals.
-
-______________________________________________________________________
-
-### Stage 13 — Hardware RT migration
-
-> **Trigger:** Hardware RT is available on the target device and profiling
-> confirms the compute `TraversalPass` is the bottleneck.
->
-> Replace the `TraversalPass` compute dispatch with `vkCmdTraceRaysKHR`. Leaf
-> intersection functions become callable shaders bound via the SBT.
-> `SpatialDomain::gpu_serialize()` populates the SBT entry for each domain. The
-> `SurfaceInteraction` ABI is unchanged — the output of the RT pipeline writes
-> the same `SurfaceInteraction` struct to the same HitBuffer. The `ShadingPass`
-> reads from the same buffer regardless of which traversal path produced it.
->
-> The Vulkan RT extension references (§1.13) and Embree (§1.9) are the primary
-> guides for this migration.
+The core renderer (C1–C17) is a complete, self-contained hybrid rendering engine
+supporting compute ray tracing and raster paths, analytic and mesh geometry, a
+full PBR material system, MIS-based direct lighting, path-traced indirect
+lighting, and glTF/OBJ scene loading. Every extended feature builds on one or
+more core features.
 
 ______________________________________________________________________
 
@@ -2200,7 +2252,7 @@ RenderGraph::execute():
 
   Pass 5: TraversalPass
     vkCmdDispatch(ceil(width/8), ceil(height/8), 1)
-    [Stage 7+ optimization: dispatch only for non-GBuffer pixels]
+    [GBuffer-driven cull: dispatch only for uncovered pixels (C11)]
     For each pixel:
       1. Generate primary ray from camera params
       2. traverse_bvh() → Option<SurfaceInteraction>
@@ -2370,7 +2422,7 @@ insertion. The pattern implemented in §2.7.
 **Vulkan Ray Tracing** — Khronos. `VK_KHR_acceleration_structure`,
 `VK_KHR_ray_tracing_pipeline`. TLAS/BLAS separation, SBT (the hardware dispatch
 table equivalent to `match leaf.type_tag`), callable shaders. The migration
-target for Stage 13.
+target for E8 (Hardware Ray Tracing).
 
 **DirectX Raytracing (DXR)** — Microsoft. Any-hit shaders, closest-hit shaders,
 miss shaders. The shader type hierarchy maps to Starlight's intersection
@@ -2410,18 +2462,18 @@ All evolution notes from throughout the spec collected into a single reference.
 Each row states the current implementation, the trigger for evolution, and the
 target. These are commits, not suggestions.
 
-| Abstraction | Stage Introduced | Current State | Trigger | Target |
-|---|---|---|---|---|
-| Spatial router | 0 | `FlatBvhNode[]` BVH | Hardware RT available; or profiling shows BVH is bottleneck | `SpatialRouter` trait; BVH is one impl |
-| Leaf dispatch | 1 | `LeafNode` enum + `leaf_nodes!` macro | 5th leaf type working, OR plugin/dynamic loading needed | `SpatialDomain` trait in `leaf/domain.rs`; `LeafNode` is one impl |
-| Interaction type | 1 | `SurfaceInteraction` (surface-only) | `ConstantMedium` or any volumetric leaf in Stage 8 | `Interaction` base + `SurfaceInteraction` + `VolumeInteraction` |
-| Portal targeting | 8 | `world_id: u32` in `PortalFrame` | Streaming, networked, or procedural worlds needed | `WorldHandle` capability + `WorldLoader` trait (Stage 12) |
-| Simulation in BVH | 9 | External buffers read by leaves | A simulation domain must be ray-queryable (e.g., fog density) | `SpatialDomain` impl for simulation domains; Path B in §2.11 |
-| Material dispatch | 1 (GPU) | `material_id` → global flat buffer | Leaf type needs per-instance material outside shared BSDF model | `SurfaceInteraction` inline material payload |
-| Light selection | 5 | Uniform random | >50 lights in scene | Power-weighted CDF; then `DLSCache` for many lights |
-| Queue model | 7 | Single `GRAPHICS\|COMPUTE` | Profiling shows compute/graphics overlap benefit | Multi-queue + timeline semaphores |
-| Traversal dispatch | 4 | GPU compute dispatch | Hardware RT available + Stage 13 schedule | `vkCmdTraceRaysKHR` + SBT |
-| TraversalPass coverage | 7 | Unconditional full-screen | Stage 7 render graph work | GBuffer-driven cull: dispatch only for uncovered pixels |
-| `SpatialDomain` trait | 6 (trigger) | Not yet present | 5th leaf type reached | Introduce trait; blanket impl for `LeafNode` |
-| Portal worlds | 8 | Fixed table at load time | Dynamic world loading | `WorldLoader` trait + lazy world loading |
-| Shadow ray path | 5 | Software `occluded()` in traversal shader | Hardware RT (Stage 13) | `vkCmdTraceRaysKHR` with AHS returning `false` immediately |
+| Abstraction | Current State | Trigger | Target |
+|---|---|---|---|
+| Spatial router | `FlatBvhNode[]` BVH | Hardware RT available; or profiling shows BVH is bottleneck | `SpatialRouter` trait; BVH is one impl |
+| Leaf dispatch | `LeafNode` enum + `leaf_nodes!` macro | 5th leaf type working, OR plugin/dynamic loading needed | `SpatialDomain` trait in `leaf/domain.rs`; `LeafNode` is one impl |
+| Interaction type | `SurfaceInteraction` (surface-only) | `ConstantMedium` or any volumetric leaf (E3) | `Interaction` base + `SurfaceInteraction` + `VolumeInteraction` |
+| Portal targeting | `world_id: u32` in `PortalFrame` | Streaming, networked, or procedural worlds needed | `WorldHandle` capability + `WorldLoader` trait |
+| Simulation in BVH | External buffers read by leaves | A simulation domain must be ray-queryable (e.g., fog density) | `SpatialDomain` impl for simulation domains; Path B in §2.11 |
+| Material dispatch | `material_id` → global flat buffer | Leaf type needs per-instance material outside shared BSDF model | `SurfaceInteraction` inline material payload |
+| Light selection | Uniform random | >50 lights in scene | Power-weighted CDF; then `DLSCache` for many lights |
+| Queue model | Single `GRAPHICS\|COMPUTE` | Profiling shows compute/graphics overlap benefit | Multi-queue + timeline semaphores |
+| Traversal dispatch | GPU compute dispatch | Hardware RT available + profiling confirms GPU traversal is bottleneck | `vkCmdTraceRaysKHR` + SBT |
+| TraversalPass coverage | Unconditional full-screen | Render graph + GBuffer path working (C10, C11) | GBuffer-driven cull: dispatch only for uncovered pixels |
+| `SpatialDomain` trait | Not yet present | 5th leaf type reached | Introduce trait; blanket impl for `LeafNode` |
+| Portal worlds | Fixed table at load time | Dynamic world loading | `WorldLoader` trait + lazy world loading |
+| Shadow ray path | Software `occluded()` in traversal shader | Hardware RT (profiling confirms compute traversal is bottleneck) | `vkCmdTraceRaysKHR` with AHS returning `false` immediately |

@@ -25,8 +25,8 @@ ______________________________________________________________________
   Concrete → Wrapper**. Renamed `ConvergenceCriterionKind` to `ConvergenceCriterionEnum`.
   Added `ConvergenceCriterionKind` descriptor enum. Added `From` impls for ergonomic
   construction.
-- **v8 (2026-06-29)** — Updated §5.6 to reference `DenoiserFeatures` SoA pattern
-  (denoiser.md §Phase 2). Variance stored as `Vec<[f64; 3]>` on `DenoiserFeatures`,
+- **v8 (2026-06-29)** — Updated §5.6 to reference `AOVStorage` (renamed from
+  `DenoiserFeatures`). Variance stored as `Vec<[f64; 3]>` on `AOVStorage`,
   populated from `VarianceEstimator::variance()` during `add_sample()`.
 
 ______________________________________________________________________
@@ -623,7 +623,7 @@ The `VarianceEstimator` extraction (§2a) serves both consumers. Without it,
 we'd need two separate variance access paths. With it, one extraction serves
 both.
 
-**DenoiserFeatures integration:** The denoiser's `DenoiserFeatures` struct
+**AOVStorage integration:** The denoiser's `AOVStorage` struct
 (denoiser.md §Phase 2) stores per-pixel variance as `Vec<[f64; 3]>` (SoA).
 This is populated from `VarianceEstimator::variance()` during `add_sample()`.
 The SoA layout matches how `VarianceEstimator` is stored: cache-friendly

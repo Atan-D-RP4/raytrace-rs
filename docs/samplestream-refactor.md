@@ -861,3 +861,39 @@ This refactor is compatible with the hybrid architecture in `docs/renderer_arch.
 - Camera/Renderer/Integrator extraction from monolithic camera.rs ✓
 - Constant Mediums QMC integration ✓
 - renderer_arch.md audit — consistent ✓
+
+## Optionally do after the refactor is complete
+
+After the SampleStream refactor removes the S generic from PDF, the cleanest
+consolidation would be to make PdfKind itself implement generate(u, v) -> Vec3
+and value(dir) -> f64. Then you could:
+1. Delete CosinePDF, GgxSamplePDF, UniformSpherePDF, UniformHemispherePDF — gone
+2. Delete PdfEnum — gone, use PdfKind directly
+3. Have material pdf() delegate to PdfKind::value() where applicable
+The PdfKind enum already carries all the necessary data (normals, wo, alpha).
+And after the refactor, generate(u, v) is a pure function of those parameters —
+no S generic, no cursor. PdfKind is Copy, so the MIS hot path gets it by value
+with zero indirection.
+```rust
+// After refactor + consolidation:
+impl PdfKind {
+    fn generate(&self, u: f64, v: f64) -> Vec3 {
+        match self {
+            PdfKind::Cosine { normal } => {
+                let uvw = Onb::build_from_normal(*normal);
+                uvw.local_to_world(cosine_hemisphere_direction(u, v))
+            }
+            PdfKind::Ggx { wo, normal, alpha } => {
+                let uvw = Onb::build_from_normal(*normal);
+                // GGX half-vector sampling + reflect...
+            }
+            PdfKind::UniformSphere => { /* no normal needed */ }
+            PdfKind::UniformHemisphere { normal } => { /* ... */ }
+            PdfKind::Delta => unreachable!(),
+        }
+    }
+    fn value(&self, direction: Vec3) -> f64 { /* ... */ }
+}
+```
+The integrator's MIS step would then hold [PdfKind; MAX_STRATEGIES] instead of
+building PdfEnum objects. One heap-allocation (Vec) gone, one type erased.

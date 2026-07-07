@@ -196,15 +196,268 @@ The three most critical issues from the initial review have been resolved:
 
 ### The Broader Question: "Do we need more error handling in a renderer project?"
 
-For a learning/educational path tracer, the current approach is defensible — fast iteration matters more than robustness. Notably, **3 of the 5 original high-severity concerns have already been fixed by the project maintainers**.
+For a learning/educational path tracer, the current approach is defensible — fast iteration matters more than robustness. Notably, **3 of the 5 original high-severity concerns have already been fixed by the project maintainers**. The remaining gap is concentrated in `scene.rs` scene constructors panicking on missing image assets (lines 290, 658, 811).
 
-The remaining gap is concentrated in `scene.rs` scene constructors panicking on missing image assets. These are the highest-value fixes:
+Below is a concrete error handling plan informed by the 11-principle discussion in `docs/renderer-error-handling-discussion.md`.
 
-1. `scene.rs` — replace panics with fallback magenta textures (consistent with pbrt-v4 behavior)
-2. `main.rs:154` — replace `buffer.present().unwrap()` with graceful error handling
-3. `main.rs:183` — replace `surface.resize().expect()` with graceful error handling
+---
 
-The `unreachable!()` in `pdf.rs` should stay — that's a correct invariant. The `vec3.rs` and `aabb.rs` panics are correct index/axis guards.
+## Error Handling Plan: Applying the 11 Principles
+
+### The Quick Fixes (no new crate dependencies)
+
+These should be done immediately regardless of the broader strategy:
+
+1. **`scene.rs:291,660`** — Replace `panic!` on missing texture with a magenta fallback `ImageTexture`. No `Result` needed — consistent with pbrt-v4 behavior.
+2. **`main.rs:154`** — Replace `buffer.present().unwrap()` with graceful frame skip.
+3. **`main.rs:183`** — Replace `surface.resize().expect()` with `if let Err(e) = ...`.
+
+---
+
+### Phase 1: Classify existing panic points
+
+| Principle | Current code | Verdict | Action |
+|-----------|-------------|---------|--------|
+| #1 — programmer bugs | `vec3.rs:233,245` — out-of-bounds index | Keep `panic!` | Correct |
+| #1 — programmer bugs | `aabb.rs:71` — invalid axis | Keep `panic!` | Correct |
+| #1 — programmer bugs | `pdf.rs:106` — Delta unreachable | Keep `unreachable!` | Correct |
+| #1 — recoverable error | `scene.rs:290` — missing `earthmap.png` | **Convert to `Result`** | See Phase 2 |
+| #1 — recoverable error | `scene.rs:660` — missing `earthmap.png` | **Convert to `Result`** | See Phase 2 |
+| #1 — recoverable error | `scene.rs:811` — missing `earthmap.png` (bare `.unwrap()`) | **Convert to `Result`** | See Phase 2 |
+| #1 — recoverable error | `main.rs:154` — `buffer.present()` failure | **Graceful error** | Wrap in `if let Err` |
+| #1 — recoverable error | `main.rs:183` — `surface.resize()` failure | **Graceful error** | Wrap in `if let Err` |
+
+**Principle #2** (rendering code should almost never return `Result`) is already respected — `sample()`, `scatter()`, `intersect()`, `eval_bsdf()` all return values, not `Result`. The panics that need conversion are all at **system boundaries**: scene construction and UI events.
+
+---
+
+### Phase 2: Introduce typed errors with `thiserror` at library boundaries
+
+Add `thiserror` to `[dependencies]` (not dev — library users need the error types).
+
+#### 2a. Error types needed
+
+```
+src/
+  error.rs                          # re-exports & common types
+  scene/
+    error.rs                        SceneError
+  texture/
+    error.rs                        TextureError
+```
+
+```rust
+// src/scene/error.rs
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum SceneError {
+    #[error("failed to load texture '{path}'")]
+    TextureLoad {
+        path: String,
+        source: TextureError,    // or image::ImageError
+    },
+
+    #[error("scene construction error: {0}")]
+    Construction(String),
+
+    // Future: mesh parse errors
+}
+```
+
+```rust
+// src/texture/error.rs
+#[derive(Error, Debug)]
+pub enum TextureError {
+    #[error("image file not found: {0}")]
+    NotFound(String),
+
+    #[error("unsupported image format")]
+    UnsupportedFormat,
+
+    #[error(transparent)]
+    ImageDecode(#[from] image::ImageError),
+}
+```
+
+#### 2b. Change scene constructors to return `Result`
+
+```rust
+// Before
+pub fn complex_scene() -> Self {       // panics on missing texture
+    ...
+    let emat = match ImageTexture::new("./earthmap.png") {
+        Ok(tex) => ...,
+        Err(e) => panic!("..."),
+    };
+    ...
+}
+
+// After
+pub fn complex_scene() -> Result<Self, SceneError> {
+    ...
+    let emat = ImageTexture::new("./earthmap.png")
+        .map_err(|e| SceneError::TextureLoad {
+            path: "./earthmap.png".to_string(),
+            source: TextureError::ImageDecode(e),
+        })?;
+    ...
+    Ok(scene)
+}
+```
+
+Only the two scene constructors that load textures change:
+- `complex_scene()` (line 201, uses `earthmap.png` — panic on 290)
+- `earth_sphere()` (line 655, uses `earthmap.png` — panic on 660, unwrap on 811)
+
+The 4 texture-free constructors (`cornell_box`, `cornell_box_const_meds`, `checkered_spheres`, `simple_world`) stay as `fn() -> Self`.
+
+#### 2c. Scene `new()` stays infallible
+
+```rust
+pub fn new() -> Self { ... }   // no change — never loads files
+```
+
+---
+
+### Phase 3: Use `anyhow` at application boundaries
+
+Add `anyhow` to `[dependencies]`. This follows **Principle #4** (anyhow only at application boundaries) and **Principle #5** (composition with thiserror).
+
+```rust
+// src/main.rs — the match that selects scenes
+fn build_scene(name: &str) -> anyhow::Result<Scene> {
+    let scene = match name {
+        "cornell_box" => Scene::cornell_box(),
+        "cornell_box_const_meds" => Scene::cornell_box_const_meds(),
+        "complex_scene" => Scene::complex_scene()
+            .context("building complex_scene")?,   // <-- new
+        "earth_sphere" => Scene::earth_sphere()
+            .context("building earth_sphere")?,     // <-- new
+        "checkered_spheres" => Scene::checkered_spheres(),
+        "simple_world" => Scene::simple_world(),
+        _ => anyhow::bail!("unknown scene: {name}"),
+    };
+    Ok(scene)
+}
+```
+
+**This gives us Principle #6** (context answers "what were we trying to do?"):
+
+```
+Error: building complex_scene
+
+Caused by:
+    failed to load texture 'earthmap.png'
+
+Caused by:
+    No such file or directory
+```
+
+The `main` function becomes:
+```rust
+fn main() -> anyhow::Result<()>
+```
+instead of the current `Result<(), winit::error::EventLoopError>`.
+
+---
+
+### Phase 4: Origin tracking with `#[track_caller]` (future/optional)
+
+Following **Principle #8**, apply the `Located<E>` wrapper to error constructors:
+
+```rust
+// src/error.rs
+use std::panic::Location;
+
+#[derive(Debug)]
+pub struct Located<E> {
+    pub error: E,
+    pub location: &'static Location<'static>,
+}
+
+impl<E> Located<E> {
+    #[track_caller]
+    pub fn new(error: E) -> Self {
+        Self { error, location: Location::caller() }
+    }
+}
+
+#[macro_export]
+macro_rules! err {
+    ($e:expr) => { Located::new($e) };
+}
+```
+
+Usage:
+```rust
+// Instead of:
+Err(SceneError::TextureLoad { ... })
+
+// Write:
+Err(err!(SceneError::TextureLoad { ... }))
+```
+
+The error now carries **Principle #7** — separate construction site (the `err!` line) from **Principle #6** propagation context (the `.context()` call chain).
+
+When `?` propagates it, both pieces survive:
+```
+src/scene.rs:291 — failed to load texture 'earthmap.png'
+
+  (constructed at scene.rs:291)
+
+  Caused by:
+      building complex_scene  (main.rs:348)
+```
+
+**Verdict on when to implement this:** Not needed now. Add it when:
+- Asset loading grows complex (OBJ/glTF parsers, multi-file scenes)
+- Users start reporting errors that need debugging across subsystem boundaries
+- The project starts accepting external contributions
+
+---
+
+### Phase 5: Defensive panics in core rendering
+
+Following **Principle #1**, these stay as panics/asserts:
+
+| Location | Form | Why |
+|----------|------|-----|
+| `vec3.rs:233,245` — out-of-bounds index | `panic!` | Core invariant |
+| `aabb.rs:71` — invalid axis | `panic!` | Core invariant |
+| `pdf.rs:106` — Delta unreachable | `unreachable!` | Algebraic invariant |
+| Future: BSDF normalization | `debug_assert!` | Numerical invariant, debug-only |
+| Future: BVH validity | `debug_assert!` | Data structure invariant, debug-only |
+| Future: PDF sums near 1.0 | `debug_assert!` | Numerical correctness, debug-only |
+
+---
+
+### Summary: The 4 Information Kinds Mapped to Our Codebase
+
+| Info Kind | Our Mechanism | Example |
+|-----------|---------------|---------|
+| **1. Kind (typed)** — *What* failed? | `thiserror` enum variants | `SceneError::TextureLoad`, `TextureError::NotFound` |
+| **2. Source location** — *Where* was it constructed? | `Located<E>` + `#[track_caller]` (Phase 4) | `scene.rs:291` |
+| **3. Cause chain** — *Why* did it fail? | `#[from]` / `#[source]` on thiserror variants | `ImageError → TextureError → SceneError` |
+| **4. Propagation context** — *What were you trying to do?* | `anyhow::Context` | `"building complex_scene"` |
+
+### Implementation Order
+
+| Phase | What | Effort | Dependencies |
+|-------|------|--------|-------------|
+| **Quick fixes** | Fix 3 unwraps/panics, magenta fallback | 30 min | None |
+| **Phase 1** | Add `thiserror` + `anyhow` to Cargo.toml | 5 min | Cargo |
+| **Phase 2** | Define `SceneError`, `TextureError`, convert 2 scene constructors | 1–2 hr | Phase 1 |
+| **Phase 3** | Wire `anyhow` in `main.rs`, add scene-build context | 30 min | Phase 2 |
+| **Phase 4** | `#[track_caller]` + `Located<E>` pattern | Optional | Phase 3 |
+| **Phase 5** | Add `debug_assert!` guards to core rendering | Ongoing | None |
+
+### What Goes Unchanged
+
+- `sample()`, `scatter()`, `intersect()`, `eval_bsdf()` — stay pure, no `Result` (**Principle #2**)
+- `vec3.rs` / `aabb.rs` / `pdf.rs` panics — correct programmer bug guards (**Principle #1**)
+- `main.rs` window init `.expect()` — acceptable, init failure is fatal (**Principle #1** — not a recoverable error)
+- `main.rs` `.create_window().unwrap()` — acceptable for the same reason
 
 ______________________________________________________________________
 
@@ -214,7 +467,23 @@ ______________________________________________________________________
 |------|-----------------|-----------------|-------------------|
 | **Profiling** | Needs more granular scopes | Still valid — no code changes detected | Add per-phase scopes: `ray_gen`, `bvh_traverse`, `material_sample`, `mis_pdf` |
 | **Tests** | Narrow — 29 tests, 0 integration | **Corrected: 36 tests**, still 0 integration, 0 benches | Add 1 golden-image integration test + 3 Criterion benchmarks |
-| **Error handling** | 3+ critical weaknesses | **Improved: 3/5 critical issues already fixed.** Remaining: scene.rs missing texture panics + 2 medium UI unwraps | Add texture fallback in scene.rs scene constructors |
+| **Error handling** | 3+ critical weaknesses | **Improved: 3/5 critical issues already fixed** + enriched plan from rendering error handling discussion | See 5-phase plan above: thiserror at boundaries, anyhow at main, debug_assert in core |
+
+### Key Changes from Rendering Error Handling Discussion
+
+| Principle | How It Changes Our Plan |
+|-----------|------------------------|
+| **#1** — Not everything is an error | Classified all 12 panic points into "keep as panic" (7) vs "convert to Result" (5) |
+| **#2** — Rendering code should almost never return Result | Confirmed our core functions (`sample`, `scatter`, `intersect`, `eval_bsdf`) already satisfy this |
+| **#3** — Typed errors with `thiserror` | New: `SceneError`, `TextureError` enums in `scene/error.rs` and `texture/error.rs` |
+| **#4** — `anyhow` at application boundaries | New: `main.rs` returns `anyhow::Result<()>`, scene match uses `.context()` |
+| **#5** — Composition | `SceneError` sources `TextureError`, which `#[from]`s `image::ImageError` |
+| **#6** — Context answers "what were we trying to do?" | `"building complex_scene"` breadcrumb propagates with error |
+| **#7** — Context ≠ construction site | `.context()` in `main.rs` is *propagation*; `err!()` in scene.rs is *construction* |
+| **#8** — `#[track_caller]` | `Located<E>` wrapper planned for Phase 4 |
+| **#9** — Wrapping errors in location | `err!()` macro expands to `Located::new(...)` |
+| **#10** — `?` still works | All changes preserve `?` compatibility |
+| **#11** — Origin and propagation separate | 4-info-kind mental model maps directly to design |
 
 ### Key Corrections vs Original Review
 

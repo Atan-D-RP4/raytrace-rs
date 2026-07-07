@@ -33,6 +33,13 @@ ______________________________________________________________________
 - **v7 (2026-06-29)** — Updated §10 cross-reference to reflect `DenoiserFeatures` as
   struct-of-arrays (SoA) following `VarianceEstimator` pattern. Documented SoA vs AoS
   rationale for cache-friendly denoiser passes.
+- **v8 (2026-06-29)** — Updated §10 to document AOV (Arbitrary Output Variable)
+  relationship. `DenoiserFeatures` is a minimal AOV subset — the four buffers the
+  denoiser needs. Noted that a general `AOVBuffer` system can be added later for
+  compositing.
+- **v9 (2026-06-29)** — Updated §10 to reflect rename from `DenoiserFeatures` to
+  `AOVStorage`. AOVs are the fundamental abstraction: integrator writes, consumers
+  read. `GBuffer` vs `AOVStorage` naming distinction clarified.
 
 ______________________________________________________________________
 
@@ -929,14 +936,14 @@ This document intersects with two other design docs:
 | Film trait (§2) | §Phase 1 — `apply_denoiser()` | Denoiser adds method to Film trait |
 | CpuRenderer (§2) | §6 — `film.apply_denoiser()` call | CpuRenderer gains one line after sampling loop |
 | RgbFilm (§1, current state) | §Phase 1 — `RgbFilm<D: Denoiser>` | Denoiser makes RgbFilm generic |
-| GBuffer\<'a> (§2) | §Phase 2 — DenoiserFeatures | **Different things.** GBuffer stores `SurfaceInteraction` (visibility). DenoiserFeatures stores albedo/normal/depth (per-pixel). See §Naming below. |
+| GBuffer\<'a> (§2) | §Phase 2 — AOVStorage | **Different things.** GBuffer stores `SurfaceInteraction` (visibility). AOVStorage stores AOVs (albedo/normal/depth/variance). See §Naming below. |
 
-**Naming: GBuffer vs DenoiserFeatures**
+**Naming: GBuffer vs AOVStorage**
 
-The denoiser doc's Phase 2 proposes `DenoiserFeatures` as a **struct-of-arrays** (SoA)
-on `RgbFilm`: separate `Vec<Color3>` for albedo, `Vec<Vec3>` for normal, `Vec<f64>`
-for depth, `Vec<[f64; 3]>` for variance. This follows the `VarianceEstimator` pattern
-for cache-friendly sequential access during denoiser passes.
+The denoiser doc's Phase 2 proposes `AOVStorage` — a **struct-of-arrays** (SoA)
+for **Arbitrary Output Variables (AOVs)**. AOVs are the fundamental abstraction:
+the integrator writes per-pixel data channels, consumers (denoiser, compositor, debug)
+read what they need.
 
 This document's `GBuffer<'a>` stores `SurfaceInteraction<'a>` produced by the
 visibility generator. These are different abstractions at different layers:
@@ -944,9 +951,9 @@ visibility generator. These are different abstractions at different layers:
 - **GBuffer** (renderer_arch): visibility buffer, produced by `VisibilityGenerator`,
   consumed by `RasterRenderer`/`HybridRenderer`. Stores the full surface interaction
   including material reference.
-- **DenoiserFeatures** (denoiser.md): per-pixel shading features, produced by the
-  integrator at first hit, consumed by the A-Trous wavelet denoiser. Stores only
-  the three edge-stopping channels (albedo, normal, depth).
+- **AOVStorage** (denoiser.md): per-pixel AOV storage, produced by the integrator,
+  consumed by denoiser/compositor/debug. Currently stores albedo, normal, depth,
+  variance. Extensible for diffuse, specular, shadow, motion vectors.
 
 ### vs `docs/adaptive-sampling.md`
 
@@ -985,7 +992,7 @@ trait and `VisibilityGenerator` trait are unaffected.
 | 7 | BilateralDenoiser | denoiser.md Phase 1 | No |
 | 8 | RasterCamera + GBuffer + VisibilityGenerator\<W> | renderer_arch.md Steps 1-6 | No |
 | 9 | RasterRenderer + HybridRenderer | renderer_arch.md Steps 7-8 | No |
-| 10 | A-Trous wavelet + DenoiserFeatures | denoiser.md Phase 2 | No |
+| 10 | A-Trous wavelet + AOVStorage | denoiser.md Phase 2 | No |
 | 11 | OIDN integration (optional) | denoiser.md Phase 3 | No |
 
 Steps 1-4 (static dispatch foundation) can proceed in parallel with steps 5-7

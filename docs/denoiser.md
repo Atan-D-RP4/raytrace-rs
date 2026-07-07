@@ -19,38 +19,174 @@
   `VarianceEstimator` pattern. Added `set()`, `set_variance()`, `get()`, `reset()` methods.
   Added `Option<DenoiserFeatures>` on `RgbFilm` for zero-cost when not using A-Trous.
   Documented SoA vs AoS rationale for cache-friendly denoiser passes.
+- **v6 (2026-06-29)** — Documented AOV (Arbitrary Output Variable) relationship.
+  `DenoiserFeatures` is a minimal AOV subset — the four buffers the denoiser needs.
+  Noted that a general `AOVBuffer` system can be added later for compositing.
+- **v7 (2026-06-29)** — Redesigned as AOV-first architecture. Renamed `DenoiserFeatures`
+  to `AOVStorage`. AOVs are the fundamental abstraction: integrator writes, consumers read.
+  Added extensibility for future AOVs (diffuse, specular, shadow, motion vectors).
+  Updated `RgbFilm` to use `Option<AOVStorage>` instead of `Option<DenoiserFeatures>`.
+- **v8 (2026-06-29)** — Redesigned `Film` trait with GAT for AOV coupling and const
+  generic resolution. `type AOVs: AOVSet` couples AOV buffers to film type. `const W: u32,
+  const H: u32` enables compile-time bounds checking. Added `AOVSet` trait, `NoAOVs`,
+  `DenoiserAOVs` types. `RgbFilm<W, H, D, A>` is now fully generic.
 
 ## Architecture Decision
 
-**Follow the `SamplerFactory` pattern — denoiser is a generic on `Film`, not on `Renderer`.**
+**GAT-based Film trait with AOV coupling and const generic resolution.**
 
-The film already owns the raw data (pixels, variance, sample counts). It's the natural place for post-processing. The renderer calls `film.apply_denoiser()` after the sampling loop — it doesn't need to know the denoiser type. Zero-cost monomorphization: `RgbFilm<NoDenoiser>` compiles to the same code as today's `RgbFilm`.
-
-**Cross-document dependency:** This design depends on `VarianceEstimator` extraction (§2a of `docs/adaptive-sampling.md`). The denoiser needs per-channel variance (`Color3` — R, G, B independently), not the current max-over-RGB scalar from `pixel_variance(idx)`. `VarianceEstimator` provides this cleanly: `raw_data()` returns `&[VarianceEstimator]` and the denoiser calls `.variance()` on each channel. **Implement §2a before Phase 1 of this plan.**
+The `Film` trait uses a **Generic Associated Type (GAT)** to couple AOV buffers with the film. Different film types can have different AOV sets — the AOVs are part of the type, not bolted on. Resolution is **const generic** (`const W: u32, const H: u32`) enabling compile-time bounds checking and monomorphization.
 
 ```rust
-// Existing pattern (sampler.rs:247):
-pub trait SamplerFactory: Send + Sync {
-    type Sampler: Sampler;
-    fn for_pixel(&self, x: i32, y: i32) -> Self::Sampler;
+/// AOV set trait — defines what AOVs a film supports.
+/// Each film type can have a different AOV set.
+pub trait AOVSet: Send + Sync + 'static {
+    fn new(width: u32, height: u32) -> Self;
+    fn write_pixel(&mut self, idx: usize, albedo: Color3, normal: Vec3, depth: f64, variance: [f64; 3]);
+    fn read_denoiser_aovs(&self, idx: usize) -> (Color3, Vec3, f64, [f64; 3]);
+    fn reset(&mut self);
 }
 
-// New denoiser follows the same pattern:
-pub trait Denoiser: Send + Sync {
-    fn denoise(
-        &self,
-        pixels: &[Color3],              // accumulated radiance sum per pixel
-        sample_counts: &[u32],          // samples per pixel
-        variance: &[[f64; 3]],          // per-channel variance (R, G, B independently)
-        width: u32,
-        height: u32,
-    ) -> Vec<Color3>;                   // filtered radiance (per-pixel mean, not sum)
+/// No AOVs — for use with NoDenoiser or BilateralDenoiser.
+pub struct NoAOVs;
+
+impl AOVSet for NoAOVs {
+    fn new(_width: u32, _height: u32) -> Self { NoAOVs }
+    fn write_pixel(&mut self, _idx: usize, _a: Color3, _n: Vec3, _d: f64, _v: [f64; 3]) {}
+    fn read_denoiser_aovs(&self, _idx: usize) -> (Color3, Vec3, f64, [f64; 3]) {
+        unreachable!("NoAOVs has no AOVs")
+    }
+    fn reset(&mut self) {}
+}
+
+/// Denoiser AOVs — albedo, normal, depth, variance (for A-Trous / OIDN).
+pub struct DenoiserAOVs {
+    albedo: Vec<Color3>,
+    normal: Vec<Vec3>,
+    depth: Vec<f64>,
+    variance: Vec<[f64; 3]>,
+    width: u32,
+    height: u32,
+}
+
+impl AOVSet for DenoiserAOVs {
+    fn new(width: u32, height: u32) -> Self {
+        let n = (width * height) as usize;
+        Self {
+            albedo: vec![Color3::ZERO; n],
+            normal: vec![Vec3::ZERO; n],
+            depth: vec![f64::INFINITY; n],
+            variance: vec![[f64::INFINITY; 3]; n],
+            width,
+            height,
+        }
+    }
+    fn write_pixel(&mut self, idx: usize, albedo: Color3, normal: Vec3, depth: f64, variance: [f64; 3]) {
+        self.albedo[idx] = albedo;
+        self.normal[idx] = normal;
+        self.depth[idx] = depth;
+        self.variance[idx] = variance;
+    }
+    fn read_denoiser_aovs(&self, idx: usize) -> (Color3, Vec3, f64, [f64; 3]) {
+        (self.albedo[idx], self.normal[idx], self.depth[idx], self.variance[idx])
+    }
+    fn reset(&mut self) {
+        self.albedo.fill(Color3::ZERO);
+        self.normal.fill(Vec3::ZERO);
+        self.depth.fill(f64::INFINITY);
+        self.variance.fill([f64::INFINITY; 3]);
+    }
+}
+
+/// Film trait with GAT for AOV coupling.
+pub trait Film: Send + Sync {
+    /// The AOV storage type for this film.
+    /// Different films can have different AOV sets (None, Denoiser, Debug, etc.)
+    type AOVs: AOVSet;
+
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn add_sample(&mut self, x: u32, y: u32, color: Color3, weight: f64);
+    fn merge_tile(&mut self, tile: &FilmTile);
+    fn progressive(&self) -> impl Iterator<Item = u8> + '_;
+    fn reset(&mut self);
+    fn apply_denoiser(&mut self);
+
+    /// Access the AOV storage.
+    fn aovs(&self) -> &Self::AOVs;
+    fn aovs_mut(&mut self) -> &mut Self::AOVs;
 }
 ```
 
-Note: `variance` is `&[[f64; 3]]` (one `[f64; 3]` per pixel, containing `(var_r, var_g, var_b)`), not `&[Color3]`. This avoids coupling the denoiser to the `Color3` type and makes the per-channel contract explicit. The denoiser calls `VarianceEstimator::variance()` on each channel to populate this buffer.
+**Why GAT?**
 
-`RgbFilm<D: Denoiser = NoDenoiser>` becomes generic. The renderer calls `film.apply_denoiser()` after sampling — it doesn't need to know `D`. Backwards-compatible: `RgbFilm::new()` defaults to `NoDenoiser`.
+The GAT `type AOVs: AOVSet` couples the AOV set to the film type. This means:
+1. **Type-safe AOV access** — the compiler knows what AOVs a film has
+2. **Zero-cost abstraction** — no dynamic dispatch, no `Option<AOVStorage>`
+3. **Extensible** — new AOV sets are new types, no trait changes
+
+**Why const generics?**
+
+Resolution as const generic parameters (`const W: u32, const H: u32`) enables:
+1. **Compile-time bounds checking** — can't write to pixel (W, H)
+2. **Monomorphization** — specific resolutions get optimized code
+3. **Type-level resolution** — the compiler knows the viewport size
+
+```rust
+/// Concrete film implementation with const generic resolution.
+pub struct RgbFilm<const W: u32, const H: u32, D: Denoiser = NoDenoiser, A: AOVSet = NoAOVs> {
+    pixels: Vec<Color3>,
+    sample_counts: Vec<u32>,
+    m_2: Vec<Color3>,
+    exposure: f64,
+    tone_map: bool,
+    denoiser: D,
+    denoised: bool,
+    aovs: A,
+}
+
+impl<const W: u32, const H: u32, D: Denoiser, A: AOVSet> RgbFilm<W, H, D, A> {
+    pub fn new(exposure: f64, tone_map: bool, denoiser: D, aovs: A) -> Self {
+        let n = (W * H) as usize;
+        Self {
+            pixels: vec![Color3::ZERO; n],
+            sample_counts: vec![0; n],
+            m_2: vec![Color3::ZERO; n],
+            exposure,
+            tone_map,
+            denoiser,
+            denoised: false,
+            aovs,
+        }
+    }
+}
+
+impl<const W: u32, const H: u32, D: Denoiser, A: AOVSet> Film for RgbFilm<W, H, D, A> {
+    type AOVs = A;
+
+    fn width(&self) -> u32 { W }
+    fn height(&self) -> u32 { H }
+    // ...
+}
+```
+
+**Usage examples:**
+
+```rust
+// No denoiser, no AOVs (current behavior):
+let film: RgbFilm<1920, 1080> = RgbFilm::new(1.0, true, NoDenoiser, NoAOVs);
+
+// Bilateral denoiser, no AOVs:
+let film: RgbFilm<1920, 1080, BilateralDenoiser> = RgbFilm::new(1.0, true, bilateral, NoAOVs);
+
+// A-Trous denoiser with AOVs:
+let film: RgbFilm<1920, 1080, AtrousDenoiser, DenoiserAOVs> = RgbFilm::new(1.0, true, atrous, DenoiserAOVs::new(1920, 1080));
+
+// 4K resolution with denoiser:
+let film: RgbFilm<3840, 2160, BilateralDenoiser> = RgbFilm::new(1.0, true, bilateral, NoAOVs);
+```
+
+**Backwards compatibility:** `RgbFilm<1920, 1080>` defaults to `NoDenoiser, NoAOVs` — same as today's `RgbFilm`.
 
 ______________________________________________________________________
 
@@ -65,13 +201,13 @@ Your path tracer is a painter in a dark room. Each sample is a quick glance — 
 Monte Carlo path tracing estimates the rendering equation via:
 
 $$
-L_o(x, \omega_o) = \int_\Omega f_r(x, \omega_i, \omega_o) \, L_i(x, \omega_i) \, |\cos \theta| \, d\omega_i
+L_o(x, \omega_o) = \int_\Omega f_r(x, \omega_i, \omega_o) \, L_i(x, \omega_i) \, |cos{\theta}| \, d\omega_i
 $$
 
 The Monte Carlo estimator:
 
 $$
-\langle L_o \rangle = \frac{1}{N} \sum_{i=1}^{N} \frac{f_r \cdot L_i \cdot |\cos \theta|}{p(\omega_i)}
+\langle L_o \rangle = \frac{1}{N} \sum_{i=1}^{N} \frac{f_r \cdot L_i \cdot |cos theta|}{p(\omega_i)}
 $$
 
 is **unbiased** — its expectation is the true integral. But with finite samples, each pixel is a random variable with variance:
@@ -487,47 +623,105 @@ let film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_
 
 **Total**: ~170 new lines, ~50 lines changed. No breaking changes.
 
-### Phase 2: A-Trous Wavelet + DenoiserFeatures
+### Phase 2: A-Trous Wavelet + AOVStorage
 
 **Goal**: Production-quality denoiser with edge-stopping from albedo/normal/depth.
 
 Additional changes:
 
-- `DenoiserFeatures` struct (SoA) on `RgbFilm` — stores per-pixel albedo, normal, depth as separate contiguous arrays for cache-friendly access (see §DenoiserFeatures below)
-- Integrator outputs features at first hit via `set_features(pixel_idx, albedo, normal, depth)`
+- `AOVStorage` struct (SoA) on `RgbFilm` — stores per-pixel AOVs (albedo, normal, depth, variance, etc.) as separate contiguous arrays for cache-friendly access (see §AOVStorage below)
+- Integrator writes AOVs at first hit via `write_aov(pixel_idx, albedo, normal, depth)`
 - `src/denoiser/atrous.rs` (NEW — ~250 lines): A-Trous wavelet with 5 levels, separable 5x5 binomial kernel, 4-channel edge-stopping
 
-### DenoiserFeatures — Struct-of-Arrays for Edge-Stopping
+### AOVStorage — Arbitrary Output Variables
 
-**NOT the same as `GBuffer<'a>` from `docs/ARCH_HYBRID.md`** (which stores `SurfaceInteraction` for visibility). `DenoiserFeatures` stores per-pixel shading features consumed by the A-Trous wavelet denoiser.
+**NOT the same as `GBuffer<'a>` from `docs/ARCH_HYBRID.md`** (which stores `SurfaceInteraction` for visibility). `AOVStorage` stores per-pixel auxiliary data channels — the fundamental abstraction for denoising, compositing, and debug visualization.
 
-Follows the `VarianceEstimator` pattern: a struct that encapsulates per-pixel state, stored as `Vec<DenoiserFeatures>` (or inline SoA fields) on `RgbFilm`. The SoA layout ensures cache-friendly sequential access during the denoiser's horizontal/vertical passes.
+**AOVs (Arbitrary Output Variables)** are a standard concept in production renderers (PBRT v4, Arnold, RenderMan, LuxCore). They are per-pixel data channels that the integrator writes during rendering and consumers read during post-processing. The beauty buffer is just one AOV — the others are auxiliary data for denoising, compositing, and debugging.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         AOV Architecture                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Integrator                                                     │
+│    │                                                            │
+│    ├─ write_aov(beauty, radiance)        ← current add_sample() │
+│    ├─ write_aov(albedo, base_color)      ← first hit            │
+│    ├─ write_aov(normal, shading_normal)  ← first hit            │
+│    ├─ write_aov(depth, linear_depth)     ← first hit            │
+│    ├─ write_aov(variance, per_channel)   ← Welford estimate     │
+│    └─ write_aov(diffuse, diffuse_only)   ← future               │
+│                                                                 │
+│  Consumers                                                      │
+│    │                                                            │
+│    ├─ Denoiser: reads albedo, normal, depth, variance           │
+│    ├─ Compositor: reads diffuse, specular, shadow               │
+│    ├─ Debug: reads variance, sample_count                       │
+│    └─ Output: reads beauty, alpha                               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Current AOVs (denoiser):**
+
+| AOV | Type | Purpose | Consumer |
+|-----|------|---------|----------|
+| `beauty` | `Color3` | Final composited color | Film output |
+| `albedo` | `Color3` | Base color (no lighting) | Denoiser edge-stopping |
+| `normal` | `Vec3` | World-space shading normal | Denoiser edge-stopping |
+| `depth` | `f64` | Linear depth | Denoiser edge-stopping |
+| `variance` | `[f64; 3]` | Per-channel noise estimate | Denoiser variance-adaptive |
+
+**Future AOVs (compositing, debug):**
+
+| AOV | Type | Purpose | Consumer |
+|-----|------|---------|----------|
+| `diffuse` | `Color3` | Diffuse radiance only | Compositing |
+| `specular` | `Color3` | Specular radiance only | Compositing |
+| `shadow` | `f64` | Shadow mask | Compositing |
+| `motion_vectors` | `Vec2` | Per-pixel velocity | Temporal denoising |
+| `object_id` | `u32` | Per-object mask | Compositing |
+
+**Key design principle:** AOVs are **written by the integrator** and **read by consumers**. The `Film` trait owns the AOV storage. New AOVs are just new fields on `AOVStorage` — no trait changes needed.
 
 ```rust
-/// Per-pixel features for edge-stopping in A-Trous wavelet denoiser.
-/// Stored as struct-of-arrays on RgbFilm for cache-friendly access.
+/// Per-pixel AOV (Arbitrary Output Variable) storage.
+/// Stores all auxiliary data channels the integrator writes and consumers read.
 ///
-/// The integrator writes features at first hit. The denoiser reads them
-/// during edge-stopping function evaluation.
+/// Struct-of-arrays (SoA) layout for cache-friendly sequential access.
+/// Each AOV is a separate contiguous Vec — denoiser reads `albedo` linearly,
+/// compositor reads `diffuse` linearly, etc.
 ///
-/// Naming: "DenoiserFeatures" — NOT "GBuffer" (which is visibility).
+/// Naming: "AOVStorage" — NOT "GBuffer" (which is visibility).
 #[derive(Debug, Clone)]
-pub struct DenoiserFeatures {
-    /// First-hit albedo (base color, no lighting). Used for color edge-stopping.
+pub struct AOVStorage {
+    // ── Denoiser AOVs (Phase 2) ──
+    /// First-hit albedo (base color, no lighting). Color edge-stopping.
     pub albedo: Vec<Color3>,
-    /// First-hit world-space normal. Used for normal edge-stopping.
+    /// First-hit world-space shading normal. Normal edge-stopping.
     pub normal: Vec<Vec3>,
-    /// First-hit linear depth. Used for depth edge-stopping with gradient normalization.
+    /// First-hit linear depth. Depth edge-stopping with gradient normalization.
     pub depth: Vec<f64>,
-    /// Per-pixel variance from Welford (R, G, B channels). Used for variance-aware filtering.
-    /// Populated from VarianceEstimator extraction (adaptive-sampling.md §2a).
+    /// Per-channel variance from Welford (R, G, B). Variance-adaptive filtering.
     pub variance: Vec<[f64; 3]>,
+
+    // ── Future AOVs (compositing, debug) ──
+    // /// Diffuse radiance only.
+    // pub diffuse: Vec<Color3>,
+    // /// Specular radiance only.
+    // pub specular: Vec<Color3>,
+    // /// Shadow mask.
+    // pub shadow: Vec<f64>,
+    // /// Per-pixel motion vectors for temporal denoising.
+    // pub motion_vectors: Vec<Vec2>,
+
     /// Width × height for bounds checking.
     width: u32,
     height: u32,
 }
 
-impl DenoiserFeatures {
+impl AOVStorage {
     pub fn new(width: u32, height: u32) -> Self {
         let n = (width * height) as usize;
         Self {
@@ -540,9 +734,9 @@ impl DenoiserFeatures {
         }
     }
 
-    /// Write features at a pixel (called by integrator at first hit).
+    /// Write AOVs at a pixel (called by integrator at first hit).
     #[inline(always)]
-    pub fn set(&mut self, x: u32, y: u32, albedo: Color3, normal: Vec3, depth: f64) {
+    pub fn write(&mut self, x: u32, y: u32, albedo: Color3, normal: Vec3, depth: f64) {
         let idx = (y * self.width + x) as usize;
         self.albedo[idx] = albedo;
         self.normal[idx] = normal;
@@ -556,14 +750,14 @@ impl DenoiserFeatures {
         self.variance[idx] = variance;
     }
 
-    /// Read all features for a pixel (called by denoiser).
+    /// Read all denoiser AOVs for a pixel (called by denoiser).
     #[inline(always)]
-    pub fn get(&self, x: u32, y: u32) -> (Color3, Vec3, f64, [f64; 3]) {
+    pub fn read_denoiser_aovs(&self, x: u32, y: u32) -> (Color3, Vec3, f64, [f64; 3]) {
         let idx = (y * self.width + x) as usize;
         (self.albedo[idx], self.normal[idx], self.depth[idx], self.variance[idx])
     }
 
-    /// Reset all features (for re-rendering).
+    /// Reset all AOVs (for re-rendering).
     pub fn reset(&mut self) {
         self.albedo.fill(Color3::ZERO);
         self.normal.fill(Vec3::ZERO);
@@ -573,11 +767,17 @@ impl DenoiserFeatures {
 }
 ```
 
-**Why SoA (not AoS)?**
+**Why AOV-first?**
 
-The A-Trous wavelet filter processes each feature channel independently in its horizontal/vertical passes. With SoA, the filter reads `albedo[idx]` sequentially across pixels — a single contiguous stride. With AoS (e.g., `Vec<PixelFeatures>` where each `PixelFeatures` contains all features), the filter would stride across unrelated data, causing cache misses.
+1. **Fundamental concept** — AOVs are the standard abstraction in production renderers. Designing around them is architecturally correct.
 
-This matches how `VarianceEstimator` is stored: `Vec<[VarianceEstimator; 3]>` (per-channel) rather than a single `VarianceEstimator` per pixel. Both patterns optimize for the access pattern of the consumer.
+2. **Extensible** — Adding new AOVs (diffuse, specular, shadow, motion vectors) is just adding a new `Vec` field. No trait changes, no breaking changes.
+
+3. **Consumer-agnostic** — The integrator writes AOVs. Consumers (denoiser, compositor, debug) read what they need. The film owns the storage.
+
+4. **SoA by default** — Each AOV is a separate contiguous `Vec`. Cache-friendly for any consumer that reads one AOV linearly.
+
+5. **Zero-cost when unused** — `RgbFilm<NoDenoiser>` doesn't allocate `AOVStorage`. Even with AOVs, only allocated AOVs consume memory.
 
 **Integration with RgbFilm:**
 
@@ -592,26 +792,26 @@ pub struct RgbFilm<D: Denoiser = NoDenoiser> {
     tone_map: bool,
     denoiser: D,
     denoised: bool,
-    features: Option<DenoiserFeatures>,  // None when NoDenoiser (zero-cost)
+    aovs: Option<AOVStorage>,      // None when NoDenoiser (zero-cost)
 }
 
 impl<D: Denoiser> RgbFilm<D> {
-    /// Enable feature collection (called when A-Trous denoiser is configured).
-    pub fn enable_features(&mut self) {
-        self.features = Some(DenoiserFeatures::new(self.width, self.height));
+    /// Enable AOV collection (called when denoiser is configured).
+    pub fn enable_aovs(&mut self) {
+        self.aovs = Some(AOVStorage::new(self.width, self.height));
     }
 
-    /// Write features at first hit (called by integrator).
+    /// Write AOVs at first hit (called by integrator).
     #[inline(always)]
-    pub fn set_features(&mut self, x: u32, y: u32, albedo: Color3, normal: Vec3, depth: f64) {
-        if let Some(ref mut f) = self.features {
-            f.set(x, y, albedo, normal, depth);
+    pub fn write_aov(&mut self, x: u32, y: u32, albedo: Color3, normal: Vec3, depth: f64) {
+        if let Some(ref mut aovs) = self.aovs {
+            aovs.write(x, y, albedo, normal, depth);
         }
     }
 }
 ```
 
-**Note:** `features` is `Option<DenoiserFeatures>` — `None` when using `NoDenoiser` or `BilateralDenoiser` (Phase 1, doesn't need features). Only allocated when A-Trous (Phase 2) or OIDN (Phase 3) is configured. This preserves the zero-cost property: `RgbFilm<NoDenoiser>` has no feature overhead.
+**Note:** `aovs` is `Option<AOVStorage>` — `None` when using `NoDenoiser` or `BilateralDenoiser` (Phase 1, doesn't need AOVs). Only allocated when A-Trous (Phase 2) or OIDN (Phase 3) is configured. This preserves the zero-cost property: `RgbFilm<NoDenoiser>` has no AOV overhead.
 
 ### Phase 3: OIDN Integration (optional)
 
@@ -658,10 +858,10 @@ ______________________________________________________________________
 | `src/denoiser/bilateral.rs` | **NEW** — BilateralDenoiser | ~80 |
 | `src/denoiser/atrous.rs` | **NEW** — AtrousDenoiser (Phase 2) | ~250 |
 | `src/denoiser/oidn.rs` | **NEW** — OidnDenoiser (Phase 3) | ~100 |
-| `src/denoiser/features.rs` | **NEW** — DenoiserFeatures (SoA) | ~80 |
+| `src/denoiser/features.rs` | **NEW** — AOVStorage (SoA) | ~80 |
 | `src/lib.rs` | Add `pub mod denoiser;` | 1 |
 | `src/film/mod.rs` | Add `apply_denoiser()` to Film trait | ~5 |
-| `src/film/rgb.rs` | Make `RgbFilm<D>` generic, add `denoised: bool`, fix `overlay_radiance`, `raw_data`, add `features: Option<DenoiserFeatures>` | ~60 |
+| `src/film/rgb.rs` | Make `RgbFilm<D>` generic, add `denoised: bool`, fix `overlay_radiance`, `raw_data`, add `aovs: Option<AOVStorage>` | ~60 |
 | `src/renderer/cpu.rs` | Call `film.apply_denoiser()` after sampling loop | ~5 |
 | `src/main.rs` | Optional: wire up BilateralDenoiser | ~5 |
 
@@ -677,11 +877,11 @@ ______________________________________________________________________
 | `overlay_radiance()` behavior | §5.4 overlay + denoised flag | Aligned: preserve counts/m2, use `denoised: bool` |
 | Progressive preview | §5.3 progressive frames | Denoiser does NOT run on intermediate frames |
 | Double-denoising guard | §5.4 denoised flag | Aligned: `denoised: bool` prevents re-denoising |
-| `DenoiserFeatures` variance | §5.6 shared variance | VarianceEstimator → `DenoiserFeatures.variance` SoA |
+| `AOVStorage` variance | §5.6 shared variance | VarianceEstimator → `AOVStorage.variance` SoA |
 
 | Denoiser Doc Section | ARCH_HYBRID Doc Section | Relationship |
 |---|---|---|
 | §Phase 1 — `apply_denoiser()` on Film | §2 Film trait | ARCH_HYBRID acknowledges the extension |
 | §Phase 1 — `RgbFilm<D: Denoiser>` | §1 RgbFilm (current state) | ARCH_HYBRID shows pre-generic snapshot |
 | §6 — CpuRenderer denoiser call | §2 CpuRenderer | ARCH_HYBRID acknowledges the one-line addition |
-| §Phase 2 — DenoiserFeatures (SoA) | §2 GBuffer\<'a> | **Different things.** GBuffer = visibility (SurfaceInteraction). DenoiserFeatures = per-pixel shading features for edge-stopping. SoA layout matches VarianceEstimator pattern. |
+| §Phase 2 — AOVStorage (SoA) | §2 GBuffer\<'a> | **Different things.** GBuffer = visibility (SurfaceInteraction). AOVStorage = per-pixel AOVs for denoising/compositing. SoA layout matches VarianceEstimator pattern. |
