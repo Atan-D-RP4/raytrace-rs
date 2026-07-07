@@ -435,6 +435,7 @@ fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, 
         config.background,
         scene.env_map().cloned(),
     );
+    let _sampler_factory = StratifiedSamplerFactory::new(config.samples_per_pixel.isqrt() as u32);
     let sampler_factory = SobolSamplerFactory;
     let mut renderer =
         CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);
@@ -538,7 +539,8 @@ fn headless_render(scene: Scene, scene_name: &str) {
         config.background,
         scene.env_map().cloned(),
     );
-    let sampler_factory = StratifiedSamplerFactory::new(config.samples_per_pixel.isqrt() as u32);
+    let _sampler_factory = StratifiedSamplerFactory::new(config.samples_per_pixel.isqrt() as u32);
+    let sampler_factory = SobolSamplerFactory;
     let mut renderer =
         CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler_factory);
     let (width, height) = camera.image_resolution();

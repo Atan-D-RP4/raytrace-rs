@@ -225,6 +225,14 @@ pub trait Bsdf: Send + Sync {
         false
     }
 
+    /// Returns the GGX alpha for microfacet materials, or `None` for non-GGX
+    /// materials. Used by layered materials (Coated) to include the coating's
+    /// distribution in MIS strategies, preventing eval/PDF mismatches that cause
+    /// fireflies.
+    fn ggx_alpha(&self) -> Option<f64> {
+        None
+    }
+
     /// Clone into a boxed trait object. Required for `Material: Clone`.
     fn clone_box(&self) -> Box<dyn Bsdf>;
 
@@ -386,7 +394,7 @@ impl Material {
             }
             Material::Coated {
                 substrate,
-                coating: _,
+                coating,
                 coating_ior,
                 coating_tint,
                 thickness,
@@ -637,9 +645,27 @@ impl Material {
                             // Fallback for non-GGX substrates (Lambertian, etc.):
                             // Also for whenever a valid GGX half-vector produces a wrong hemisphere reflection
                             // (wi_int.dot(n) > 0.0) due to numerical issues or extreme angles.
+                            //
+                            // When the coating is a non-delta GGX material (Metal/Glossy with
+                            // roughness > 0), include its GGX distribution as an additional MIS
+                            // strategy. Without this, the Cosine-only fallback lets the coating's
+                            // narrow GGX eval peak leak through with a mismatched PDF, producing
+                            // fireflies.
+                            if let Some(alpha) = coating.ggx_alpha() {
+                                return Some(BsdfScatter::NonDelta {
+                                    pdf_kinds: [
+                                        PdfKind::Cosine { normal: n },
+                                        PdfKind::Ggx {
+                                            wo: wo_global,
+                                            normal: n,
+                                            alpha,
+                                        },
+                                    ],
+                                    count: 2,
+                                });
+                            }
+
                             return Some(BsdfScatter::NonDelta {
-                                // Cosine pdf_kind is frame-safe — the eval's cos(θ)
-                                // check works correctly regardless of refraction.
                                 pdf_kinds: [PdfKind::Cosine { normal: n }, PdfKind::Delta],
                                 count: 1,
                             });
@@ -777,9 +803,19 @@ impl Material {
                 // Clamped to prevent divide-by-zero from approximation errors.
                 let r_prod = (r_sub * r_top_internal).clamp(0.0, 0.95);
                 let series = r_prod / (1.0 - r_prod).max(1e-10);
+                // Refraction Jacobian: dω_int/dω_ext = cos_ext / (η² · cos_int).
+                // substrate.eval() returns the internal-frame integrand (f_r · cos_int).
+                // The integrator expects the external-frame integrand (f_r_ext · cos_ext).
+                // The Jacobian converts between solid-angle measures:
+                //   ∫ f_int · L · cos_int dω_int = ∫ f_int · L · cos_int · (dω_int/dω_ext) dω_ext
+                let cos_wi_ext = cos_wi.max(1e-10);
+                let jacobian_sub = cos_wi_ext / (*coating_ior * *coating_ior * cos_wi_int);
+
                 // Total contribution: direct coating reflection + transmitted substrate reflection
-                // + inter-reflection correction.
-                direct_coat + t_o * substrate_direct * t_i * (1.0 + series)
+                // (with Jacobian) + inter-reflection correction.
+                let raw =
+                    direct_coat + t_o * substrate_direct * jacobian_sub * t_i * (1.0 + series);
+                Color3::new(raw.x.min(2.0), raw.y.min(2.0), raw.z.min(2.0))
             }
         }
     }
@@ -841,6 +877,7 @@ impl Material {
                 // of -wi_internal from sn (the outward-pointing internal direction).
                 let cos_ext = cos_wi.max(1e-10);
                 let cos_int = (-wi_internal).dot(&sn).max(0.0).max(1e-10);
+                // dω_int/dω_ext = cos_ext / (η² · cos_int)
                 let jacobian = cos_ext / (*coating_ior * *coating_ior * cos_int);
 
                 fresnel_t * substrate.pdf(wo_internal, -wi_internal, si) * jacobian
@@ -1008,8 +1045,8 @@ impl Material {
     pub fn is_delta(&self) -> bool {
         match self {
             Material::Dielectric(_) => true,
-            Material::Metal(inner) => inner.roughness < 1e-4,
-            Material::Glossy(inner) => inner.roughness < 1e-4,
+            Material::Metal(inner) => inner.roughness < 0.01,
+            Material::Glossy(inner) => inner.roughness < 0.01,
             Material::Mix { a, b, .. } => a.is_delta() && b.is_delta(),
             Material::Coated {
                 substrate, coating, ..

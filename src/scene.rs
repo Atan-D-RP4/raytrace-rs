@@ -33,9 +33,10 @@ pub struct Scene {
     /// Used by `EmitterPDF` for MIS. Delta materials (glass, metal) should
     /// NOT be included — they have no meaningful PDF for importance sampling.
     important_objects: Vec<Arc<dyn Sampleable>>,
-    /// Optional environment map for background lighting. If present, it will be used
-    /// to provide lighting information for rays that do not hit any objects in the scene.
-    env_map: Option<Arc<EnvironmentMap>>, // Environment map for background lighting
+    /// Optional environment map for background lighting. If present, used for
+    /// rays that miss all scene geometry (includes MIS-weighted contribution
+    /// for indirect bounces).
+    env_map: Option<Arc<EnvironmentMap>>,
 }
 
 impl Scene {
@@ -412,19 +413,19 @@ impl Scene {
                 15.,
                 white.clone(),
             ),
-            // (
-            //     Vec3::from(165., 165., 165.),
-            //     Vec3::from(130., 0., 65.),
-            //     -18.,
-            //     white.clone(),
-            // ),
-            // // A *smaller* box in front of the taller box and beside the smaller box at the front
-            // (
-            //     Vec3::from(100., 100., 100.),
-            //     Vec3::from(340., 0., 100.),
-            //     17.,
-            //     Material::dielectric(1.5),
-            // ),
+            (
+                Vec3::new(165., 165., 165.),
+                Vec3::new(130., 0., 65.),
+                -18.,
+                white.clone(),
+            ),
+            // A *smaller* box in front of the taller box and beside the smaller box at the front
+            (
+                Vec3::new(100., 100., 100.),
+                Vec3::new(340., 0., 100.),
+                17.,
+                Material::dielectric(1.5),
+            ),
         ];
 
         let boxes = box_params
@@ -444,18 +445,18 @@ impl Scene {
         scene.objects.extend(boxes);
 
         // // Add a small sphere in the center to better visualize the light transport effects.
-        // scene.add_sphere(
-        //     Point3::from(348., 400., 278.),
-        //     40.,
-        //     Material::metal_with_ior(Color3::from(0.8, 0.8, 0.9), 0.3, 20.0),
-        // );
-        // scene.add_sphere(
-        //     Point3::from(200., 350., 200.),
-        //     90.,
-        //     // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
-        //     // Values must be <= 1.0 for energy conservation (no light amplification).
-        //     Material::dielectric_tinted(1.5, Color3::from(0.8, 0.8, 1.0)),
-        // );
+        scene.add_sphere(
+            Point3::new(348., 400., 278.),
+            40.,
+            Material::metal_with_ior(Color3::new(0.8, 0.8, 0.9), 0.3, 20.0),
+        );
+        scene.add_sphere(
+            Point3::new(200., 350., 200.),
+            90.,
+            // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
+            // Values must be <= 1.0 for energy conservation (no light amplification).
+            Material::dielectric_tinted(1.5, Color3::new(0.8, 0.8, 1.0)),
+        );
         // Glass sphere — delta material, no importance sampling needed.
         scene.add_intersectable(
             Arc::new(sphere(

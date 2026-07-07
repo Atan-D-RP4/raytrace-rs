@@ -56,12 +56,12 @@ impl Bsdf for MetalMaterial {
     /// then reflect `wo` about H to get `wi`. Returns `None` if the reflected
     /// direction ends up below the surface.
     ///
-    /// When `fuzz` is effectively zero (below 1e-4), the microsurface is a
-    /// perfect mirror — returns `BsdfSample::Delta` so the integrator skips
+    /// When `roughness` is effectively zero (below 0.01), the microsurface is a
+    /// near-mirror — returns `BsdfSample::Delta` so the integrator skips
     /// the mixture PDF and uses the reflected direction directly.
     fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
-        if self.roughness < 1e-4 {
+        if self.roughness < 0.01 {
             let wi = reflect(&-wo, &si.shading_normal());
             if wi.dot(&si.shading_normal()) <= 0.0 {
                 return None;
@@ -117,7 +117,7 @@ impl Bsdf for MetalMaterial {
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         // If the material is effectively a mirror, return zero for arbitrary directions.
-        if self.roughness < 1e-4 {
+        if self.roughness < 0.01 {
             return Color3::ZERO;
         }
         let albedo = self
@@ -144,7 +144,7 @@ impl Bsdf for MetalMaterial {
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         // If the material is effectively a mirror, return zero for arbitrary directions.
-        if self.roughness < 1e-4 {
+        if self.roughness < 0.01 {
             return 0.0;
         }
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
@@ -159,7 +159,7 @@ impl Bsdf for MetalMaterial {
 
     /// Returns the PDF kind for the GGX NDF if `fuzz` is non-zero, otherwise `None`.
     fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
-        if self.roughness < 1e-4 {
+        if self.roughness < 0.01 {
             None
         } else {
             Some(PdfKind::Ggx {
@@ -181,7 +181,15 @@ impl Bsdf for MetalMaterial {
     }
 
     fn is_delta(&self) -> bool {
-        self.roughness < 1e-4
+        self.roughness < 0.01
+    }
+
+    fn ggx_alpha(&self) -> Option<f64> {
+        if self.roughness < 0.01 {
+            None
+        } else {
+            Some((self.roughness * self.roughness).clamp(0.001, 1.0))
+        }
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {

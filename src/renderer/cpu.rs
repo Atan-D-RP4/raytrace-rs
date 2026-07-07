@@ -180,7 +180,10 @@ where
                 });
                 if tile.dirty {
                     tile.pixels.fill(Color3::ZERO);
+                    tile.raw_sum.fill(Color3::ZERO);
                     tile.sampled.fill(false);
+                    tile.weight_sum.fill(0.0);
+                    tile.sample_count.fill(0);
                 }
             }
 
@@ -218,7 +221,13 @@ where
                             let sample = radiance * cam_ray.weight;
                             // Guard against NaN/Inf poisoning the accumulation buffer.
                             if sample.is_finite() {
-                                tile.add_sample(x, y, sample);
+                                // Tent (triangle) reconstruction filter: weights samples by their
+                                // distance from the pixel center. Samples near the pixel boundary
+                                // contribute less, which smooths silhouette aliasing.
+                                let dx = (camera_sampler.jitter.0 - 0.5).abs();
+                                let dy = (camera_sampler.jitter.1 - 0.5).abs();
+                                let tent_weight = (1.0 - dx).max(0.0) * (1.0 - dy).max(0.0);
+                                tile.add_sample_weighted(x, y, sample, tent_weight);
                             }
                         }
                     }

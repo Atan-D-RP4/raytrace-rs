@@ -48,12 +48,12 @@ impl Bsdf for GlossyMaterial {
     /// Importance-sample the GGX NDF: draw half-vector H, reflect `wo` about it.
     /// Returns `None` if the reflected direction is below the surface.
     ///
-    /// When `roughness` is effectively zero (below 1e-4), the surface is a
-    /// perfect mirror — returns `BsdfSample::Delta` so the integrator skips
+    /// When `roughness` is effectively zero (below 0.01), the surface is a
+    /// near-mirror — returns `BsdfSample::Delta` so the integrator skips
     /// the mixture PDF and uses the reflected direction directly.
     fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
-        if self.roughness < 1e-4 {
+        if self.roughness < 0.01 {
             let wi = reflect(&-wo, &si.shading_normal());
             if wi.dot(&si.shading_normal()) <= 0.0 {
                 return None;
@@ -107,6 +107,9 @@ impl Bsdf for GlossyMaterial {
 
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+        if self.roughness < 0.01 {
+            return Color3::ZERO;
+        }
         let albedo = self
             .tex
             .as_ref()
@@ -149,13 +152,18 @@ impl Bsdf for GlossyMaterial {
     }
 
     /// Returns the PDF kind for the GGX distribution, which is used in mixture sampling.
+    /// Returns `None` for near-mirror materials so the integrator skips GGX PDF strategy.
     fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
-        let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
-        Some(PdfKind::Ggx {
-            wo,
-            normal: si.shading_normal(),
-            alpha,
-        })
+        if self.roughness < 0.01 {
+            None
+        } else {
+            let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
+            Some(PdfKind::Ggx {
+                wo,
+                normal: si.shading_normal(),
+                alpha,
+            })
+        }
     }
 
     fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
@@ -174,7 +182,15 @@ impl Bsdf for GlossyMaterial {
     }
 
     fn is_delta(&self) -> bool {
-        self.roughness < 1e-4
+        self.roughness < 0.01
+    }
+
+    fn ggx_alpha(&self) -> Option<f64> {
+        if self.roughness < 0.01 {
+            None
+        } else {
+            Some((self.roughness * self.roughness).clamp(0.001, 1.0))
+        }
     }
 
     fn clone_box(&self) -> Box<dyn Bsdf> {

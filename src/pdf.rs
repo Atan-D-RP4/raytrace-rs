@@ -81,17 +81,9 @@ impl<S: Sampler> PDF<S> for PdfEnum<S> {
                 <UniformHemispherePDF as PDF<S>>::value(p, direction)
             }
             PdfEnumInner::Environment(env_map) => {
-                let w = direction.unit_vector();
-                let theta = w.y.acos();
-                let phi = w.z.atan2(w.x);
-                let u = phi / (2.0 * PI);
-                let u = u - u.floor();
-                let v = theta / PI;
-                let width = env_map.width();
-                let height = env_map.height();
-                let i = (u * width as f64).floor() as usize % width;
-                let j = (v * height as f64).floor() as usize % height;
+                let (i, j) = env_map.pixel_uv_from_direction(direction);
                 let pdf_domain = env_map.pdf(i, j);
+                let theta = direction.y.acos(); // y-up: θ = 0 at north pole
                 let sin_theta = theta.sin().max(1e-10);
                 pdf_domain / (sin_theta * 2.0 * PI * PI)
             }
@@ -138,6 +130,11 @@ impl<S: Sampler> PdfEnum<S> {
     }
 
     /// Construct an environment map PDF strategy.
+    ///
+    /// The PDF converts the discrete pixel-distribution PDF into a continuous
+    /// solid-angle PDF via p(ω) = p(pixel) / (sin(θ) · 2π²). Generation maps
+    /// CDF samples (col, row) back to world-space directions via equirectangular
+    /// projection.
     pub fn environment(env: Arc<EnvironmentMap>) -> Self {
         PdfEnum {
             inner: PdfEnumInner::Environment(env),

@@ -386,13 +386,33 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     return accumulated_color;
                 }
             } else {
+                let direction = ray.direction.unit_vector();
                 let background_color = if let Some(env_map) = &self.env_map {
-                    env_map.le(ray.direction.unit_vector())
+                    env_map.le(direction)
                 } else {
                     self.background
                 };
                 // Ray missed the world geometry — accumulate background and terminate.
-                return accumulated_color + accumulated_attenuation * background_color;
+                // When an environment map is present, indirect bounces need MIS weighting:
+                // the bounce direction was sampled by the BSDF (not the env map), so the
+                // env map contribution is weighted by how likely the BSDF would have chosen
+                // that direction vs the env map's own distribution. Without this, a narrow
+                // BSDF lobe pointing at a bright environment pixel produces fireflies.
+                if bounce == 0 || prev_was_delta {
+                    // First bounce or delta path: the direction was determined by the camera
+                    // or a deterministic scatter — no MIS weight needed.
+                    return accumulated_color + accumulated_attenuation * background_color;
+                } else {
+                    let env_pdf = match &self.env_map {
+                        Some(env_map) => {
+                            PdfEnum::<S>::environment(env_map.clone()).value(direction)
+                        }
+                        None => 1.0 / (4.0 * PI),
+                    };
+                    let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + env_pdf * env_pdf;
+                    let w_miss = power_heuristic(prev_bsdf_pdf, sum_sq);
+                    return accumulated_color + w_miss * accumulated_attenuation * background_color;
+                }
             }
         }
 
