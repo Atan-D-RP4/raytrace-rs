@@ -192,10 +192,6 @@ impl Bsdf for MetalMaterial {
         }
     }
 
-    fn clone_box(&self) -> Box<dyn Bsdf> {
-        Box::new(self.clone())
-    }
-
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![
             self.albedo.x,

@@ -65,7 +65,7 @@ impl Bsdf for DielectricMaterial {
 
     /// Delta material — cannot evaluate at arbitrary directions. Returns zero.
     fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
-        Color3::new(0., 0., 0.)
+        Color3::ZERO
     }
 
     /// Delta material — probability of any specific direction is zero.
@@ -90,10 +90,6 @@ impl Bsdf for DielectricMaterial {
 
     fn is_delta(&self) -> bool {
         true
-    }
-
-    fn clone_box(&self) -> Box<dyn Bsdf> {
-        Box::new(self.clone())
     }
 
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {

@@ -5,7 +5,7 @@ use rand::RngExt;
 use crate::bvh::BvhNode;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
-use crate::distributions::EnvironmentMap;
+use crate::environment::{EnvironmentLight, EnvironmentMap};
 use crate::flat_bvh::FlatBvh;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::material::Bsdf;
@@ -50,6 +50,8 @@ impl Scene {
     }
 
     pub fn with_env_map(mut self, env_map: Arc<EnvironmentMap>) -> Self {
+        self.important_objects
+            .push(Arc::new(EnvironmentLight::new(env_map.clone())));
         self.env_map = Some(env_map);
         self
     }
@@ -1024,9 +1026,9 @@ impl Scene {
 
         // Sphere 5 — red glossy
         let coated_glossy = Material::Coated {
-            substrate: Box::new(Material::glossy(Color3::new(1., 0.0, 0.0), 0.5, 1.5))
-                as Box<dyn Bsdf>,
-            coating: Box::new(Material::dielectric(1.5)) as Box<dyn Bsdf>,
+            substrate: Arc::new(Material::glossy(Color3::new(1., 0.0, 0.0), 0.5, 1.5))
+                as Arc<dyn Bsdf>,
+            coating: Arc::new(Material::dielectric(1.5)) as Arc<dyn Bsdf>,
             coating_tint: Color3::new(1., 0.0, 0.0),
             coating_ior: 1.5,
             thickness: 0.20,
@@ -1035,11 +1037,11 @@ impl Scene {
 
         // Sphere 6 — cyan-teal mix
         let coated_mixed = Material::Coated {
-            substrate: Box::new(
+            substrate: Arc::new(
                 Material::metal(Color3::new(0.1, 0.7, 0.8), 0.0)
                     .mix(Material::glossy(Color3::new(0.1, 0.9, 0.6), 0.5, 1.5), 0.5),
-            ) as Box<dyn Bsdf>,
-            coating: Box::new(Material::dielectric(1.5)) as Box<dyn Bsdf>,
+            ) as Arc<dyn Bsdf>,
+            coating: Arc::new(Material::dielectric(1.5)) as Arc<dyn Bsdf>,
             coating_tint: Color3::new(0.1, 0.9, 0.6),
             coating_ior: 1.5,
             thickness: 0.20,

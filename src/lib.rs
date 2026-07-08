@@ -1,3 +1,4 @@
+pub mod environment;
 pub mod aabb;
 pub mod bvh;
 pub mod camera;

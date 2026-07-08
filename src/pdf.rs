@@ -1,7 +1,7 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use crate::distributions::EnvironmentMap;
+use crate::environment::EnvironmentMap;
 use crate::hittable::Sampleable;
 use crate::material::PdfKind;
 use crate::material::ggx_d;

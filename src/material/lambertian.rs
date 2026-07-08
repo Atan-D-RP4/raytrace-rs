@@ -93,10 +93,6 @@ impl Bsdf for LambertianMaterial {
         (albedo.x + albedo.y + albedo.z) / 3.0
     }
 
-    fn clone_box(&self) -> Box<dyn Bsdf> {
-        Box::new(self.clone())
-    }
-
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![self.albedo.x, self.albedo.y, self.albedo.z];
         let param_offset = buf.params.len() as u32;

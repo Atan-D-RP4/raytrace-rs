@@ -11,8 +11,8 @@
 //! use raytrace_rs::texture::SolidColor;
 //! use raytrace_rs::vec3::Color3;
 //!
-//! let red = Material::lambertian(Arc::new(SolidColor::new(Color3::from(0.8, 0.2, 0.2))));
-//! let paint = red.mix(Material::metal(Color3::from(0.9, 0.9, 0.9), 0.0), 0.5);
+//! let red = Material::lambertian(Arc::new(SolidColor::new(Color3::new(0.8, 0.2, 0.2))));
+//! let paint = red.mix(Material::metal(Color3::new(0.9, 0.9, 0.9), 0.0), 0.5);
 //! let car_paint = red.coated(Material::dielectric(1.5));
 //! ```
 //!
@@ -233,9 +233,6 @@ pub trait Bsdf: Send + Sync {
         None
     }
 
-    /// Clone into a boxed trait object. Required for `Material: Clone`.
-    fn clone_box(&self) -> Box<dyn Bsdf>;
-
     /// Recursively serialize into the GPU buffer. Returns the node index.
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let param_offset = buf.params.len() as u32;
@@ -273,18 +270,18 @@ pub enum Material {
     /// Stochastic mix of two materials. `weight` is the probability of choosing `b`.
     Mix {
         /// Material chosen with probability `(1 - weight)`.
-        a: Box<dyn Bsdf>,
+        a: Arc<dyn Bsdf>,
         /// Material chosen with probability `weight`.
-        b: Box<dyn Bsdf>,
+        b: Arc<dyn Bsdf>,
         /// Selection probability for `b`. ∈ [0, 1].
         weight: f64,
     },
     /// Vertical layer: light hits `coating` first; if it transmits, interacts with `substrate`.
     Coated {
         /// Bottom layer (absorbs transmitted light).
-        substrate: Box<dyn Bsdf>,
+        substrate: Arc<dyn Bsdf>,
         /// Top layer (thin dielectric, reflects some light via Fresnel).
-        coating: Box<dyn Bsdf>,
+        coating: Arc<dyn Bsdf>,
         /// Refractive index of the coating layer (used for Fresnel).
         coating_ior: f64,
         /// Tint color of the coating layer (used for Fresnel).
@@ -293,7 +290,7 @@ pub enum Material {
         thickness: f64,
     },
     /// Custom material provided by a library consumer.
-    Custom(Box<dyn Bsdf>),
+    Custom(Arc<dyn Bsdf>),
 }
 
 impl Clone for Material {
@@ -307,8 +304,8 @@ impl Clone for Material {
             Material::Isotropic(inner) => Material::Isotropic(inner.clone()),
             Material::Glossy(inner) => Material::Glossy(inner.clone()),
             Material::Mix { a, b, weight } => Material::Mix {
-                a: a.clone_box(),
-                b: b.clone_box(),
+                a: a.clone(),
+                b: b.clone(),
                 weight: *weight,
             },
             Material::Coated {
@@ -318,13 +315,13 @@ impl Clone for Material {
                 coating_tint,
                 thickness,
             } => Material::Coated {
-                substrate: substrate.clone_box(),
-                coating: coating.clone_box(),
+                substrate: substrate.clone(),
+                coating: coating.clone(),
                 coating_ior: *coating_ior,
                 coating_tint: *coating_tint,
                 thickness: *thickness,
             },
-            Material::Custom(inner) => Material::Custom(inner.clone_box()),
+            Material::Custom(inner) => Material::Custom(inner.clone()),
         }
     }
 }
@@ -510,15 +507,13 @@ impl Material {
                                 // Transmit out of the coating layer, i.e., exit to air
                                 let exit_dir = refract(&wi_internal, &-n, *coating_ior);
                                 let raw = throughput * f_cos_internal;
-                                let bound = 2.0 * throughput;
-                                let f_cos = Vec3::new(
-                                    raw.x.min(bound.x),
-                                    raw.y.min(bound.y),
-                                    raw.z.min(bound.z),
-                                );
+                                // Frame-independent heuristic firefly backstop:
+                                // `f_cos` = BSDF × cosine should be bounded
+                                let bounded_f_cos =
+                                    Color3::new(raw.x.min(2.0), raw.y.min(2.0), raw.z.min(2.0));
                                 return Some(BsdfScatter::Delta {
                                     wi: exit_dir,
-                                    f_cos,
+                                    f_cos: bounded_f_cos,
                                 });
                             }
                         }
@@ -623,21 +618,15 @@ impl Material {
                                             fresnel_r0(*coating_ior),
                                         );
                                     // Heuristic firefly backstop: `f_cos` = BSDF × cosine should be bounded
-                                    // for physically valid materials (Lambertian max ≈ 0.32, GGX max ≈ 2-3 at
-                                    // extreme grazing). The 2.0× throughput cap prevents energy blowup from
-                                    // numerical edge cases in the substrate eval / pdf ratio (e.g., very narrow
-                                    // GGX lobe with near-zero PDF) while preserving material appearance.
+                                    // for physically valid materials, such as:
+                                    // (Lambertian max ≈ 0.32, GGX max ≈ 2-3 at extreme grazing).
                                     // This is NOT a physically derived limit — it's a safety net.
                                     let raw = throughput * substrate_f * exit_fresnel;
-                                    let bound = 2.0 * throughput;
-                                    let f_cos = Vec3::new(
-                                        raw.x.min(bound.x),
-                                        raw.y.min(bound.y),
-                                        raw.z.min(bound.z),
-                                    );
+                                    let bounded_f_cos =
+                                        Color3::new(raw.x.min(2.0), raw.y.min(2.0), raw.z.min(2.0));
                                     return Some(BsdfScatter::Delta {
                                         wi: exit_dir,
-                                        f_cos,
+                                        f_cos: bounded_f_cos,
                                     });
                                 }
                             }
@@ -742,6 +731,10 @@ impl Material {
                 let wo_perp = wo - cos_wo_global * sn;
                 let sin_wo = wo_perp.length();
                 let sin_wi_inside = sin_wo / *coating_ior;
+                if sin_wi_inside > 1.0 {
+                    // TIR — no transmission to air.
+                    return direct_coat;
+                }
                 let cos_wi_inside = (1.0 - sin_wi_inside * sin_wi_inside).max(0.0).sqrt();
                 let wo_internal = if sin_wo > 1e-10 {
                     // Tangent direction in coating is the same as in air (just scaled)
@@ -861,12 +854,18 @@ impl Material {
                 let wo_perp = wo - cos_wo_global * sn;
                 let sin_wo = wo_perp.length();
                 let sin_wi_inside = sin_wo / *coating_ior;
+                if sin_wi_inside >= 1.0 {
+                    // TIR: substrate is invisible from this angle.
+                    return 0.0;
+                }
                 let cos_wi_inside = (1.0 - sin_wi_inside * sin_wi_inside).max(0.0).sqrt();
+                // Compute the internal outgoing direction that refracts to wo_global at the top interface.
                 let wo_internal = if sin_wo > 1e-10 {
+                    // Tangent direction in coating is the same as in air (just scaled)
                     let wo_unit_perp = wo_perp / sin_wo;
                     cos_wi_inside * sn + sin_wi_inside * wo_unit_perp
                 } else {
-                    sn
+                    sn // normal incidence
                 };
 
                 // Solid-angle Jacobian for the refraction at the coating-air boundary.
@@ -906,21 +905,30 @@ impl Material {
                     a.pdf_kind(wo, si).or_else(|| b.pdf_kind(wo, si))
                 }
             }
-            Material::Coated { substrate, .. } => {
-                // Delegate to the substrate's PDF kind in the global frame.
-                // The coating is a pure delta layer — its Fresnel and Beer's law
-                // absorption are accounted for in eval() and pdf(), not in the
-                // PDF shape. The integrator uses this PdfKind to build the MIS
-                // strategy list, and the actual PDF evaluation (via pdf())
-                // includes the Fresnel transmittance and solid-angle Jacobian.
-                // Note: wo is passed in the global (external) frame, which
-                // matches the MIS evaluation frame in the integrator.
-                // The substrate's internal-frame PdfKind::Ggx uses this global
-                // wo, which is consistent with the sample() path (see fix at
-                // line ~490 where *wo = wo_global). The eval/pdf frames differ
-                // (internal vs global) but the estimator remains unbiased —
-                // the MIS weights are approximate but correct on average.
-                substrate.pdf_kind(wo, si)
+            Material::Coated {
+                substrate,
+                coating_ior,
+                ..
+            } => {
+                // Refract global wo into the coating's internal frame so the
+                // substrate's GGX PDF uses the same coordinates as eval/pdf.
+                let sn = si.shading_normal();
+                let cos_wo_global = wo.dot(&sn).max(0.0);
+                let wo_perp = wo - cos_wo_global * sn;
+                let sin_wo = wo_perp.length();
+                let sin_wi_inside = sin_wo / *coating_ior;
+                if sin_wi_inside >= 1.0 {
+                    // TIR: substrate is invisible from this angle.
+                    return None;
+                }
+                let cos_wi_inside = (1.0 - sin_wi_inside * sin_wi_inside).sqrt();
+                let wo_internal = if sin_wo > 1e-10 {
+                    let wo_unit_perp = wo_perp / sin_wo;
+                    cos_wi_inside * sn + sin_wi_inside * wo_unit_perp
+                } else {
+                    sn // normal incidence
+                };
+                substrate.pdf_kind(wo_internal, si)
             }
         }
     }
@@ -968,6 +976,10 @@ impl Material {
                 let wo_perp = wo - cos_wo_global * sn;
                 let sin_wo = wo_perp.length();
                 let sin_wi_inside = sin_wo / *coating_ior;
+                if sin_wi_inside >= 1.0 {
+                    // TIR: substrate is invisible from this angle.
+                    return coating.emitted(wo, si);
+                }
                 let cos_wi_inside = (1.0 - sin_wi_inside * sin_wi_inside).max(0.0).sqrt();
                 let wo_internal = if sin_wo > 1e-10 {
                     let wo_unit_perp = wo_perp / sin_wo;
@@ -1088,10 +1100,6 @@ impl Bsdf for Material {
 
     fn is_delta(&self) -> bool {
         Material::is_delta(self)
-    }
-
-    fn clone_box(&self) -> Box<dyn Bsdf> {
-        Box::new(self.clone())
     }
 
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
@@ -1236,8 +1244,8 @@ impl Material {
     pub fn mix(self, other: Material, weight: f64) -> Self {
         let weight = weight.clamp(0.0, 1.0);
         Material::Mix {
-            a: Box::new(self) as Box<dyn Bsdf>,
-            b: Box::new(other) as Box<dyn Bsdf>,
+            a: Arc::new(self) as Arc<dyn Bsdf>,
+            b: Arc::new(other) as Arc<dyn Bsdf>,
             weight,
         }
     }
@@ -1250,8 +1258,8 @@ impl Material {
             _ => (1.5, Color3::new(1.0, 1.0, 1.0)),
         };
         Material::Coated {
-            substrate: Box::new(self) as Box<dyn Bsdf>,
-            coating: Box::new(coat) as Box<dyn Bsdf>,
+            substrate: Arc::new(self) as Arc<dyn Bsdf>,
+            coating: Arc::new(coat) as Arc<dyn Bsdf>,
             coating_ior,
             coating_tint,
             thickness: 0.01,
@@ -1260,7 +1268,7 @@ impl Material {
 
     /// Wrap a custom [`Bsdf`] implementation in a `Material`.
     pub fn custom(bsdf: impl Bsdf + 'static) -> Self {
-        Material::Custom(Box::new(bsdf))
+        Material::Custom(Arc::new(bsdf))
     }
 }
 
@@ -1400,13 +1408,10 @@ mod tests {
                 None
             }
             fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
-                Color3::new(0., 0., 0.)
+                Color3::ZERO
             }
             fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
                 0.0
-            }
-            fn clone_box(&self) -> Box<dyn Bsdf> {
-                Box::new(self.clone())
             }
         }
         impl Clone for DummyBsdf {

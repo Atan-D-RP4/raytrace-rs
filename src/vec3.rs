@@ -250,37 +250,6 @@ impl std::fmt::Display for Vec3 {
 }
 
 #[inline(always)]
-pub fn random_in_unit_disk() -> Vec3 {
-    let mut rng = rand::rng();
-    loop {
-        let point = Vec3::new(
-            rng.random_range(-1.0..1.0),
-            rng.random_range(-1.0..1.0),
-            0.0,
-        );
-        if point.length_squared() < 1.0 {
-            return point;
-        }
-    }
-}
-
-#[inline(always)]
-pub fn random_unit_vector() -> Vec3 {
-    let mut rng = rand::rng();
-    loop {
-        let point = Vec3::new(
-            rng.random_range(-1.0..1.0),
-            rng.random_range(-1.0..1.0),
-            rng.random_range(-1.0..1.0),
-        );
-        let len_squared = point.length_squared();
-        if 1e-160 < len_squared && len_squared <= 1.0 {
-            return point / len_squared.sqrt();
-        }
-    }
-}
-
-#[inline(always)]
 pub fn random_in_unit_disk_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
     loop {
         let point = Vec3::new(

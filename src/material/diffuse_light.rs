@@ -66,10 +66,6 @@ impl Bsdf for DiffuseLightMaterial {
         }
     }
 
-    fn clone_box(&self) -> Box<dyn Bsdf> {
-        Box::new(self.clone())
-    }
-
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![self.emit.x, self.emit.y, self.emit.z];
         let param_offset = buf.params.len() as u32;

@@ -193,8 +193,8 @@ impl Texture for NoiseTexture {
     /// for a natural stone-like appearance.
     ///
     /// Other variants (for reference):
-    /// - Smooth: `Color3::from(1., 1., 1.) * 0.5 * (1.0 + self.noise.noise(&point))`
-    /// - Turbulent: `Color3::from(1., 1., 1.) * self.noise.turbulence(&point, 7)`
+    /// - Smooth: `Color3::new(1., 1., 1.) * 0.5 * (1.0 + self.noise.noise(&point))`
+    /// - Turbulent: `Color3::new(1., 1., 1.) * self.noise.turbulence(&point, 7)`
     fn value(&self, coords: &TextureCoords) -> Color3 {
         let point = coords.tex_points.texture;
         Color3::new(0.5, 0.5, 0.5)

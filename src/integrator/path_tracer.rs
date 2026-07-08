@@ -9,7 +9,7 @@
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-use crate::distributions::EnvironmentMap;
+use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
@@ -30,13 +30,12 @@ use crate::vec3::{Color3, Vec3};
 /// where p_sel is the selected strategy's PDF value and p_j are all PDF values
 /// at the sampled direction. This is provably unbiased and has lower variance
 /// than the mixture-based f/p_mix estimator.
-/// NOTE: If we ever want to support more MIS strategies, we can make this a const-generic function
-/// with a slice of PDFs instead of a fixed-size array. Or if we need to swap out the MIS strategy,
-/// we can make this generic over a MisWeightingStrategy trait that takes the selected PDF and all
-/// PDFs and returns a weight.
+///
+/// NOTE: if we need to swap out the MIS strategy, we can make this generic over a
+/// MisWeightingStrategy trait that takes the selected PDF and all PDFs and returns the weight.
 #[inline(always)]
-fn mis_sample<S: Sampler>(
-    pdfs: &[&dyn PDF<S>],
+fn mis_sample<S: Sampler, const N: usize>(
+    pdfs: [&dyn PDF<S>; N],
     eval_fn: impl FnOnce(Vec3) -> crate::vec3::Color3,
     dim_cursor: &mut DimCursor<S>,
 ) -> (Vec3, Color3, f64) {
@@ -73,7 +72,7 @@ fn mis_sample<S: Sampler>(
     } else {
         crate::vec3::Color3::ZERO
     };
-
+    // Return the sampled direction, the MIS-weighted contribution, and the mixture PDF value
     (direction, contribution, pdf_sum / n as f64)
 }
 
@@ -351,8 +350,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
 
                             // Fixed-size array replaces Vec — zero heap allocation.
                             // Indices 1..3 are overwritten with material PDFs before use.
-                            let mut pdf_refs: [&dyn PDF<S>; 4] =
-                                [&env_pdf, &env_pdf, &env_pdf, &env_pdf];
+                            let mut pdf_refs: [&dyn PDF<S>; 4] = [&env_pdf; 4]; // env_pdf is always present at index 0
                             let mut n = 1usize;
                             if let Some(ref s) = s0 {
                                 pdf_refs[n] = s;
@@ -360,11 +358,10 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             }
                             if let Some(ref s) = s1 {
                                 pdf_refs[n] = s;
-                                n += 1;
                             }
 
                             let (direction, contribution, p_mix) =
-                                mis_sample(&pdf_refs[..n], eval, dim_cursor);
+                                mis_sample(pdf_refs, eval, dim_cursor);
 
                             // Pad mixture dims to exactly 4 (1 selection + 3 direction).
                             let mix_consumed = dim_cursor.offset() - mix_start;

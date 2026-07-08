@@ -138,6 +138,10 @@ impl Bsdf for GlossyMaterial {
 
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
+        if self.roughness < 0.01 {
+            return 0.0;
+        }
+
         let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
 
         let h = (wo + wi).unit_vector();
@@ -191,10 +195,6 @@ impl Bsdf for GlossyMaterial {
         } else {
             Some((self.roughness * self.roughness).clamp(0.001, 1.0))
         }
-    }
-
-    fn clone_box(&self) -> Box<dyn Bsdf> {
-        Box::new(self.clone())
     }
 
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
