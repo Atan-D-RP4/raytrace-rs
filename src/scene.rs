@@ -8,7 +8,7 @@ use crate::const_medium::ConstantMedium;
 use crate::environment::{EnvironmentLight, EnvironmentMap};
 use crate::flat_bvh::FlatBvh;
 use crate::hittable::{Intersectable, Sampleable};
-use crate::material::Bsdf;
+use crate::material::{Bsdf, CoatedMaterial};
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
 use crate::shape::{moving_sphere, sphere};
@@ -1025,18 +1025,18 @@ impl Scene {
         scene.add_sphere(Point3::new(0., 3., 8.), 1.0, light_coated_glass);
 
         // Sphere 5 — red glossy
-        let coated_glossy = Material::Coated {
+        let coated_glossy = Material::Coated(CoatedMaterial {
             substrate: Arc::new(Material::glossy(Color3::new(1., 0.0, 0.0), 0.5, 1.5))
                 as Arc<dyn Bsdf>,
             coating: Arc::new(Material::dielectric(1.5)) as Arc<dyn Bsdf>,
             coating_tint: Color3::new(1., 0.0, 0.0),
             coating_ior: 1.5,
             thickness: 0.20,
-        };
+        });
         scene.add_sphere(Point3::new(2., 1., 10.), 1., coated_glossy);
 
         // Sphere 6 — cyan-teal mix
-        let coated_mixed = Material::Coated {
+        let coated_mixed = Material::Coated(CoatedMaterial {
             substrate: Arc::new(
                 Material::metal(Color3::new(0.1, 0.7, 0.8), 0.0)
                     .mix(Material::glossy(Color3::new(0.1, 0.9, 0.6), 0.5, 1.5), 0.5),
@@ -1045,7 +1045,7 @@ impl Scene {
             coating_tint: Color3::new(0.1, 0.9, 0.6),
             coating_ior: 1.5,
             thickness: 0.20,
-        };
+        });
         scene.add_sphere(Point3::new(-2., 1., 10.), 0.8, coated_mixed);
 
         scene.config.aspect_ratio = 16.0 / 9.0;

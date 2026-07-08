@@ -24,6 +24,8 @@ use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, Gpu
 use crate::material::{GPU_NONE, PdfKind};
 use crate::sampler::SampleDims;
 
+use super::gpu::GpuSerializable;
+
 /// Dielectric transmission/reflection controlled by refractive index.
 #[derive(Clone)]
 pub struct DielectricMaterial {
@@ -91,7 +93,9 @@ impl Bsdf for DielectricMaterial {
     fn is_delta(&self) -> bool {
         true
     }
+}
 
+impl GpuSerializable for DielectricMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![self.ior];
         let param_offset = buf.params.len() as u32;

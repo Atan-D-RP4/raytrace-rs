@@ -18,6 +18,7 @@ use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
 use super::GPU_NONE;
+use super::gpu::GpuSerializable;
 use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
 use crate::sampler::SampleDims;
 
@@ -61,7 +62,9 @@ impl Bsdf for IsotropicMaterial {
     fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
         1.0 / (4.0 * PI)
     }
+}
 
+impl GpuSerializable for IsotropicMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![self.albedo.x, self.albedo.y, self.albedo.z];
         let param_offset = buf.params.len() as u32;

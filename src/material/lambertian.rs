@@ -19,6 +19,7 @@ use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
 use super::GPU_NONE;
+use super::gpu::GpuSerializable;
 use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
 use crate::sampler::SampleDims;
 
@@ -92,7 +93,9 @@ impl Bsdf for LambertianMaterial {
         // ∫ (albedo/π) * cos θ dω = albedo). Average across RGB channels.
         (albedo.x + albedo.y + albedo.z) / 3.0
     }
+}
 
+impl GpuSerializable for LambertianMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![self.albedo.x, self.albedo.y, self.albedo.z];
         let param_offset = buf.params.len() as u32;

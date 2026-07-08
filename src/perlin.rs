@@ -1,6 +1,6 @@
 use rand::RngExt;
 
-use crate::vec3::{Point3, Vec3, random_unit_vector};
+use crate::vec3::{Point3, Vec3, random_unit_vector_with_rng};
 
 #[allow(dead_code)]
 fn trilinear_interp(c: [[[f64; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
@@ -53,8 +53,9 @@ impl Perlin {
     const POINT_COUNT: usize = 256;
 
     pub fn new() -> Self {
+        let mut rng = rand::rng();
         Self {
-            randvec: std::array::from_fn(|_| random_unit_vector()),
+            randvec: std::array::from_fn(|_| random_unit_vector_with_rng(&mut rng)),
             perm_x: Self::generate_perm(),
             perm_y: Self::generate_perm(),
             perm_z: Self::generate_perm(),

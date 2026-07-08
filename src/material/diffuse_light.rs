@@ -19,6 +19,8 @@ use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, Gpu
 use crate::material::{GPU_NONE, PdfKind};
 use crate::sampler::SampleDims;
 
+use super::gpu::GpuSerializable;
+
 /// Light emitting surface.
 #[derive(Clone)]
 pub struct DiffuseLightMaterial {
@@ -65,7 +67,9 @@ impl Bsdf for DiffuseLightMaterial {
             Color3::new(0., 0., 0.)
         }
     }
+}
 
+impl GpuSerializable for DiffuseLightMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![self.emit.x, self.emit.y, self.emit.z];
         let param_offset = buf.params.len() as u32;

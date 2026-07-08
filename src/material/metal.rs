@@ -27,8 +27,9 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3, reflect};
+use crate::vec3::{reflect, Color3, Vec3};
 
+use super::gpu::GpuSerializable;
 use super::GPU_NONE;
 use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
 use crate::sampler::SampleDims;
@@ -57,7 +58,7 @@ impl Bsdf for MetalMaterial {
     /// direction ends up below the surface.
     ///
     /// When `roughness` is effectively zero (below 0.01), the microsurface is a
-    /// near-mirror — returns `BsdfSample::Delta` so the integrator skips
+    /// near-mirror — returns `BsdfScatter::Delta` so the integrator skips
     /// the mixture PDF and uses the reflected direction directly.
     fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
@@ -191,7 +192,9 @@ impl Bsdf for MetalMaterial {
             Some((self.roughness * self.roughness).clamp(0.001, 1.0))
         }
     }
+}
 
+impl GpuSerializable for MetalMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![
             self.albedo.x,

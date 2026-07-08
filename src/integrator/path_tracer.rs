@@ -108,7 +108,8 @@ fn bsdf_mixture_pdf<S: Sampler>(
 
     // Material PDF values — matches the strategy structure in the scatter step
     let (mat_sum, n_mat) = match material {
-        Material::Mix { a, b, .. } => {
+        Material::Mix(inner) => {
+            let (a, b) = (inner.a.clone(), inner.b.clone());
             let pa = a.pdf(wo, wi, si);
             let pb = b.pdf(wo, wi, si);
             let has_a = a.pdf_kind(wo, si).is_some();

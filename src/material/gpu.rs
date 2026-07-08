@@ -10,8 +10,21 @@
 //! must plumb a texture index through and have the shader sample an
 //! accompanying texture buffer.
 
-use crate::material::Bsdf;
-use crate::material::Material;
+pub trait GpuSerializable {
+    /// Serialize the material into the GPU buffer, returning the index of the
+    /// node just pushed.
+    fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
+        let param_offset = buf.params.len() as u32;
+        buf.nodes.push(GpuMaterialNode {
+            material_type: GpuMaterialType::Passthrough as u32,
+            param_offset,
+            child_a: GPU_NONE,
+            child_b: GPU_NONE,
+            texture_index: GPU_NONE,
+        });
+        buf.nodes.len() as u32 - 1
+    }
+}
 
 /// Discriminant tag for a material in the GPU buffer. Mirrors the
 /// non-composition variants of [`Material`]. Composition variants are encoded
@@ -81,77 +94,5 @@ impl GpuMaterialBuffer {
             )
         };
         self.params.extend_from_slice(bytes);
-    }
-}
-
-/// Recursive GPU serialization for the material tree.
-///
-/// Returns the index of the node just pushed.
-pub(super) fn write_node(mat: &Material, buf: &mut GpuMaterialBuffer) -> u32 {
-    match mat {
-        // Composition variants recursively serialize their children via the Bsdf trait.
-        Material::Mix { a, b, weight } => {
-            let child_a = a.serialize_gpu(buf);
-            let child_b = b.serialize_gpu(buf);
-            let param_offset = buf.params.len() as u32;
-            buf.push_params(&[*weight]);
-            buf.nodes.push(GpuMaterialNode {
-                material_type: GpuMaterialType::Mix as u32,
-                param_offset,
-                child_a,
-                child_b,
-                texture_index: GPU_NONE,
-            });
-            buf.nodes.len() as u32 - 1
-        }
-        Material::Coated {
-            substrate,
-            coating,
-            coating_ior,
-            coating_tint,
-            thickness,
-        } => {
-            let child_a = substrate.serialize_gpu(buf);
-            let child_b = coating.serialize_gpu(buf);
-            let param_offset = buf.params.len() as u32;
-            buf.push_params(&[
-                *coating_ior,
-                coating_tint.x,
-                coating_tint.y,
-                coating_tint.z,
-                *thickness,
-            ]);
-            buf.nodes.push(GpuMaterialNode {
-                material_type: GpuMaterialType::Coated as u32,
-                param_offset,
-                child_a,
-                child_b,
-                texture_index: GPU_NONE,
-            });
-            buf.nodes.len() as u32 - 1
-        }
-
-        Material::Void => {
-            let param_offset = buf.params.len() as u32;
-            buf.nodes.push(GpuMaterialNode {
-                material_type: GpuMaterialType::Void as u32,
-                param_offset,
-                child_a: GPU_NONE,
-                child_b: GPU_NONE,
-                texture_index: GPU_NONE,
-            });
-            buf.nodes.len() as u32 - 1
-        }
-
-        // Leaf variants delegate to their struct's serialize_gpu.
-        Material::Lambertian(inner) => inner.serialize_gpu(buf),
-        Material::Metal(inner) => inner.serialize_gpu(buf),
-        Material::Dielectric(inner) => inner.serialize_gpu(buf),
-        Material::DiffuseLight(inner) => inner.serialize_gpu(buf),
-        Material::Isotropic(inner) => inner.serialize_gpu(buf),
-        Material::Glossy(inner) => inner.serialize_gpu(buf),
-
-        // Custom materials have no GPU representation — push a passthrough.
-        Material::Custom(inner) => inner.serialize_gpu(buf),
     }
 }

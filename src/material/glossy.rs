@@ -20,13 +20,15 @@ use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::{
-    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    fresnel_schlick, geometry_schlick_ggx, ggx_d,
+    fresnel_schlick, geometry_schlick_ggx, ggx_d, Bsdf, BsdfScatter, GpuMaterialBuffer,
+    GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE,
 };
 use crate::onb::Onb;
 use crate::sampler::SampleDims;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3, reflect};
+use crate::vec3::{reflect, Color3, Vec3};
+
+use super::gpu::GpuSerializable;
 
 /// Glossy microfacet BSDF (GGX).
 #[derive(Clone)]
@@ -49,7 +51,7 @@ impl Bsdf for GlossyMaterial {
     /// Returns `None` if the reflected direction is below the surface.
     ///
     /// When `roughness` is effectively zero (below 0.01), the surface is a
-    /// near-mirror — returns `BsdfSample::Delta` so the integrator skips
+    /// near-mirror — returns `BsdfScatter::Delta` so the integrator skips
     /// the mixture PDF and uses the reflected direction directly.
     fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
@@ -196,7 +198,9 @@ impl Bsdf for GlossyMaterial {
             Some((self.roughness * self.roughness).clamp(0.001, 1.0))
         }
     }
+}
 
+impl GpuSerializable for GlossyMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![
             self.albedo.x,

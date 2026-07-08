@@ -1,6 +1,6 @@
 # Starlight Rendering Engine
 
-## Design Specification v3 — Spatial Microkernel
+## Architecture Ideal v3 — Spatial Microkernel
 
 ______________________________________________________________________
 

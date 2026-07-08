@@ -1,6 +1,5 @@
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
-use raytrace_rs::environment::EnvironmentLight;
 use softbuffer::{Context, Surface};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
