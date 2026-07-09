@@ -173,7 +173,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 } else {
                     // Compute the light's solid-angle PDF for the continuation direction.
                     let light_pdf_emit = <EmitterPDF as PDF<S>>::value(
-                        &EmitterPDF::new(lights, ray.origin, ray.time),
+                        &EmitterPDF::new(lights, si.point(), ray.time),
                         ray.direction.unit_vector(),
                     );
                     let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + light_pdf_emit * light_pdf_emit;

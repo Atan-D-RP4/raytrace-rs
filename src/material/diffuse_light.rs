@@ -67,6 +67,11 @@ impl Bsdf for DiffuseLightMaterial {
             Color3::new(0., 0., 0.)
         }
     }
+
+    /// No reflection — always zero.
+    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f64 {
+        0.0
+    }
 }
 
 impl GpuSerializable for DiffuseLightMaterial {

@@ -12,7 +12,7 @@ use crate::vec3::{Point3, Vec3};
 
 mod sphere;
 
-pub use sphere::{SphereShape, moving_sphere, sphere};
+pub use sphere::{moving_sphere, sphere, SphereShape};
 
 /// 3D shape interface — the 3D analogue of [`Region2D`].
 ///
@@ -156,16 +156,13 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<
         // Construct a minimal SurfaceInteraction to call material.emitted().
         let point = origin + sample.direction;
         let light_unit = sample.direction.unit_vector();
-        // Front face: light normal faces toward the shaded surface.
+        // Front face: light's normal faces toward the shaded surface.
         let front_face = sample.normal.dot(&(-light_unit)) > 0.0;
         let hit = Hit::new(time, point, point, sample.normal, None);
-        let mut si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material());
-        // Re-compute emission with the correct outgoing direction (from light toward
-        // shaded surface). The constructor uses Vec3::ZERO which skips coating attenuation
-        // in Coated::emitted().
+        let si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material());
+        // Direct call — no sentinel, no overwriting
         let wo = -light_unit;
-        si.set_emission(si.material().emitted(wo, &si));
-        sample.emission = si.emission();
+        sample.emission = self.material().emitted(wo, &si);
         sample
     }
 }

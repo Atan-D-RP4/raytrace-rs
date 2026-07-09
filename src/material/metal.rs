@@ -21,20 +21,23 @@
 //! about H to get `wi`. This concentrates samples where the BRDF has the most
 //! energy, reducing noise.
 
-use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::{reflect, Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect};
 
-use super::gpu::GpuSerializable;
 use super::GPU_NONE;
-use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
+use super::gpu::GpuSerializable;
+use super::{
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, ggx_sample_h,
+};
 use crate::sampler::SampleDims;
 
 use super::{fresnel_schlick, geometry_schlick_ggx, ggx_d};
+
+const MIRROR_THRESHOLD: f64 = 0.01;
 
 /// Microfacet conductor BRDF (GGX).
 #[derive(Clone)]
@@ -62,7 +65,7 @@ impl Bsdf for MetalMaterial {
     /// the mixture PDF and uses the reflected direction directly.
     fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
-        if self.roughness < 0.01 {
+        if self.is_delta() {
             let wi = reflect(&-wo, &si.shading_normal());
             if wi.dot(&si.shading_normal()) <= 0.0 {
                 return None;
@@ -80,17 +83,9 @@ impl Bsdf for MetalMaterial {
             });
         }
 
-        let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
+        let alpha = self.ggx_alpha()?;
         // Sample H from GGX NDF.
-        let u1 = dims.u;
-        let u2 = dims.v;
-        let cos_theta = ((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2))
-            .clamp(0.0, 1.0)
-            .sqrt();
-        let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-        let phi = 2.0 * PI * u1;
-        let (sin_phi, cos_phi) = phi.sin_cos();
-        let h_local = Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
+        let h_local = ggx_sample_h(alpha, dims.u, dims.v);
 
         let onb = Onb::build_from_normal(si.shading_normal());
         let h_world = onb.local_to_world(h_local);
@@ -118,7 +113,7 @@ impl Bsdf for MetalMaterial {
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
         // If the material is effectively a mirror, return zero for arbitrary directions.
-        if self.roughness < 0.01 {
+        if self.is_delta() {
             return Color3::ZERO;
         }
         let albedo = self
@@ -126,7 +121,7 @@ impl Bsdf for MetalMaterial {
             .as_ref()
             .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
-        let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
+        let alpha = self.ggx_alpha().unwrap_or(0.001);
         let h = (wo + wi).unit_vector();
         let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
         let cos_h_o = wo.dot(&h).max(0.0);
@@ -145,10 +140,10 @@ impl Bsdf for MetalMaterial {
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         // If the material is effectively a mirror, return zero for arbitrary directions.
-        if self.roughness < 0.01 {
+        if self.is_delta() {
             return 0.0;
         }
-        let alpha = (self.roughness * self.roughness).clamp(0.001, 1.0);
+        let alpha = self.ggx_alpha().unwrap_or(0.001);
         let h = (wo + wi).unit_vector();
         let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
         let cos_h_o = wo.dot(&h).max(0.0);
@@ -160,7 +155,7 @@ impl Bsdf for MetalMaterial {
 
     /// Returns the PDF kind for the GGX NDF if `fuzz` is non-zero, otherwise `None`.
     fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
-        if self.roughness < 0.01 {
+        if self.is_delta() {
             None
         } else {
             Some(PdfKind::Ggx {
@@ -182,11 +177,11 @@ impl Bsdf for MetalMaterial {
     }
 
     fn is_delta(&self) -> bool {
-        self.roughness < 0.01
+        self.roughness < MIRROR_THRESHOLD
     }
 
     fn ggx_alpha(&self) -> Option<f64> {
-        if self.roughness < 0.01 {
+        if self.is_delta() {
             None
         } else {
             Some((self.roughness * self.roughness).clamp(0.001, 1.0))

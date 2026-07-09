@@ -65,6 +65,21 @@ use crate::vec3::{Color3, Vec3, reflect};
 
 use self::gpu::GpuSerializable;
 
+/// GGX/Trowbridge-Reitz microfacet importance sampling.
+///
+/// Samples a half-vector H from the GGX NDF given roughness² `alpha` and uniform
+/// random variables `u`, `v` in [0, 1). Returns H in tangent space (Z = normal).
+pub fn ggx_sample_h(alpha: f64, u: f64, v: f64) -> Vec3 {
+    let cos_theta = ((1.0 - v) / (1.0 + (alpha * alpha - 1.0) * v))
+        .clamp(0.0, 1.0)
+        .sqrt();
+    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+    let phi = 2.0 * PI * u;
+    let (sin_phi, cos_phi) = phi.sin_cos();
+
+    Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta)
+}
+
 /// GGX/Trowbridge-Reitz normal distribution function (NDF).
 ///
 /// Returns the probability density that a microfacet has half-vector H aligned
@@ -373,8 +388,8 @@ impl Material {
             Material::Lambertian(inner) => inner.reflectance_estimate(wo, si),
             Material::Metal(inner) => inner.reflectance_estimate(wo, si),
             Material::Dielectric(inner) => inner.reflectance_estimate(wo, si),
-            Material::DiffuseLight(_) => 0.0,
-            Material::Isotropic(_) => 1.0,
+            Material::DiffuseLight(inner) => inner.reflectance_estimate(wo, si),
+            Material::Isotropic(inner) => inner.reflectance_estimate(wo, si),
             Material::Glossy(inner) => inner.reflectance_estimate(wo, si),
             Material::Custom(inner) => inner.reflectance_estimate(wo, si),
             Material::Mix(inner) => inner.reflectance_estimate(wo, si),
@@ -386,9 +401,9 @@ impl Material {
     /// Recursively checks composition variants: `Mix` is delta iff both children are.
     pub fn is_delta(&self) -> bool {
         match self {
-            Material::Dielectric(_) => true,
-            Material::Metal(inner) => inner.roughness < 0.01,
-            Material::Glossy(inner) => inner.roughness < 0.01,
+            Material::Dielectric(inner) => inner.is_delta(),
+            Material::Metal(inner) => inner.is_delta(),
+            Material::Glossy(inner) => inner.is_delta(),
             Material::Mix(inner) => inner.is_delta(),
             Material::Coated(inner) => inner.is_delta(),
             Material::Custom(inner) => inner.is_delta(),

@@ -62,6 +62,11 @@ impl Bsdf for IsotropicMaterial {
     fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
         1.0 / (4.0 * PI)
     }
+
+    /// Isotropic scattering is non-directional, so the reflectance estimate is simply `1.0`.
+    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f64 {
+        1.0
+    }
 }
 
 impl GpuSerializable for IsotropicMaterial {

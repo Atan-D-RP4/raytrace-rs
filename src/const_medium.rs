@@ -1,3 +1,4 @@
+use std::f64::consts::GOLDEN_RATIO;
 use std::sync::Arc;
 
 use crate::aabb::Aabb;
@@ -45,7 +46,7 @@ impl<T: Intersectable, const SURFACE: bool> ConstantMedium<T, SURFACE> {
         let seed = sampler::splitmix64(
             density
                 .to_bits()
-                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_mul(GOLDEN_RATIO.to_bits())
                 .wrapping_add(phase_tag),
         );
         Self {
@@ -77,7 +78,7 @@ impl<T: Intersectable> ConstantMedium<T> {
         let seed = sampler::splitmix64(
             density
                 .to_bits()
-                .wrapping_mul(0x9E3779B97F4A7C15)
+                .wrapping_mul(GOLDEN_RATIO.to_bits())
                 .wrapping_add(phase_tag),
         );
         Self {
@@ -149,16 +150,22 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         let dist_inside_boundary = (t_max - t_min) * ray_length;
 
         // Deterministic QMC sample for volume scattering distance.
-        // Derive n from ray direction so the same ray always gets the same
-        // scattering distance (reproducible), while different rays vary.
-        let n = sampler::splitmix64(
-            ray.direction
-                .x
-                .to_bits()
-                .wrapping_mul(0x9E3779B97F4A7C15)
-                .wrapping_add(ray.direction.y.to_bits()),
-        ) as u32;
-        let qmc_sample = sampler::hash_sample(n, VOLUME_DIM, self.vol_seed);
+        // Derive a unique seed from the ray's origin and direction so the same ray always gets the
+        // same scattering distance (reproducible), while different rays vary.
+        let o = ray
+            .origin
+            .x
+            .to_bits()
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(ray.origin.y.to_bits());
+        let d = ray
+            .direction
+            .x
+            .to_bits()
+            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_add(ray.direction.y.to_bits());
+        let seed = sampler::splitmix64(o.wrapping_add(d)) as u32;
+        let qmc_sample = sampler::hash_sample(seed, VOLUME_DIM, self.vol_seed);
 
         // Sample a scattering distance based on the medium's density using inverse transform sampling.
         let hit_dist = self.neg_inv_density * qmc_sample.max(1e-12).ln();

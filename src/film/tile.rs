@@ -9,8 +9,6 @@ pub struct FilmTile {
     pub pixels: Vec<Color3>,
     /// Sum of raw (unweighted) sample colors for variance estimation.
     pub raw_sum: Vec<Color3>,
-    /// A parallel vector to `pixels` that tracks whether each pixel has been sampled at least once.
-    pub sampled: Vec<bool>,
     /// Running sum of sample weights for each pixel (used by reconstruction filters).
     pub weight_sum: Vec<f64>,
     /// Actual number of samples per pixel (independent of filter weights).
@@ -31,7 +29,6 @@ impl FilmTile {
             width,
             pixels: vec![Color3::ZERO; (width * height) as usize],
             raw_sum: vec![Color3::ZERO; (width * height) as usize],
-            sampled: vec![false; (width * height) as usize],
             weight_sum: vec![0.0; (width * height) as usize],
             sample_count: vec![0; (width * height) as usize],
             dirty: true,
@@ -57,6 +54,5 @@ impl FilmTile {
         self.raw_sum[index] += color;
         self.weight_sum[index] += weight;
         self.sample_count[index] += 1;
-        self.sampled[index] = true;
     }
 }

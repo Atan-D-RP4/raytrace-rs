@@ -90,6 +90,7 @@ impl Bsdf for DielectricMaterial {
         fresnel_schlick(cos_theta, self.r0)
     }
 
+    /// Delta material
     fn is_delta(&self) -> bool {
         true
     }

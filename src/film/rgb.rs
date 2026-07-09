@@ -177,16 +177,15 @@ impl Film for RgbFilm {
         let tile_width = x_max - x_min;
         // Iterate over tile pixels, destructuring the 5 parallel vectors:
         // (color, raw, sampled, weight_sum, sample_count)
-        for (tile_idx, ((((&color, &raw), &sampled), &weight_sum), &tile_count)) in tile
+        for (tile_idx, (((&color, &raw), &weight_sum), &tile_count)) in tile
             .pixels
             .iter()
             .zip(tile.raw_sum.iter())
-            .zip(tile.sampled.iter())
             .zip(tile.weight_sum.iter())
             .zip(tile.sample_count.iter())
             .enumerate()
         {
-            if !sampled || weight_sum == 0.0 {
+            if weight_sum == 0.0 {
                 continue;
             }
             let tx = x_min + (tile_idx as u32 % tile_width);

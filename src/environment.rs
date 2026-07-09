@@ -116,6 +116,16 @@ impl EnvironmentMap {
 
         (i, j)
     }
+
+    pub fn to_solid_angle_pdf(&self, direction: Vec3) -> f64 {
+        let (i, j) = self.pixel_uv_from_direction(direction);
+        let pdf_pixel = self.pdf(i, j);
+
+        let theta = direction.y.acos(); // y-up: θ = 0 at north pole
+        let sin_theta = theta.sin().max(1e-10);
+
+        pdf_pixel / (sin_theta * 2.0 * PI * PI)
+    }
 }
 
 pub struct EnvironmentLight {
@@ -145,17 +155,7 @@ impl Intersectable for EnvironmentLight {
 
 impl Sampleable for EnvironmentLight {
     fn pdf_value(&self, _origin: Vec3, direction: Vec3, _time: f64) -> f64 {
-        let (i, j) = self.env_map.pixel_uv_from_direction(direction);
-        let pdf_pixel = self.env_map.pdf(i, j);
-
-        // Convert pixel-domain PDF to solid-angle PDF
-        let theta = (j as f64 + 0.5) / self.env_map.height() as f64 * PI;
-        let sin_theta = theta.sin();
-        if sin_theta > 0.0 {
-            pdf_pixel / (2.0 * PI * PI * sin_theta)
-        } else {
-            0.0
-        }
+        self.env_map.to_solid_angle_pdf(direction)
     }
 
     fn random_direction(&self, _origin: Vec3, u: f64, v: f64, _time: f64) -> Vec3 {

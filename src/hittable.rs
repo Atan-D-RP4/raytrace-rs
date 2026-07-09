@@ -4,6 +4,7 @@ use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
+use crate::texture::TextureCoords;
 use crate::vec3::{Color3, Vec3};
 
 /// Represents a ray-object intersection hit, containing geometric information about the
@@ -84,22 +85,17 @@ pub struct SurfaceInteraction<'si> {
     front_face: bool,
     /// Reference to the material of the intersected surface.
     material: &'si Material,
-    /// Emission at this surface point, precomputed at construction.
-    /// For non-emissive materials this is always `Color3::ZERO`.
-    emission: Color3,
 }
 
 impl<'si> SurfaceInteraction<'si> {
+    /// Constructs a new `SurfaceInteraction` from a `Hit`, shading normal, front face flag, and material.
     pub fn new(hit: Hit, shading_normal: Vec3, front_face: bool, material: &'si Material) -> Self {
-        let mut si = Self {
+        Self {
             hit,
             shading_normal,
             front_face,
             material,
-            emission: Color3::ZERO,
-        };
-        si.emission = material.emitted(Vec3::ZERO, &si);
-        si
+        }
     }
 
     /// Construct from a MaterialHit, resolving front_face and shading_normal.
@@ -111,14 +107,12 @@ impl<'si> SurfaceInteraction<'si> {
             shading_normal: geometric_normal,
             front_face: false,
             material: mat_hit.material,
-            emission: Color3::ZERO,
         };
         si.set_face_normal(ray);
-        let wo = -ray.direction.unit_vector();
-        si.emission = si.material.emitted(wo, &si);
         si
     }
 
+    /// Sets the front_face and shading_normal based on the ray direction and geometric normal.
     pub fn set_face_normal(&mut self, ray: &Ray) {
         self.front_face = ray.direction.dot(&self.hit.geometric_normal) < 0.0;
         self.shading_normal = if self.front_face {
@@ -128,55 +122,62 @@ impl<'si> SurfaceInteraction<'si> {
         };
     }
 
+    /// Returns the world-space intersection point.
     pub fn point(&self) -> Vec3 {
         self.hit.point
     }
+
+    /// Returns the shading normal at the intersection point, which may differ from the geometric
+    /// normal due to normal mapping or other shading effects.
     pub fn shading_normal(&self) -> Vec3 {
         self.shading_normal
     }
+
+    /// Returns true if the ray hit the front face of the surface, false if it hit the back face.
     pub fn front_face(&self) -> bool {
         self.front_face
     }
-    /// Emission radiance at this surface point (precomputed).
-    pub fn emission(&self) -> Color3 {
-        self.emission
+
+    /// Convenience: evaluate emission at this surface point for a given outgoing direction.
+    /// Delegates to `Material::emitted()`.
+    pub fn emitted(&self, wo: Vec3) -> Color3 {
+        self.material.emitted(wo, self)
     }
-    /// Override the precomputed emission (used by sample_light to pass correct wo).
-    pub fn set_emission(&mut self, emission: Color3) {
-        self.emission = emission;
-    }
+
+    /// Returns a reference to the material of the intersected surface.
     pub fn material(&self) -> &'si Material {
         self.material
     }
+
+    /// Returns the UV coordinates of the intersection point, if available.
     pub fn uv(&self) -> Option<(f64, f64)> {
         self.hit.uv
     }
-    pub fn u(&self) -> f64 {
-        match self.hit.uv {
-            Some((u, _)) => u,
-            None => 0.0,
-        }
-    }
-    pub fn v(&self) -> f64 {
-        match self.hit.uv {
-            Some((_, v)) => v,
-            None => 0.0,
-        }
-    }
+
+    /// Returns the geometric normal at the intersection point, which is the outward normal before
+    /// any shading adjustments.
     pub fn geometric_normal(&self) -> Vec3 {
         self.hit.geometric_normal
     }
+
+    /// Returns the ray parameter `t` at the intersection point.
     pub fn time(&self) -> f64 {
         self.hit.time
     }
+
+    /// Returns the mapping-space position of the intersection point, which is used for procedural
+    /// textures.
     pub fn hit(&self) -> &Hit {
         &self.hit
     }
 
+    /// Returns the texture coordinates for this surface interaction, combining the UV coordinates
+    /// and the mapping-space position. This is used for texture sampling.
     pub fn texture_coords(&self) -> crate::texture::TextureCoords {
-        crate::texture::TextureCoords::new(
-            self.u(),
-            self.v(),
+        let (u, v) = self.hit.uv.unwrap_or((0.0, 0.0));
+        TextureCoords::new(
+            u,
+            v,
             self.point(),
             self.hit.mapping_point,
             self.geometric_normal(),

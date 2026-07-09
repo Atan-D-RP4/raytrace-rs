@@ -24,11 +24,11 @@ mod superellipse;
 mod tri;
 
 pub use annulus::AnnulusRegion;
-pub use r#box::box3d;
 pub use ellipse::EllipseRegion;
 pub use function::FunctionRegion;
 pub use polygon::PolygonRegion;
 pub use quad::QuadRegion;
+pub use r#box::box3d;
 pub use rounded_rect::RoundedRectRegion;
 pub use superellipse::SuperellipseRegion;
 pub use tri::TriRegion;
@@ -261,7 +261,8 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         let point = origin + direction;
         let hit = Hit::new(time, point, point, self.normal, None);
         let si = SurfaceInteraction::new(hit, self.normal, front_face, self.material());
-        let emission = si.emission();
+        let wo = -direction.unit_vector();
+        let emission = self.material().emitted(wo, &si);
 
         crate::hittable::LightSample {
             direction,

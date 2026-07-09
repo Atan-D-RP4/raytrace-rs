@@ -8,24 +8,32 @@
 //! Key parameters: `coating_ior` (Fresnel), `coating_tint` (absorption color),
 //! `thickness` (path length through the coating).
 
-use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::{fresnel_r0, fresnel_schlick, reflect, refract};
-use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
-use crate::material::{PdfKind, GPU_NONE};
+use crate::material::gpu::GpuSerializable;
+use crate::material::{
+    fresnel_r0, fresnel_schlick, ggx_sample_h, reflect, refract, Bsdf, BsdfScatter,
+    GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE,
+};
 use crate::onb::Onb;
 use crate::sampler::SampleDims;
 use crate::vec3::{Color3, Vec3};
-
-use super::gpu::GpuSerializable;
 
 /// Maximum number of internal bounces for a Coated material, matching the
 /// number of QMC dimensions reserved for internal Fresnel splits (dims.v
 /// through dims.z, one per bounce). The integrator terminates the path if
 /// this limit is exceeded to avoid infinite recursion.
 const MAX_INTERNAL_BOUNCES: usize = 5;
+
+fn beers_absorption(throughput: Color3, tint: Color3, path_len: f64) -> Color3 {
+    throughput
+        * Color3::new(
+            tint.x.powf(path_len.abs()),
+            tint.y.powf(path_len.abs()),
+            tint.z.powf(path_len.abs()),
+        )
+}
 
 #[derive(Clone)]
 pub struct CoatedMaterial {
@@ -83,11 +91,7 @@ impl Bsdf for CoatedMaterial {
         let mut wi = refract(&-wo, &n, ri);
         // Beer's law absorption per crossing in the coating layer
         let path_len = self.thickness / wi.dot(&n).abs();
-        throughput = Color3::new(
-            throughput.x * coating_tint.x.powf(path_len.abs()),
-            throughput.y * coating_tint.y.powf(path_len.abs()),
-            throughput.z * coating_tint.z.powf(path_len.abs()),
-        );
+        throughput = beers_absorption(throughput, coating_tint, path_len);
 
         // Internal Fresnel splits use dims.v through dims.z (one per bounce).
         // The substrate gets default dims — for Delta substrates (metal,
@@ -201,16 +205,7 @@ impl Bsdf for CoatedMaterial {
 
                         // GGX importance sampling using the internal wo.
                         // Uses the same inverse-CDF as Metal/Glossy.
-                        let u1 = sub_u;
-                        let u2 = sub_v;
-                        let cos_theta = ((1.0 - u2) / (1.0 + (alpha * alpha - 1.0) * u2))
-                            .clamp(0.0, 1.0)
-                            .sqrt();
-                        let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-                        let phi = 2.0 * PI * u1;
-                        let (sin_phi, cos_phi) = phi.sin_cos();
-                        let h_local =
-                            Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
+                        let h_local = ggx_sample_h(alpha, dims.u, dims.v);
 
                         let onb = Onb::build_from_normal(normal);
                         let h_world = onb.local_to_world(h_local);
@@ -485,11 +480,6 @@ impl Bsdf for CoatedMaterial {
     }
 
     fn emitted(&self, wo: Vec3, si: &SurfaceInteraction) -> Color3 {
-        // Vec3::ZERO sentinel: NEE callers (sample_light) want raw substrate emission.
-        // The BSDF eval handles coating attenuation for that path.
-        if wo.length_squared() < 1e-10 {
-            return self.coating.emitted(wo, si) + self.substrate.emitted(wo, si);
-        }
         let sn = si.shading_normal();
         let cos_wo = wo.dot(&sn).abs();
         let r0 = fresnel_r0(self.coating_ior);

@@ -4,8 +4,6 @@
 //! This makes samplers deterministic, `Sync`, and immune to state corruption
 //! from variable-length paths.
 
-use std::sync::LazyLock;
-
 use rand::RngExt;
 
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
@@ -17,77 +15,7 @@ pub trait Sampler: Send + Sync {
 
 const MAX_DIMS: usize = 21200;
 
-/// Joe & Kuo 2008 direction numbers for Sobol' sequences, left-aligned u32, lazy-initialized. Boxed
-/// to avoid a 2.7 MB stack allocation (21200 × 32 × 4 bytes).
-static DIRS: LazyLock<Box<[[u32; 32]; MAX_DIMS]>> = LazyLock::new(compute_dirs);
-
-/// Parse Joe & Kuo direction numbers from the bundled dataset.
-///
-/// File format: `d s a m_1 ... m_s` (dimension, degree, primitive poly, values).
-fn compute_dirs() -> Box<[[u32; 32]; MAX_DIMS]> {
-    let file = include_str!("../new-joe-kuo-6.21201");
-    // Initialize all directions to zero, then fill in the first 32 bits of each dimension.
-    let mut directions = vec![[0u32; 32]; MAX_DIMS];
-
-    // Van der Corput (dim 0): V[j] = 1 << (31 - j)
-    (0..32).for_each(|j| {
-        directions[0][j] = 1u32 << (31 - j);
-    });
-
-    let mut dim_idx = 2usize; // file starts at dimension 2
-    // Skip the header line and parse each subsequent line for direction numbers.
-    for line in file.lines().skip(1) {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.len() < 4 {
-            continue;
-        }
-        let d_val: usize = tokens[0].parse().unwrap_or(0);
-        let s: usize = tokens[1].parse().unwrap_or(0);
-        let a: u32 = tokens[2].parse().unwrap_or(0);
-        if !(1..=32).contains(&s) {
-            continue;
-        }
-
-        let mut m = [0u32; 32];
-        for i in 0..s {
-            if i + 3 < tokens.len() {
-                m[i] = tokens[i + 3].parse().unwrap_or(0);
-            }
-        }
-
-        let mut v = [0u32; 32];
-        for k in 0..s {
-            v[k] = m[k] << (32 - (k + 1));
-        }
-        for k in s..32 {
-            let mut val = v[k - s] ^ (v[k - s] >> s);
-            for i in 1..s {
-                if ((a >> (s - i - 1)) & 1) != 0 {
-                    val ^= v[k - i];
-                }
-            }
-            v[k] = val;
-        }
-
-        if d_val >= 2 {
-            let sob_dim = d_val - 1;
-            if sob_dim < MAX_DIMS {
-                directions[sob_dim] = v;
-            }
-        }
-        dim_idx += 1;
-        if dim_idx > MAX_DIMS + 1 {
-            break;
-        }
-    }
-    directions
-        .into_boxed_slice()
-        .try_into()
-        .expect("DIRS length mismatch")
-}
+include!(concat!(env!("OUT_DIR"), "/sobol_dirs.rs"));
 
 /// Conversion from u32 to [0,1).
 const INV_U32: f64 = 1.0 / (1u64 << 32) as f64;

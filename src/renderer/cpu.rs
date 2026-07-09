@@ -181,7 +181,6 @@ where
                 if tile.dirty {
                     tile.pixels.fill(Color3::ZERO);
                     tile.raw_sum.fill(Color3::ZERO);
-                    tile.sampled.fill(false);
                     tile.weight_sum.fill(0.0);
                     tile.sample_count.fill(0);
                 }

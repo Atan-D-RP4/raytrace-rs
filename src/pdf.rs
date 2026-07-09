@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 use crate::environment::EnvironmentMap;
 use crate::hittable::Sampleable;
-use crate::material::PdfKind;
-use crate::material::ggx_d;
+use crate::material::{PdfKind, ggx_d, ggx_sample_h};
 use crate::onb::Onb;
 use crate::sampler::{DimCursor, Sampler};
 use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
@@ -63,6 +62,7 @@ pub struct PdfEnum<S: Sampler> {
     _s: std::marker::PhantomData<S>,
 }
 
+/// Type-erased PDF variants for runtime dispatch.
 enum PdfEnumInner {
     Cosine(CosinePDF),
     Ggx(GgxSamplePDF),
@@ -80,13 +80,7 @@ impl<S: Sampler> PDF<S> for PdfEnum<S> {
             PdfEnumInner::UniformHemisphere(p) => {
                 <UniformHemispherePDF as PDF<S>>::value(p, direction)
             }
-            PdfEnumInner::Environment(env_map) => {
-                let (i, j) = env_map.pixel_uv_from_direction(direction);
-                let pdf_domain = env_map.pdf(i, j);
-                let theta = direction.y.acos(); // y-up: θ = 0 at north pole
-                let sin_theta = theta.sin().max(1e-10);
-                pdf_domain / (sin_theta * 2.0 * PI * PI)
-            }
+            PdfEnumInner::Environment(env_map) => env_map.to_solid_angle_pdf(direction),
         }
     }
     fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
@@ -151,6 +145,7 @@ pub trait PDF<S: Sampler> {
     fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3;
 }
 
+/// Uniformly distributed directions over the unit sphere.
 pub struct UniformSpherePDF;
 
 impl UniformSpherePDF {
@@ -222,6 +217,7 @@ impl<S: Sampler> PDF<S> for UniformHemispherePDF {
     }
 }
 
+/// Cosine-weighted hemisphere sampling PDF.
 pub struct CosinePDF {
     /// The normal vector defining the hemisphere for cosine-weighted sampling.
     pub uvw: Onb,
@@ -249,9 +245,13 @@ impl<S: Sampler> PDF<S> for CosinePDF {
     }
 }
 
+/// PDF for sampling directions from a set of light emitters
 pub struct EmitterPDF<'a> {
+    /// The set of light emitters to sample from.
     objects: &'a [Arc<dyn Sampleable>],
+    /// The origin point from which to sample direction.
     origin: Point3,
+    /// The time at which to sample the emitter.
     time: f64,
 }
 
@@ -309,6 +309,7 @@ impl<'a, S: Sampler> PDF<S> for EmitterPDF<'a> {
 /// Both `value` and `generate` use an orthonormal basis aligned with `n`
 /// so the GGX lobe is correctly oriented in the hemisphere.
 pub struct GgxSamplePDF {
+    /// The GGX roughness parameter (α) controlling the lobe width.
     alpha: f64,
     /// Pre-normalized outgoing direction (toward camera) — avoids redundant
     /// `unit_vector()` calls in value() and generate().
@@ -353,23 +354,15 @@ impl<S: Sampler> PDF<S> for GgxSamplePDF {
     }
 
     fn generate(&self, dim_offset: &mut DimCursor<S>) -> Vec3 {
-        let u = dim_offset.next_sample();
-        let v = dim_offset.next_sample();
-
-        let a = self.alpha;
-
-        let cos_theta = ((1.0 - v) / (1.0 + (a * a - 1.0) * v))
-            .clamp(0.0, 1.0)
-            .sqrt();
-        let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-
-        let phi = 2.0 * PI * u;
-        let (sin_phi, cos_phi) = phi.sin_cos();
-
         // Local frame: x=bitangent, y=tangent, z=normal (matches ONB convention). Put cos_theta on
         // the normal axis (z).
-        let h_local = Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta);
+        let h_local = ggx_sample_h(
+            self.alpha,
+            dim_offset.next_sample(),
+            dim_offset.next_sample(),
+        );
 
+        // Transform the sampled half-vector H from local space to world space using the ONB.
         let h_world = self.onb.local_to_world(h_local);
 
         // Reflect wo about H to get wi. `reflect` expects the incident direction (toward surface),
