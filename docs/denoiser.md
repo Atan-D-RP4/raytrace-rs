@@ -2,6 +2,15 @@
 
 ## Changelog
 
+- **v9 (2026-07-09)** — Unified ImageFilter + FilterPipeline design. Replaced separate
+  `Denoiser` generic with `FilterPipeline` GAT on `Film` trait. Reconstruction filters
+  (tent, Gaussian) and denoisers (bilateral, A-Trous) now share the same `ImageFilter`
+  trait. Added `FilterPipeline` trait for type-level composition (`NoFilters`,
+  `SingleFilter`, `FilterChain`). Added `pipeline!` convenience macro. Tile bounds
+  expansion derived from `pipeline.max_radius()` instead of hardcoded `FILTER_RADIUS`.
+  Removed `Denoiser` trait — replaced by `ImageFilter`. Removed `apply_denoiser()` —
+  replaced by `apply_pipeline()`. Removed `denoised: bool` — replaced by
+  `pipeline_applied: bool`.
 - **v1 (2026-06-28)** — Initial plan. Architecture decision, algorithms, GPU solutions, implementation phases.
 - **v2 (2026-06-28)** — Bi-directional audit with `docs/adaptive-sampling.md`. Resolved
   6 conflicts: raw_data() variance format (now `[f64; 3]` per-channel), overlay_radiance()
@@ -33,160 +42,256 @@
 
 ## Architecture Decision
 
-**GAT-based Film trait with AOV coupling and const generic resolution.**
+**Unified ImageFilter + FilterPipeline design with GAT-based Film trait.**
 
-The `Film` trait uses a **Generic Associated Type (GAT)** to couple AOV buffers with the film. Different film types can have different AOV sets — the AOVs are part of the type, not bolted on. Resolution is **const generic** (`const W: u32, const H: u32`) enabling compile-time bounds checking and monomorphization.
+The `Film` trait uses two **Generic Associated Types (GATs)** to couple both the filter pipeline and the AOV set with the film. Reconstruction filters (tent, Gaussian) and denoisers (bilateral, A-Trous) share the same `ImageFilter` trait. They are composed via a type-level `FilterPipeline` — `NoFilters`, `SingleFilter`, or `FilterChain` — with zero runtime overhead.
+
+### ImageFilter trait
 
 ```rust
-/// AOV set trait — defines what AOVs a film supports.
-/// Each film type can have a different AOV set.
-pub trait AOVSet: Send + Sync + 'static {
-    fn new(width: u32, height: u32) -> Self;
-    fn write_pixel(&mut self, idx: usize, albedo: Color3, normal: Vec3, depth: f64, variance: [f64; 3]);
-    fn read_denoiser_aovs(&self, idx: usize) -> (Color3, Vec3, f64, [f64; 3]);
-    fn reset(&mut self);
-}
+/// An image-space filter that operates on accumulated pixel data.
+/// Both reconstruction filters (tent, Gaussian) and denoisers (bilateral, A-Trous)
+/// implement this trait. The only difference is that denoisers may read AOVs.
+pub trait ImageFilter: Send + Sync {
+    /// Apply this filter to the accumulated image.
+    ///
+    /// # Arguments
+    /// * `pixels` — Accumulated radiance sums (not means) per pixel.
+    /// * `sample_counts` — Number of samples per pixel.
+    /// * `width` — Image width.
+    /// * `height` — Image height.
+    /// * `aovs` — Optional AOV storage (for denoisers that need edge-stopping).
+    ///
+    /// # Returns
+    /// Filtered per-pixel colors (means, not sums).
+    fn apply(
+        &self,
+        pixels: &[Color3],
+        sample_counts: &[u32],
+        width: u32,
+        height: u32,
+        aovs: Option<&AOVStorage>,
+    ) -> Vec<Color3>;
 
-/// No AOVs — for use with NoDenoiser or BilateralDenoiser.
-pub struct NoAOVs;
-
-impl AOVSet for NoAOVs {
-    fn new(_width: u32, _height: u32) -> Self { NoAOVs }
-    fn write_pixel(&mut self, _idx: usize, _a: Color3, _n: Vec3, _d: f64, _v: [f64; 3]) {}
-    fn read_denoiser_aovs(&self, _idx: usize) -> (Color3, Vec3, f64, [f64; 3]) {
-        unreachable!("NoAOVs has no AOVs")
-    }
-    fn reset(&mut self) {}
-}
-
-/// Denoiser AOVs — albedo, normal, depth, variance (for A-Trous / OIDN).
-pub struct DenoiserAOVs {
-    albedo: Vec<Color3>,
-    normal: Vec<Vec3>,
-    depth: Vec<f64>,
-    variance: Vec<[f64; 3]>,
-    width: u32,
-    height: u32,
-}
-
-impl AOVSet for DenoiserAOVs {
-    fn new(width: u32, height: u32) -> Self {
-        let n = (width * height) as usize;
-        Self {
-            albedo: vec![Color3::ZERO; n],
-            normal: vec![Vec3::ZERO; n],
-            depth: vec![f64::INFINITY; n],
-            variance: vec![[f64::INFINITY; 3]; n],
-            width,
-            height,
-        }
-    }
-    fn write_pixel(&mut self, idx: usize, albedo: Color3, normal: Vec3, depth: f64, variance: [f64; 3]) {
-        self.albedo[idx] = albedo;
-        self.normal[idx] = normal;
-        self.depth[idx] = depth;
-        self.variance[idx] = variance;
-    }
-    fn read_denoiser_aovs(&self, idx: usize) -> (Color3, Vec3, f64, [f64; 3]) {
-        (self.albedo[idx], self.normal[idx], self.depth[idx], self.variance[idx])
-    }
-    fn reset(&mut self) {
-        self.albedo.fill(Color3::ZERO);
-        self.normal.fill(Vec3::ZERO);
-        self.depth.fill(f64::INFINITY);
-        self.variance.fill([f64::INFINITY; 3]);
-    }
-}
-
-/// Film trait with GAT for AOV coupling.
-pub trait Film: Send + Sync {
-    /// The AOV storage type for this film.
-    /// Different films can have different AOV sets (None, Denoiser, Debug, etc.)
-    type AOVs: AOVSet;
-
-    fn width(&self) -> u32;
-    fn height(&self) -> u32;
-    fn add_sample(&mut self, x: u32, y: u32, color: Color3, weight: f64);
-    fn merge_tile(&mut self, tile: &FilmTile);
-    fn progressive(&self) -> impl Iterator<Item = u8> + '_;
-    fn reset(&mut self);
-    fn apply_denoiser(&mut self);
-
-    /// Access the AOV storage.
-    fn aovs(&self) -> &Self::AOVs;
-    fn aovs_mut(&mut self) -> &mut Self::AOVs;
+    /// Filter radius in pixels (for tile bounds expansion).
+    fn radius(&self) -> u32;
 }
 ```
 
-**Why GAT?**
-
-The GAT `type AOVs: AOVSet` couples the AOV set to the film type. This means:
-1. **Type-safe AOV access** — the compiler knows what AOVs a film has
-2. **Zero-cost abstraction** — no dynamic dispatch, no `Option<AOVStorage>`
-3. **Extensible** — new AOV sets are new types, no trait changes
-
-**Why const generics?**
-
-Resolution as const generic parameters (`const W: u32, const H: u32`) enables:
-1. **Compile-time bounds checking** — can't write to pixel (W, H)
-2. **Monomorphization** — specific resolutions get optimized code
-3. **Type-level resolution** — the compiler knows the viewport size
+### FilterPipeline trait
 
 ```rust
-/// Concrete film implementation with const generic resolution.
-pub struct RgbFilm<const W: u32, const H: u32, D: Denoiser = NoDenoiser, A: AOVSet = NoAOVs> {
+/// A pipeline of image filters applied in sequence.
+/// Composed via `NoFilters`, `SingleFilter`, or `FilterChain`.
+pub trait FilterPipeline: Send + Sync {
+    /// Apply all filters in sequence. Each filter receives the output of the previous.
+    fn apply(
+        &self,
+        pixels: &[Color3],
+        sample_counts: &[u32],
+        width: u32,
+        height: u32,
+        aovs: Option<&AOVStorage>,
+    ) -> Vec<Color3>;
+
+    /// Maximum filter radius across all filters in the pipeline.
+    /// Used to expand tile bounds during rendering.
+    fn max_radius(&self) -> u32;
+}
+```
+
+### Pipeline types
+
+```rust
+/// Empty pipeline — no filters applied. Identity operation.
+pub struct NoFilters;
+
+impl FilterPipeline for NoFilters {
+    fn apply(&self, pixels: &[Color3], _: &[u32], _: u32, _: u32, _: Option<&AOVStorage>) -> Vec<Color3> {
+        pixels.to_vec()
+    }
+    fn max_radius(&self) -> u32 { 0 }
+}
+
+/// Single filter pipeline.
+pub struct SingleFilter<F: ImageFilter>(pub F);
+
+impl<F: ImageFilter> FilterPipeline for SingleFilter<F> {
+    fn apply(&self, pixels: &[Color3], counts: &[u32], w: u32, h: u32, aovs: Option<&AOVStorage>) -> Vec<Color3> {
+        self.0.apply(pixels, counts, w, h, aovs)
+    }
+    fn max_radius(&self) -> u32 { self.0.radius() }
+}
+
+/// Chained filter pipeline — apply `F` first, then `Rest`.
+pub struct FilterChain<F: ImageFilter, Rest: FilterPipeline> {
+    pub filter: F,
+    pub rest: Rest,
+}
+
+impl<F: ImageFilter, Rest: FilterPipeline> FilterPipeline for FilterChain<F, Rest> {
+    fn apply(&self, pixels: &[Color3], counts: &[u32], w: u32, h: u32, aovs: Option<&AOVStorage>) -> Vec<Color3> {
+        let filtered = self.filter.apply(pixels, counts, w, h, aovs);
+        self.rest.apply(&filtered, counts, w, h, aovs)
+    }
+    fn max_radius(&self) -> u32 {
+        self.filter.radius().max(self.rest.max_radius())
+    }
+}
+```
+
+### pipeline! convenience macro
+
+```rust
+/// Convenience macro for building filter pipelines.
+///
+/// # Examples
+/// ```ignore
+/// let pipeline = pipeline![TentFilter::new(2)];
+/// let pipeline = pipeline![TentFilter::new(2), BilateralDenoiser::new(4, 3.0, 0.15, 2.0)];
+/// let pipeline = pipeline![FireflyClampFilter::new(10.0), TentFilter::new(2), BilateralDenoiser::new(4, 3.0, 0.15, 2.0)];
+/// ```
+///
+/// Expands to nested `FilterChain` / `SingleFilter` types at compile time.
+/// Zero runtime cost — the macro builds the type-level pipeline.
+#[macro_export]
+macro_rules! pipeline {
+    // Single filter: pipeline![A] → SingleFilter(A)
+    [$filter:expr] => {
+        $crate::film::SingleFilter($filter)
+    };
+    // Multiple filters: pipeline![A, B, ...] → FilterChain { filter: A, rest: pipeline![B, ...] }
+    [$first:expr, $($rest:tt)+] => {
+        $crate::film::FilterChain {
+            filter: $first,
+            rest: pipeline![$($rest)+],
+        }
+    };
+}
+```
+
+### Film trait with two GATs
+
+```rust
+pub trait Film: Send + Sync {
+    /// The AOV storage type for this film.
+    type AOVs: AOVSet;
+    /// The filter pipeline type for this film.
+    type Pipeline: FilterPipeline;
+
+    fn width(&self) -> u32;
+    fn height(&self) -> u32;
+    fn add_sample(&mut self, x: u32, y: u32, color: Color3);
+    fn merge_tile(&mut self, tile: &FilmTile);
+    fn progressive(&self) -> impl Iterator<Item = u8> + '_;
+    fn reset(&mut self);
+
+    /// Apply the filter pipeline after rendering completes.
+    fn apply_pipeline(&mut self);
+
+    /// Access the filter pipeline.
+    fn pipeline(&self) -> &Self::Pipeline;
+
+    /// Access the AOV storage.
+    fn aovs(&self) -> Option<&AOVStorage>;
+    fn aovs_mut(&mut self) -> Option<&mut AOVStorage>;
+}
+```
+
+### RgbFilm with FilterPipeline generic
+
+```rust
+pub struct RgbFilm<P: FilterPipeline = SingleFilter<TentFilter>, A: AOVSet = NoAOVs> {
+    width: u32,
+    height: u32,
     pixels: Vec<Color3>,
-    sample_counts: Vec<u32>,
+    sample_num: Vec<u32>,
+    raw_sum: Vec<Color3>,
     m_2: Vec<Color3>,
     exposure: f64,
     tone_map: bool,
-    denoiser: D,
-    denoised: bool,
+    pipeline: P,
+    pipeline_applied: bool,  // prevents double-application
     aovs: A,
 }
 
-impl<const W: u32, const H: u32, D: Denoiser, A: AOVSet> RgbFilm<W, H, D, A> {
-    pub fn new(exposure: f64, tone_map: bool, denoiser: D, aovs: A) -> Self {
-        let n = (W * H) as usize;
-        Self {
-            pixels: vec![Color3::ZERO; n],
-            sample_counts: vec![0; n],
-            m_2: vec![Color3::ZERO; n],
-            exposure,
-            tone_map,
-            denoiser,
-            denoised: false,
-            aovs,
-        }
+impl RgbFilm {
+    /// Default: tent filter with radius 2, no AOVs. Matches current behavior.
+    pub fn new(dimensions: (u32, u32), exposure: f64, tone_map: bool) -> Self {
+        Self::with_pipeline(dimensions, exposure, tone_map, SingleFilter(TentFilter::new(2)), NoAOVs)
     }
 }
 
-impl<const W: u32, const H: u32, D: Denoiser, A: AOVSet> Film for RgbFilm<W, H, D, A> {
-    type AOVs = A;
+impl<P: FilterPipeline, A: AOVSet> RgbFilm<P, A> {
+    pub fn with_pipeline(
+        dimensions: (u32, u32), exposure: f64, tone_map: bool,
+        pipeline: P, aovs: A,
+    ) -> Self {
+        let (width, height) = dimensions;
+        Self {
+            width, height,
+            pixels: vec![Color3::ZERO; (width * height) as usize],
+            sample_num: vec![0; (width * height) as usize],
+            raw_sum: vec![Color3::ZERO; (width * height) as usize],
+            m_2: vec![Color3::ZERO; (width * height) as usize],
+            exposure, tone_map, pipeline,
+            pipeline_applied: false,
+            aovs,
+        }
+    }
 
-    fn width(&self) -> u32 { W }
-    fn height(&self) -> u32 { H }
-    // ...
+    /// Write AOVs at first hit (called by integrator).
+    #[inline(always)]
+    pub fn write_aov(&mut self, x: u32, y: u32, albedo: Color3, normal: Vec3, depth: f64) {
+        self.aovs.write_pixel((y * self.width + x) as usize, albedo, normal, depth, [f64::INFINITY; 3]);
+    }
 }
 ```
 
 **Usage examples:**
 
 ```rust
-// No denoiser, no AOVs (current behavior):
-let film: RgbFilm<1920, 1080> = RgbFilm::new(1.0, true, NoDenoiser, NoAOVs);
+// No filters (identity — skips tent):
+let film = RgbFilm::with_pipeline((1920, 1080), 1.0, true, NoFilters, NoAOVs);
 
-// Bilateral denoiser, no AOVs:
-let film: RgbFilm<1920, 1080, BilateralDenoiser> = RgbFilm::new(1.0, true, bilateral, NoAOVs);
+// Default: tent filter (matches current behavior):
+let film = RgbFilm::new((1920, 1080), 1.0, true);
 
-// A-Trous denoiser with AOVs:
-let film: RgbFilm<1920, 1080, AtrousDenoiser, DenoiserAOVs> = RgbFilm::new(1.0, true, atrous, DenoiserAOVs::new(1920, 1080));
+// Just bilateral denoiser:
+let film = RgbFilm::with_pipeline(
+    (1920, 1080), 1.0, true,
+    SingleFilter(BilateralDenoiser::new(4, 3.0, 0.15, 2.0)),
+    NoAOVs,
+);
 
-// 4K resolution with denoiser:
-let film: RgbFilm<3840, 2160, BilateralDenoiser> = RgbFilm::new(1.0, true, bilateral, NoAOVs);
+// Tent + bilateral (denoise the filtered image):
+let film = RgbFilm::with_pipeline(
+    (1920, 1080), 1.0, true,
+    pipeline![TentFilter::new(2), BilateralDenoiser::new(4, 3.0, 0.15, 2.0)],
+    NoAOVs,
+);
+
+// Bilateral + tent (smooth the denoised output):
+let film = RgbFilm::with_pipeline(
+    (1920, 1080), 1.0, true,
+    pipeline![BilateralDenoiser::new(4, 3.0, 0.15, 2.0), TentFilter::new(2)],
+    NoAOVs,
+);
+
+// Three filters: firefly clamp → bilateral → tent:
+let film = RgbFilm::with_pipeline(
+    (1920, 1080), 1.0, true,
+    pipeline![FireflyClampFilter::new(10.0), BilateralDenoiser::new(4, 3.0, 0.15, 2.0), TentFilter::new(2)],
+    NoAOVs,
+);
+
+// A-Trous with AOVs:
+let film = RgbFilm::with_pipeline(
+    (1920, 1080), 1.0, true,
+    pipeline![TentFilter::new(2), AtrousDenoiser::new(5)],
+    DenoiserAOVs::new(1920, 1080),
+);
 ```
-
-**Backwards compatibility:** `RgbFilm<1920, 1080>` defaults to `NoDenoiser, NoAOVs` — same as today's `RgbFilm`.
 
 ______________________________________________________________________
 
@@ -473,131 +578,56 @@ ______________________________________________________________________
 
 **Cross-reference:** See `docs/adaptive-sampling.md` §2a for full design and §5.1-§5.6 for denoiser integration points.
 
-### Phase 1: Core Infrastructure + Bilateral Denoiser
+### Phase 1: Core Infrastructure — ImageFilter + FilterPipeline + TentFilter extraction
 
-**Goal**: Working denoiser with minimal code changes. Bilateral filter using existing Welford variance.
+**Goal**: Unify reconstruction filtering and denoising under a single `ImageFilter` trait with type-level `FilterPipeline` composition. Extract the hardcoded tent filter from `rgb.rs` into its own type.
 
 **Files to change:**
 
-#### 1. `src/denoiser/mod.rs` (NEW — ~40 lines)
+#### 1. `src/film/filter.rs` (NEW — ~100 lines)
 
-Denoiser trait, NoDenoiser, re-exports.
+`ImageFilter` trait, `FilterPipeline` trait, `NoFilters`, `SingleFilter`, `FilterChain`, `pipeline!` macro.
 
-#### 2. `src/denoiser/bilateral.rs` (NEW — ~80 lines)
+#### 2. `src/film/tent.rs` (NEW — ~70 lines)
 
-BilateralDenoiser with variance-adaptive range sigma.
+`TentFilter` implementing `ImageFilter` — extracted from current `apply_tent_filter()` in `rgb.rs`.
+
+#### 3. `src/film/rgb.rs` — remove hardcoded tent filter
+
+Remove `apply_tent_filter()` method and `FILTER_RADIUS` constant. Make `RgbFilm<P, A>` generic:
 
 ```rust
-pub struct BilateralDenoiser {
-    spatial_sigma: f64,
-    range_sigma_base: f64,
-    variance_scale: f64,
-    radius: u32,
+pub struct RgbFilm<P: FilterPipeline = SingleFilter<TentFilter>, A: AOVSet = NoAOVs> {
+    // ...
+    pipeline: P,
+    pipeline_applied: bool,
+    aovs: A,
 }
 ```
 
-#### 3. `src/lib.rs` — add `pub mod denoiser;`
+`apply_pipeline()` calls `self.pipeline.apply(...)`. `to_rgb8()` does tone mapping only (no filter check needed — it's already been applied).
 
-#### 4. `src/film/mod.rs` — add to Film trait
-
-```rust
-fn apply_denoiser(&mut self);
-```
-
-#### 5. `src/film/rgb.rs` — make RgbFilm generic
+#### 4. `src/film/mod.rs` — register new modules and update Film trait
 
 ```rust
-pub struct RgbFilm<D: Denoiser = NoDenoiser> {
-    width: u32,
-    height: u32,
-    pixels: Vec<Color3>,           // accumulated radiance sum (or denoised mean if denoised=true)
-    sample_counts: Vec<u32>,       // sample count per pixel (preserved after denoising)
-    m_2: Vec<Color3>,             // Welford M2 (preserved after denoising)
-    exposure: f64,
-    tone_map: bool,
-    denoiser: D,
-    denoised: bool,                // prevents double-denoising
-}
+pub mod filter;
+pub mod tent;
 
-impl RgbFilm<NoDenoiser> {
-    pub fn new(dimensions: (u32, u32), exposure: f64, tone_map: bool) -> Self {
-        Self::with_denoiser(dimensions, exposure, tone_map, NoDenoiser)
-    }
-}
-
-impl<D: Denoiser> RgbFilm<D> {
-    pub fn with_denoiser(dimensions: (u32, u32), exposure: f64, tone_map: bool, denoiser: D) -> Self {
-        let (width, height) = dimensions;
-        Self {
-            width, height,
-            pixels: vec![Color3::ZERO; (width * height) as usize],
-            sample_counts: vec![0; (width * height) as usize],
-            m_2: vec![Color3::ZERO; (width * height) as usize],
-            exposure, tone_map, denoiser,
-            denoised: false,
-        }
-    }
-
-    /// Replace pixel radiance with denoised values.
-    /// Does NOT reset sample_counts or m_2 — statistical state is preserved
-    /// for potential re-denoising, diagnostic output, or variance heatmaps.
-    fn overlay_radiance(&mut self, radiance: Vec<Color3>) {
-        self.pixels = radiance;
-        self.denoised = true;
-    }
-
-    /// Extract raw data for denoiser consumption.
-    /// Returns (pixels, sample_counts, variance_per_channel).
-    /// Variance is computed from m_2 / (n-1) — requires VarianceEstimator (§2a).
-    fn raw_data(&self) -> (&[Color3], &[u32], Vec<[f64; 3]>) {
-        let variance: Vec<[f64; 3]> = self.pixels.iter()
-            .zip(self.sample_counts.iter())
-            .zip(self.m_2.iter())
-            .map(|((_, &n), m2)| {
-                if n > 1 {
-                    let nf = n as f64;
-                    [m2.x / (nf - 1.0), m2.y / (nf - 1.0), m2.z / (nf - 1.0)]
-                } else {
-                    [f64::INFINITY; 3]
-                }
-            })
-            .collect();
-        (&self.pixels, &self.sample_counts, variance)
-    }
-}
-
-impl<D: Denoiser> Film for RgbFilm<D> {
-    fn apply_denoiser(&mut self) {
-        if self.denoised {
-            return;  // already denoised — no-op
-        }
-        let (pixels, counts, variance) = self.raw_data();
-        let filtered = self.denoiser.denoise(pixels, counts, &variance, self.width, self.height);
-        self.overlay_radiance(filtered);
-    }
-
-    fn read_image(&self) -> Vec<u8> {
-        // After denoising, pixels hold per-pixel mean (not sum).
-        // to_rgb8() must handle both states.
-        self.to_rgb8()
-    }
-
-    // ... existing methods unchanged ...
-}
+// Film trait adds:
+//   type Pipeline: FilterPipeline;
+//   fn apply_pipeline(&mut self);
+//   fn pipeline(&self) -> &Self::Pipeline;
+//   fn aovs(&self) -> Option<&AOVStorage>;
+//   fn aovs_mut(&mut self) -> Option<&mut AOVStorage>;
 ```
 
-**Key design decisions:**
+#### 5. `src/renderer/cpu.rs` — use pipeline.max_radius()
 
-- `overlay_radiance()` replaces `pixels` but does NOT reset `sample_counts` or `m_2`. Statistical state is preserved for diagnostic output, variance heatmaps, or potential re-denoising.
-- `denoised: bool` prevents double-denoising. `apply_denoiser()` is a no-op if already denoised.
-- `to_rgb8()` must check `denoised`: if true, use `pixels` directly (already per-pixel mean); if false, divide by `sample_counts` (current behavior).
-- `raw_data()` returns a temporary `Vec<[f64; 3]>` for variance. With `VarianceEstimator` extracted (§2a of adaptive-sampling.md), this becomes `&[[VarianceEstimator; 3]]` — no allocation.
-
-#### 6. `src/renderer/cpu.rs` — call `film.apply_denoiser()` after sampling loop
+Replace hardcoded `FILTER_RADIUS` with `film.pipeline().max_radius()`. Add `film.apply_pipeline()` call after the sampling loop.
 
 ```rust
 // After the main sampling loop completes, BEFORE publishing the final frame:
-film.apply_denoiser();
+film.apply_pipeline();
 
 // Then publish final frame to framebuffer (if live preview):
 if let Some(ref framebuffer) = framebuffer {
@@ -606,22 +636,61 @@ if let Some(ref framebuffer) = framebuffer {
 }
 ```
 
-**Important:** The denoiser runs **after** the final frame is published for live preview. For the progressive path (`live_render`), the denoiser should run on the final framebuffer snapshot, not on intermediate progressive frames. The denoiser expects complete sample counts — denoising a 64-spp preview would produce different results than denoising the final 2048-spp frame. Progressive frames are NOT denoised.
+**Important:** The pipeline runs **after** the final frame is published for live preview. For the progressive path (`live_render`), the pipeline should run on the final framebuffer snapshot, not on intermediate progressive frames.
 
-#### 7. `src/main.rs` — wire up (optional, backwards-compatible)
+#### 6. `src/lib.rs` — add `pub mod film::filter;` (or re-export from film module)
+
+**Total**: ~170 new lines, ~60 lines changed. No breaking changes — `RgbFilm::new(...)` still works as before (defaults to `SingleFilter<TentFilter>`).
+
+### Phase 1.5: Bilateral Denoiser
+
+**Goal**: Minimal viable denoiser — variance-adaptive cross-bilateral filter using existing Welford variance. No AOVs needed.
+
+**Files to change:**
+
+#### 1. `src/denoiser/mod.rs` (NEW — ~10 lines)
+
+Re-exports: `pub use bilateral::BilateralDenoiser;`
+
+#### 2. `src/denoiser/bilateral.rs` (NEW — ~80 lines)
+
+`BilateralDenoiser` implementing `ImageFilter` with variance-adaptive range sigma.
 
 ```rust
-// With denoiser:
-let film = RgbFilm::with_denoiser(
-    camera.image_resolution(), config.exposure, config.tone_map,
-    BilateralDenoiser::new(4, 3.0, 0.15, 2.0),
-);
+pub struct BilateralDenoiser {
+    spatial_sigma: f64,
+    range_sigma_base: f64,
+    variance_scale: f64,
+    radius: u32,
+}
 
-// Without denoiser (default, same as today):
-let film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
+impl BilateralDenoiser {
+    pub fn new(radius: u32, spatial_sigma: f64, range_sigma_base: f64, variance_scale: f64) -> Self {
+        Self { spatial_sigma, range_sigma_base, variance_scale, radius }
+    }
+}
+
+impl ImageFilter for BilateralDenoiser {
+    fn apply(&self, pixels: &[Color3], counts: &[u32], w: u32, h: u32, _aovs: Option<&AOVStorage>) -> Vec<Color3> {
+        // Cross-bilateral: spatial kernel × range kernel
+        // Range sigma modulated per-pixel by variance from Welford
+    }
+    fn radius(&self) -> u32 { self.radius }
+}
 ```
 
-**Total**: ~170 new lines, ~50 lines changed. No breaking changes.
+#### 3. `src/lib.rs` — add `pub mod denoiser;`
+
+**Usage:**
+```rust
+let film = RgbFilm::with_pipeline(
+    (1920, 1080), 1.0, true,
+    SingleFilter(BilateralDenoiser::new(4, 3.0, 0.15, 2.0)),
+    NoAOVs,
+);
+```
+
+**Total**: ~90 new lines. No breaking changes.
 
 ### Phase 2: A-Trous Wavelet + AOVStorage
 
@@ -777,41 +846,37 @@ impl AOVStorage {
 
 4. **SoA by default** — Each AOV is a separate contiguous `Vec`. Cache-friendly for any consumer that reads one AOV linearly.
 
-5. **Zero-cost when unused** — `RgbFilm<NoDenoiser>` doesn't allocate `AOVStorage`. Even with AOVs, only allocated AOVs consume memory.
+5. **Zero-cost when unused** — `NoAOVs` is a zero-sized type with empty method bodies. No allocation at all. `DenoiserAOVs` allocates four buffers only when explicitly configured via the type parameter.
 
 **Integration with RgbFilm:**
 
+With the new `FilterPipeline` design, AOVs are part of the type via the `AOVSet` GAT:
+
 ```rust
-pub struct RgbFilm<D: Denoiser = NoDenoiser> {
+pub struct RgbFilm<P: FilterPipeline = SingleFilter<TentFilter>, A: AOVSet = NoAOVs> {
     width: u32,
     height: u32,
     pixels: Vec<Color3>,           // accumulated radiance sum
-    sample_counts: Vec<u32>,       // sample count per pixel
+    sample_num: Vec<u32>,          // sample count per pixel
+    raw_sum: Vec<Color3>,          // accumulated sum for Welford
     m_2: Vec<Color3>,             // Welford M2
     exposure: f64,
     tone_map: bool,
-    denoiser: D,
-    denoised: bool,
-    aovs: Option<AOVStorage>,      // None when NoDenoiser (zero-cost)
+    pipeline: P,
+    pipeline_applied: bool,
+    aovs: A,                       // typed AOV set — NoAOVs when not used
 }
 
-impl<D: Denoiser> RgbFilm<D> {
-    /// Enable AOV collection (called when denoiser is configured).
-    pub fn enable_aovs(&mut self) {
-        self.aovs = Some(AOVStorage::new(self.width, self.height));
-    }
-
+impl<P: FilterPipeline, A: AOVSet> RgbFilm<P, A> {
     /// Write AOVs at first hit (called by integrator).
     #[inline(always)]
     pub fn write_aov(&mut self, x: u32, y: u32, albedo: Color3, normal: Vec3, depth: f64) {
-        if let Some(ref mut aovs) = self.aovs {
-            aovs.write(x, y, albedo, normal, depth);
-        }
+        self.aovs.write_pixel((y * self.width + x) as usize, albedo, normal, depth, [f64::INFINITY; 3]);
     }
 }
 ```
 
-**Note:** `aovs` is `Option<AOVStorage>` — `None` when using `NoDenoiser` or `BilateralDenoiser` (Phase 1, doesn't need AOVs). Only allocated when A-Trous (Phase 2) or OIDN (Phase 3) is configured. This preserves the zero-cost property: `RgbFilm<NoDenoiser>` has no AOV overhead.
+**Note:** AOVs are now via the `AOVSet` GAT — `NoAOVs` for filters/denoisers that don't need them (zero-cost, zero allocation). `DenoiserAOVs` is used when A-Trous or OIDN needs edge-stopping buffers. The type system guarantees that only films with appropriate AOVs can be paired with consumers that need them.
 
 ### Phase 3: OIDN Integration (optional)
 
@@ -854,34 +919,40 @@ ______________________________________________________________________
 
 | File | Change | Lines |
 |---|---|---|
-| `src/denoiser/mod.rs` | **NEW** — Denoiser trait + NoDenoiser | ~40 |
-| `src/denoiser/bilateral.rs` | **NEW** — BilateralDenoiser | ~80 |
-| `src/denoiser/atrous.rs` | **NEW** — AtrousDenoiser (Phase 2) | ~250 |
-| `src/denoiser/oidn.rs` | **NEW** — OidnDenoiser (Phase 3) | ~100 |
-| `src/denoiser/features.rs` | **NEW** — AOVStorage (SoA) | ~80 |
-| `src/lib.rs` | Add `pub mod denoiser;` | 1 |
-| `src/film/mod.rs` | Add `apply_denoiser()` to Film trait | ~5 |
-| `src/film/rgb.rs` | Make `RgbFilm<D>` generic, add `denoised: bool`, fix `overlay_radiance`, `raw_data`, add `aovs: Option<AOVStorage>` | ~60 |
-| `src/renderer/cpu.rs` | Call `film.apply_denoiser()` after sampling loop | ~5 |
-| `src/main.rs` | Optional: wire up BilateralDenoiser | ~5 |
+| `src/film/filter.rs` | **NEW** — ImageFilter + FilterPipeline + NoFilters/SingleFilter/FilterChain + pipeline! macro | ~100 |
+| `src/film/tent.rs` | **NEW** — TentFilter implementing ImageFilter (extracted from rgb.rs) | ~70 |
+| `src/film/mod.rs` | Add `pub mod filter; pub mod tent;`, update Film trait with `type Pipeline`, `apply_pipeline()`, `pipeline()` | ~15 |
+| `src/film/rgb.rs` | Remove `apply_tent_filter()`, `FILTER_RADIUS`. Make `RgbFilm<P, A>` generic. Add `pipeline: P`, `pipeline_applied: bool`, `aovs: A` | ~60 changed |
+| `src/renderer/cpu.rs` | Replace `FILTER_RADIUS` with `film.pipeline().max_radius()`. Add `film.apply_pipeline()` call | ~10 |
+| `src/lib.rs` | Re-export filter pipeline types via film module | ~2 |
 
-**Phase 1 total**: ~190 new lines, ~70 lines changed. No breaking changes.
+**Phase 1 total**: ~170 new lines, ~70 lines changed. No breaking changes — `RgbFilm::new(...)` defaults to `SingleFilter<TentFilter>` with `NoAOVs`.
+
+### Phase 1.5
+
+| File | Change | Lines |
+|---|---|---|
+| `src/denoiser/mod.rs` | **NEW** — re-exports for denoiser module | ~10 |
+| `src/denoiser/bilateral.rs` | **NEW** — BilateralDenoiser implementing ImageFilter | ~80 |
+| `src/lib.rs` | Add `pub mod denoiser;` | 1 |
+
+**Phase 1.5 total**: ~90 new lines. No breaking changes.
 
 ### Cross-Document Integration Points
 
-| Denoiser Doc Section | Adaptive Sampling Doc Section | Dependency |
+| Document Section | Adaptive Sampling Doc Section | Dependency |
 |---|---|---|
-| `raw_data()` variance format | §5.1 `raw_data()` contract | Denoiser needs §2a (VarianceEstimator) for clean interface |
-| Per-channel variance | §5.2 Per-channel vs max-over-RGB | Denoiser needs `[f64; 3]`, not max-over-RGB scalar |
-| `apply_denoiser()` placement | §5.3 render loop placement | Both agree: after sampling, before final publish |
-| `overlay_radiance()` behavior | §5.4 overlay + denoised flag | Aligned: preserve counts/m2, use `denoised: bool` |
-| Progressive preview | §5.3 progressive frames | Denoiser does NOT run on intermediate frames |
-| Double-denoising guard | §5.4 denoised flag | Aligned: `denoised: bool` prevents re-denoising |
+| `apply_pipeline()` raw data format | §5.1 `raw_data()` contract | Pipeline needs §2a (VarianceEstimator) for clean interface |
+| Per-channel variance | §5.2 Per-channel vs max-over-RGB | `ImageFilter` impls need `[f64; 3]`, not max-over-RGB scalar |
+| `apply_pipeline()` placement | §5.3 render loop placement | Both agree: after sampling, before final publish |
+| `pipeline_applied` guard | §5.4 overlay + denoised flag | Aligned: `pipeline_applied: bool` prevents re-application |
+| Progressive preview | §5.3 progressive frames | Pipeline does NOT run on intermediate frames |
+| Double-application guard | §5.4 pipeline_applied flag | Aligned: `pipeline_applied: bool` prevents re-application |
 | `AOVStorage` variance | §5.6 shared variance | VarianceEstimator → `AOVStorage.variance` SoA |
 
-| Denoiser Doc Section | ARCH_HYBRID Doc Section | Relationship |
+| Document Section | ARCH_HYBRID Doc Section | Relationship |
 |---|---|---|
-| §Phase 1 — `apply_denoiser()` on Film | §2 Film trait | ARCH_HYBRID acknowledges the extension |
-| §Phase 1 — `RgbFilm<D: Denoiser>` | §1 RgbFilm (current state) | ARCH_HYBRID shows pre-generic snapshot |
-| §6 — CpuRenderer denoiser call | §2 CpuRenderer | ARCH_HYBRID acknowledges the one-line addition |
+| §Phase 1 — `apply_pipeline()` on Film | §2 Film trait | ARCH_HYBRID acknowledges the extension |
+| §Phase 1 — `RgbFilm<P: FilterPipeline>` | §1 RgbFilm (current state) | ARCH_HYBRID shows pre-generic snapshot |
+| §Phase 1 — CpuRenderer `max_radius()` | §2 CpuRenderer | ARCH_HYBRID acknowledges the one-line change |
 | §Phase 2 — AOVStorage (SoA) | §2 GBuffer\<'a> | **Different things.** GBuffer = visibility (SurfaceInteraction). AOVStorage = per-pixel AOVs for denoising/compositing. SoA layout matches VarianceEstimator pattern. |
