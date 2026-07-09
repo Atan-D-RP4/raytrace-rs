@@ -12,7 +12,7 @@ use crate::vec3::{Point3, Vec3};
 
 mod sphere;
 
-pub use sphere::{moving_sphere, sphere, SphereShape};
+pub use sphere::{SphereShape, moving_sphere, sphere};
 
 /// 3D shape interface — the 3D analogue of [`Region2D`].
 ///

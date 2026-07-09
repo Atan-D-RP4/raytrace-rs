@@ -24,11 +24,11 @@ mod superellipse;
 mod tri;
 
 pub use annulus::AnnulusRegion;
+pub use r#box::box3d;
 pub use ellipse::EllipseRegion;
 pub use function::FunctionRegion;
 pub use polygon::PolygonRegion;
 pub use quad::QuadRegion;
-pub use r#box::box3d;
 pub use rounded_rect::RoundedRectRegion;
 pub use superellipse::SuperellipseRegion;
 pub use tri::TriRegion;

@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use tracing::info;
 
 use crate::camera::{Camera, CameraSampler};
-use crate::film::{Film, FilmTile, SharedFramebuffer};
+use crate::film::{Film, FilmTile, SharedFramebuffer, rgb::FILTER_RADIUS};
 use crate::hittable::{Intersectable, Sampleable};
 use crate::integrator::Integrator;
 use crate::renderer::Renderer;
@@ -118,7 +118,12 @@ where
                 let y_start = ty * tile_size;
                 let x_end = (x_start + tile_size).min(width);
                 let y_end = (y_start + tile_size).min(height);
-                FilmTile::new([x_start, x_end, y_start, y_end])
+                FilmTile::new([
+                    x_start.saturating_sub(FILTER_RADIUS),
+                    (x_end + FILTER_RADIUS).min(width),
+                    y_start.saturating_sub(FILTER_RADIUS),
+                    (y_end + FILTER_RADIUS).min(height),
+                ])
             })
             .collect();
 
@@ -174,14 +179,22 @@ where
             // Zero-fill pooled tiles before reuse — skip tiles where all pixels are
             // already converged (avoids 15.7MB of useless memsets per pass).
             for tile in &mut tile_pool {
-                let [x_start, x_end, y_start, y_end] = tile.bounds;
-                tile.dirty = (y_start..y_end).any(|y| {
-                    (x_start..x_end).any(|x| !converged[y as usize * width as usize + x as usize])
-                });
+                let [x_start, _, y_start, _] = tile.bounds;
+                let (orig_x_start, orig_y_start) = (
+                    x_start.saturating_add(FILTER_RADIUS),
+                    y_start.saturating_add(FILTER_RADIUS),
+                );
+                let (orig_x_end, orig_y_end) = (
+                    (orig_x_start + tile_size).min(width),
+                    (orig_y_start + tile_size).min(height),
+                );
+
+                tile.dirty = (orig_y_start..orig_y_end)
+                    .zip(orig_x_start..orig_x_end)
+                    .any(|(y, x)| !converged[y as usize * width as usize + x as usize]);
+
                 if tile.dirty {
                     tile.pixels.fill(Color3::ZERO);
-                    tile.raw_sum.fill(Color3::ZERO);
-                    tile.weight_sum.fill(0.0);
                     tile.sample_count.fill(0);
                 }
             }
@@ -220,13 +233,7 @@ where
                             let sample = radiance * cam_ray.weight;
                             // Guard against NaN/Inf poisoning the accumulation buffer.
                             if sample.is_finite() {
-                                // Tent (triangle) reconstruction filter: weights samples by their
-                                // distance from the pixel center. Samples near the pixel boundary
-                                // contribute less, which smooths silhouette aliasing.
-                                let dx = (camera_sampler.jitter.0 - 0.5).abs();
-                                let dy = (camera_sampler.jitter.1 - 0.5).abs();
-                                let tent_weight = (1.0 - dx).max(0.0) * (1.0 - dy).max(0.0);
-                                tile.add_sample_weighted(x, y, sample, tent_weight);
+                                tile.add_sample(x, y, sample);
                             }
                         }
                     }

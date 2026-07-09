@@ -13,8 +13,8 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    fresnel_r0, fresnel_schlick, ggx_sample_h, reflect, refract, Bsdf, BsdfScatter,
-    GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE,
+    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    fresnel_r0, fresnel_schlick, ggx_sample_h, reflect, refract,
 };
 use crate::onb::Onb;
 use crate::sampler::SampleDims;

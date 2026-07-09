@@ -13,25 +13,22 @@ pub const LUMINANCE: Color3 = Color3 {
     z: 0.0722,
 };
 
+/// Reconstruction filter radius in pixels. Each sample is spread across
+/// (2*R+1)² pixels via a tent (triangle) kernel.
+pub const FILTER_RADIUS: u32 = 2;
+
 #[derive(Default, Clone)]
 pub struct RgbFilm {
     width: u32,
     height: u32,
-    /// Accumulated weighted color for each pixel (linear space, not gamma-corrected).
-    /// For tent-filtered samples: stores sum(color * weight).
-    /// For unweighted samples: stores sum(color).
+    /// Accumulated raw sample colors: sum(color) per pixel.
     pixels: Vec<Color3>,
-    /// Running sum of sample weights for each pixel (weighted average denominator).
-    /// For tent-filtered samples: sum(weight). For unweighted samples: sample count.
-    sample_counts: Vec<f64>,
-    /// Actual number of samples per pixel (independent of filter weights).
-    /// Used by the convergence system to check min_samples thresholds.
+    /// Actual number of samples per pixel.
     sample_num: Vec<u32>,
     /// Sum of raw (unweighted) sample colors. Used by Welford's algorithm
     /// to compute variance for convergence checking.
     raw_sum: Vec<Color3>,
     /// The running sum of squared differences from the unweighted mean.
-    /// Updated by both add_sample and add_sample_weighted.
     m_2: Vec<Color3>,
     // Exposure value for tone mapping.
     exposure: f64,
@@ -47,7 +44,6 @@ impl RgbFilm {
             width,
             height,
             pixels: vec![Color3::ZERO; (width * height) as usize],
-            sample_counts: vec![0.0; (width * height) as usize],
             sample_num: vec![0; (width * height) as usize],
             raw_sum: vec![Color3::ZERO; (width * height) as usize],
             m_2: vec![Color3::ZERO; (width * height) as usize],
@@ -56,60 +52,93 @@ impl RgbFilm {
         }
     }
 
-    /// Convert accumulated radiance to RGB8 output (moved from Camera's final conversion).
+    /// Apply a tent (triangle) reconstruction filter to the accumulated image.
+    /// Each pixel's contribution is spread to neighbors within FILTER_RADIUS,
+    /// weighted by distance. This smooths silhouette aliasing.
+    fn apply_tent_filter(&self) -> Vec<Color3> {
+        let r = FILTER_RADIUS as i32;
+        let mut filtered = vec![Color3::ZERO; (self.width * self.height) as usize];
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let count = self.sample_num[(y * self.width + x) as usize];
+                if count == 0 {
+                    continue;
+                }
+                let color = self.pixels[(y * self.width + x) as usize];
+
+                // Spread this pixel's average to neighbors within the filter radius.
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
+                        if nx < 0 || nx >= self.width as i32 || ny < 0 || ny >= self.height as i32 {
+                            continue;
+                        }
+
+                        // Tent function: weight = max(0, 1 - |d| / R)
+                        let wx = (1.0 - (dx as f64).abs() / r as f64).max(0.0);
+                        let wy = (1.0 - (dy as f64).abs() / r as f64).max(0.0);
+                        let weight = wx * wy;
+
+                        let idx = (ny as u32 * self.width + nx as u32) as usize;
+                        filtered[idx] += color * (weight / count as f64);
+                    }
+                }
+            }
+        }
+
+        // Normalize by accumulated filter weights per pixel.
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = (y * self.width + x) as usize;
+                let mut total_weight = 0.0f64;
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let sx = x as i32 - dx;
+                        let sy = y as i32 - dy;
+                        if sx < 0 || sx >= self.width as i32 || sy < 0 || sy >= self.height as i32 {
+                            continue;
+                        }
+                        if self.sample_num[(sy as u32 * self.width + sx as u32) as usize] == 0 {
+                            continue;
+                        }
+                        let wx = (1.0 - (dx as f64).abs() / r as f64).max(0.0);
+                        let wy = (1.0 - (dy as f64).abs() / r as f64).max(0.0);
+                        total_weight += wx * wy;
+                    }
+                }
+                if total_weight > 0.0 {
+                    filtered[idx] /= total_weight;
+                }
+            }
+        }
+
+        filtered
+    }
+
+    /// Convert accumulated radiance to RGB8 output with tent filter applied.
     pub fn to_rgb8(&self) -> Vec<u8> {
-        self.pixels
+        let filtered = self.apply_tent_filter();
+        filtered
             .iter()
-            .zip(self.sample_counts.iter())
-            .flat_map(|(color, &count)| {
-                let avg_color = if count > 0.0 { *color / count } else { *color };
-                post_process(avg_color, self.exposure, self.tone_map)
-            })
+            .flat_map(|color| post_process(*color, self.exposure, self.tone_map))
             .collect()
     }
 
-    /// Progressive tonemap for live preview.
-    /// Uses per-pixel sample counts so adaptive sampling works correctly
-    /// (each pixel may have a different number of accumulated samples).
+    /// Progressive tonemap for live preview (unfiltered, for speed).
     pub fn progressive_rgb8(&self) -> impl Iterator<Item = u8> + '_ {
         self.pixels
             .iter()
-            .zip(self.sample_counts.iter())
+            .zip(self.sample_num.iter())
             .flat_map(|(color, &count)| {
-                let avg_color = if count > 0.0 { *color / count } else { *color };
+                let avg_color = if count > 0 {
+                    *color / count as f64
+                } else {
+                    *color
+                };
                 post_process(avg_color, self.exposure, self.tone_map)
             })
-    }
-
-    /// Add a weighted sample to the film. Used when merging tiles that have
-    /// reconstruction filter weights applied (e.g., tent filter).
-    ///
-    /// `color` is the raw sample color (NOT pre-multiplied by weight), and `weight`
-    /// is the reconstruction filter weight. The weighted average is maintained as
-    /// sum(color * weight) / sum(weight).
-    ///
-    /// Also runs Welford's m_2 update on the unweighted color sum so
-    /// pixel_variance() produces a usable variance estimate for convergence.
-    pub fn add_sample_weighted(&mut self, x: u32, y: u32, color: Color3, weight: f64) {
-        let index = (y * self.width + x) as usize;
-        self.pixels[index] += color * weight;
-        self.sample_counts[index] += weight;
-
-        // Welford's online variance update using the unweighted color sum.
-        let n_prev = self.sample_num[index];
-        let mean_prev = if n_prev == 0 {
-            Color3::ZERO
-        } else {
-            self.raw_sum[index] / n_prev as f64
-        };
-        self.raw_sum[index] += color;
-
-        if n_prev >= 1 {
-            let delta = color - mean_prev;
-            let n_new = (n_prev + 1) as f64;
-            self.m_2[index] += delta * delta * (n_prev as f64 / n_new);
-        }
-        self.sample_num[index] = n_prev + 1;
     }
 }
 
@@ -120,7 +149,6 @@ impl Film for RgbFilm {
 
         if n_prev == 0 {
             self.pixels[index] = color;
-            self.sample_counts[index] = 1.0;
             self.raw_sum[index] = color;
             // m_2 stays 0 — variance undefined for a single sample
         } else {
@@ -128,7 +156,6 @@ impl Film for RgbFilm {
             let delta = color - mean_prev;
 
             self.pixels[index] += color;
-            self.sample_counts[index] += 1.0;
             self.raw_sum[index] += color;
 
             // Welford's online M2 update:
@@ -160,53 +187,47 @@ impl Film for RgbFilm {
 
     fn reset(&mut self) {
         self.pixels.fill(Color3::ZERO);
-        self.sample_counts.fill(0.0);
         self.sample_num.fill(0);
         self.raw_sum.fill(Color3::ZERO);
         self.m_2.fill(Color3::ZERO);
     }
 
     fn merge_tile(&mut self, tile: &FilmTile) {
-        let (x_min, x_max, y_min, _y_max) = (
-            tile.bounds[0],
-            tile.bounds[1],
-            tile.bounds[2],
-            tile.bounds[3],
-        );
+        let x_min = tile.bounds[0];
+        let x_max = tile.bounds[1].min(self.width);
+        let y_min = tile.bounds[2];
+        let _y_max = tile.bounds[3].min(self.height);
 
         let tile_width = x_max - x_min;
-        // Iterate over tile pixels, destructuring the 5 parallel vectors:
-        // (color, raw, sampled, weight_sum, sample_count)
-        for (tile_idx, (((&color, &raw), &weight_sum), &tile_count)) in tile
-            .pixels
-            .iter()
-            .zip(tile.raw_sum.iter())
-            .zip(tile.weight_sum.iter())
-            .zip(tile.sample_count.iter())
-            .enumerate()
-        {
-            if weight_sum == 0.0 {
+        for (tile_idx, &tile_count) in tile.sample_count.iter().enumerate() {
+            if tile_count == 0 {
                 continue;
             }
             let tx = x_min + (tile_idx as u32 % tile_width);
             let ty = y_min + (tile_idx as u32 / tile_width);
-            let idx = (ty * self.width + tx) as usize;
-
-            // Accumulate weighted color and weight sum (for the final image).
-            self.pixels[idx] += color;
-            self.sample_counts[idx] += weight_sum;
-
-            // Accumulate raw color sum and run Welford update (for variance).
-            let n_prev = self.sample_num[idx];
-            if n_prev >= 1 {
-                let mean_prev = self.raw_sum[idx] / n_prev as f64;
-                let delta = raw - mean_prev;
-                let n_new = (n_prev + tile_count) as f64;
-                // Approximate: apply the full tile's contribution as a batch.
-                // For a single sample per pixel per pass, this is exact.
-                self.m_2[idx] += delta * delta * (n_prev as f64 / n_new) * tile_count as f64;
+            if tx >= self.width || ty >= self.height {
+                continue;
             }
-            self.raw_sum[idx] += raw;
+            let idx = (ty * self.width + tx) as usize;
+            let tile_idx = tile_idx;
+
+            // Accumulate raw color sum.
+            let tile_color = tile.pixels[tile_idx];
+            self.pixels[idx] += tile_color;
+
+            // Welford variance update: process each sample in the tile individually.
+            let n_prev = self.sample_num[idx];
+            for k in 0..tile_count {
+                let sample_color = tile_color / tile_count as f64;
+                let n = n_prev + k;
+                if n >= 1 {
+                    let mean_prev = self.raw_sum[idx] / n as f64;
+                    let delta = sample_color - mean_prev;
+                    let n_new = (n + 1) as f64;
+                    self.m_2[idx] += delta * delta * (n as f64 / n_new);
+                }
+                self.raw_sum[idx] += sample_color;
+            }
             self.sample_num[idx] += tile_count;
         }
     }
@@ -237,15 +258,14 @@ impl Film for RgbFilm {
         (0..self.pixels.len())
             .map(|idx| {
                 let sample_count = self.sample_num[idx];
-                let weight_sum = self.sample_counts[idx];
                 let variance = self.pixel_variance(idx);
-                let var_mean = if weight_sum > 0.0 {
-                    variance / weight_sum
+                let var_mean = if sample_count > 0 {
+                    variance / sample_count as f64
                 } else {
                     f64::INFINITY
                 };
-                let mean = if weight_sum > 0.0 {
-                    self.pixels[idx] / weight_sum
+                let mean = if sample_count > 0 {
+                    self.pixels[idx] / sample_count as f64
                 } else {
                     self.pixels[idx]
                 };
@@ -268,15 +288,14 @@ impl Film for RgbFilm {
         let mut all_converged = true;
         for (idx, entry) in out.iter_mut().enumerate() {
             let sample_count = self.sample_num[idx];
-            let weight_sum = self.sample_counts[idx];
             let variance = self.pixel_variance(idx);
-            let var_mean = if weight_sum > 0.0 {
-                variance / weight_sum
+            let var_mean = if sample_count > 0 {
+                variance / sample_count as f64
             } else {
                 f64::INFINITY
             };
-            let mean = if weight_sum > 0.0 {
-                self.pixels[idx] / weight_sum
+            let mean = if sample_count > 0 {
+                self.pixels[idx] / sample_count as f64
             } else {
                 self.pixels[idx]
             };
