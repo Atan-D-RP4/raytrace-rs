@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use crate::texture::TextureCoords;
+use crate::texture::{TextureCoords, TextureDerivatives};
 use crate::vec3::{Color3, Vec3};
 
 /// Represents a ray-object intersection hit, containing geometric information about the
@@ -25,11 +25,15 @@ pub struct Hit {
     /// Procedural textures (NoiseTexture) sample from `mapping` via TexturePoints,
     /// so this decouples world-space translation from the texture coordinate frame.
     pub mapping_point: Vec3,
+    /// Optional UV coordinates for the hit point. `None` for Volume or other primitives that may
+    /// not have UVs.
+    pub uv: Option<(f64, f64)>,
+    // Optional UV gradient for texture filtering. `None` if not computed.
+    pub uv_gradients: Option<(Vec3, Vec3)>,
+
     /// Outward geometric normal before face-orientation or shading adjustments.
     /// Must be unit length — set_face_normal depends on it.
     geometric_normal: Vec3,
-    /// Optional UV coordinates for the hit point. `None` for Volume or other primitives that may not have UVs.
-    pub uv: Option<(f64, f64)>,
 }
 
 impl Hit {
@@ -39,6 +43,7 @@ impl Hit {
         mapping_point: Vec3,
         geometric_normal: Vec3,
         uv: Option<(f64, f64)>,
+        uv_gradients: Option<(Vec3, Vec3)>,
     ) -> Self {
         debug_assert!(
             geometric_normal.near_zero() || (geometric_normal.length_squared() - 1.0).abs() < 1e-6,
@@ -48,8 +53,9 @@ impl Hit {
             time,
             point,
             mapping_point,
-            geometric_normal,
             uv,
+            uv_gradients,
+            geometric_normal,
         }
     }
 
@@ -85,16 +91,25 @@ pub struct SurfaceInteraction<'si> {
     front_face: bool,
     /// Reference to the material of the intersected surface.
     material: &'si Material,
+    /// Optional texture derivatives for texture filtering. `None` if not computed.
+    tex_derivatives: Option<TextureDerivatives>,
 }
 
 impl<'si> SurfaceInteraction<'si> {
     /// Constructs a new `SurfaceInteraction` from a `Hit`, shading normal, front face flag, and material.
-    pub fn new(hit: Hit, shading_normal: Vec3, front_face: bool, material: &'si Material) -> Self {
+    pub fn new(
+        hit: Hit,
+        shading_normal: Vec3,
+        front_face: bool,
+        material: &'si Material,
+        tex_derivatives: Option<TextureDerivatives>,
+    ) -> Self {
         Self {
             hit,
             shading_normal,
             front_face,
             material,
+            tex_derivatives,
         }
     }
 
@@ -102,13 +117,27 @@ impl<'si> SurfaceInteraction<'si> {
     #[inline]
     pub fn from_material_hit(mat_hit: MaterialHit<'si>, ray: &Ray) -> Self {
         let geometric_normal = mat_hit.hit.geometric_normal;
+
+        let tex_derivatives = if let Some(gradients) = mat_hit.hit.uv_gradients
+            && let Some(rd) = ray.differentials
+        {
+            let t_hit = mat_hit.hit.time;
+            let dpdx = (rd.rx_origin - ray.origin) + t_hit * (rd.rx_direction - ray.direction);
+            let dpdy = (rd.ry_origin - ray.origin) + t_hit * (rd.ry_direction - ray.direction);
+            let (du_dp, dv_dp) = gradients;
+            Some(TextureDerivatives::from_surface(dpdx, dpdy, du_dp, dv_dp))
+        } else {
+            None
+        };
         let mut si = Self {
             hit: mat_hit.hit,
             shading_normal: geometric_normal,
             front_face: false,
             material: mat_hit.material,
+            tex_derivatives,
         };
         si.set_face_normal(ray);
+
         si
     }
 
@@ -173,7 +202,7 @@ impl<'si> SurfaceInteraction<'si> {
 
     /// Returns the texture coordinates for this surface interaction, combining the UV coordinates
     /// and the mapping-space position. This is used for texture sampling.
-    pub fn texture_coords(&self) -> crate::texture::TextureCoords {
+    pub fn texture_coords(&self) -> TextureCoords {
         let (u, v) = self.hit.uv.unwrap_or((0.0, 0.0));
         TextureCoords::new(
             u,
@@ -181,6 +210,7 @@ impl<'si> SurfaceInteraction<'si> {
             self.point(),
             self.hit.mapping_point,
             self.geometric_normal(),
+            self.tex_derivatives,
         )
     }
 }

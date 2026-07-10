@@ -1,7 +1,7 @@
-use crate::ray::Ray;
+use crate::ray::{Ray, RayDifferentials};
 use crate::vec3::{Color3, Point3, Vec3};
 
-use super::{Camera, CameraRay};
+use crate::camera::{Camera, CameraRay, CameraSampler};
 
 const WIDTH: i32 = 800;
 
@@ -152,7 +152,7 @@ impl PerspectiveCamera {
 }
 
 impl Camera for PerspectiveCamera {
-    fn generate_ray(&self, sample: &super::CameraSampler) -> Option<super::CameraRay> {
+    fn generate_ray(&self, sample: &CameraSampler) -> Option<CameraRay> {
         let (i, j) = sample.pixel;
 
         // Anti-Aliasing Jitter: Randomize the ray direction within the pixel by adding a random
@@ -177,6 +177,36 @@ impl Camera for PerspectiveCamera {
         let ray_direction = pixel_sampler - ray_origin;
         Some(CameraRay {
             ray: Ray::new_with_time(ray_origin, ray_direction, sample.time),
+            weight: Color3::new(1.0, 1.0, 1.0),
+        })
+    }
+
+    fn generate_ray_differential(&self, sample: &CameraSampler) -> Option<CameraRay> {
+        let primary_ray = self.generate_ray(sample)?;
+        let (i, j) = sample.pixel;
+
+        // X differential: sample a ray at pixel (i+1, j) with the same jitter
+        let pixel_sampler_x = self.pixel00_loc
+            + (i as f64 + sample.jitter.0 + 1.0) * self.pixel_delta_u
+            + (j as f64 + sample.jitter.1) * self.pixel_delta_v;
+
+        // Y differential: sample a ray at pixel (i, j+1) with the same jitter
+        let pixel_sampler_y = self.pixel00_loc
+            + (i as f64 + sample.jitter.0) * self.pixel_delta_u
+            + (j as f64 + sample.jitter.1 + 1.0) * self.pixel_delta_v;
+
+        Some(CameraRay {
+            ray: Ray::new_with_differentials(
+                primary_ray.ray.origin,
+                primary_ray.ray.direction,
+                sample.time,
+                RayDifferentials {
+                    rx_origin: primary_ray.ray.origin,
+                    ry_origin: primary_ray.ray.origin,
+                    rx_direction: pixel_sampler_x - primary_ray.ray.origin,
+                    ry_direction: pixel_sampler_y - primary_ray.ray.origin,
+                },
+            ),
             weight: Color3::new(1.0, 1.0, 1.0),
         })
     }

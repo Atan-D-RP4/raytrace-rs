@@ -2,6 +2,14 @@ use crate::aabb::Aabb;
 use crate::vec3::{Point3, Vec3};
 
 #[derive(Debug, Clone, Copy)]
+pub struct RayDifferentials {
+    pub rx_origin: Point3,
+    pub ry_origin: Point3,
+    pub rx_direction: Vec3,
+    pub ry_direction: Vec3,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Ray {
     pub origin: Point3,
     /// TODO: refactor to `Direction(Vec3)` newtype when Vec3/Color3/Point3 get
@@ -9,6 +17,7 @@ pub struct Ray {
     pub direction: Vec3,
     pub time: f64,
     pub inverse_direction: Vec3,
+    pub differentials: Option<RayDifferentials>,
 }
 
 impl Ray {
@@ -22,6 +31,7 @@ impl Ray {
             direction,
             time: 0.,
             inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
+            differentials: None,
         }
     }
 
@@ -35,9 +45,31 @@ impl Ray {
             direction,
             time,
             inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
+            differentials: None,
         }
     }
 
+    pub fn new_with_differentials(
+        origin: Point3,
+        direction: Vec3,
+        time: f64,
+        differentials: RayDifferentials,
+    ) -> Self {
+        debug_assert!(
+            !direction.near_zero(),
+            "zero-direction ray — produces inf/nan in inverse_direction and AABB tests"
+        );
+        Self {
+            origin,
+            direction,
+            time,
+            inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
+            differentials: Some(differentials),
+        }
+    }
+
+    /// Evaluate the ray at parameter t: returns the point along the ray at distance t from the
+    /// origin.
     pub fn at(&self, t: f64) -> Point3 {
         let origin: Vec3 = self.origin;
         let direction = self.direction;

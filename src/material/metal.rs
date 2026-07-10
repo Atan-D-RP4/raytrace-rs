@@ -80,6 +80,7 @@ impl Bsdf for MetalMaterial {
             return Some(BsdfScatter::Delta {
                 wi,
                 f_cos: albedo_ * f,
+                eta: None,
             });
         }
 
@@ -166,6 +167,9 @@ impl Bsdf for MetalMaterial {
         }
     }
 
+    /// Returns an estimate of the material's reflectance for a given outgoing
+    /// direction. For a smooth conductor, this is approximately the Fresnel term with a roughness
+    /// boost. For rough conductors, the effective reflectance is higher due to multiple scattering.
     fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
         let cos_theta = wo.dot(&si.shading_normal()).abs();
         // For a smooth conductor, reflectance ≈ Fresnel(θ) — the GGX lobe

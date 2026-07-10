@@ -47,6 +47,7 @@ impl Bsdf for DielectricMaterial {
         } else {
             self.ior
         };
+
         // Compute the cosine of the angle between the outgoing direction and the surface normal.
         let cos_theta = wo.dot(&si.shading_normal()).min(1.0);
         // Compute the sine of the angle using the identity sin²(θ) + cos²(θ) = 1.
@@ -58,10 +59,12 @@ impl Bsdf for DielectricMaterial {
         } else {
             refract(&-wo, &si.shading_normal(), ri)
         };
+
         // Return the chosen direction with unit attenuation (delta material — all energy goes one way).
         Some(BsdfScatter::Delta {
             wi: direction,
             f_cos: self.tint,
+            eta: Some(ri),
         })
     }
 

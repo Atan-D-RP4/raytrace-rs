@@ -11,6 +11,7 @@ use crate::hittable::SurfaceInteraction;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
+use crate::texture::UVDifferentiable;
 use crate::vec3::{Point3, Vec3};
 
 mod annulus;
@@ -132,6 +133,8 @@ impl<R: Region2D, M: Borrow<Material>> PlanarPatch<R, M> {
         }
     }
 
+    /// Returns the intersection of the ray with the plane of the patch, if there is any, alongside
+    /// the (a, b) coordinates in parametric space.
     pub(crate) fn hit_plane(&self, ray: &Ray, ray_t: Interval) -> Option<PlanarHit> {
         let denom = self.normal.dot(&ray.direction);
 
@@ -162,6 +165,24 @@ impl<R: Region2D, M: Borrow<Material>> PlanarPatch<R, M> {
     }
 }
 
+impl<R: Region2D, M: Borrow<Material>> UVDifferentiable for PlanarPatch<R, M> {
+    /// Returns (∂u/∂P, ∂v/∂P) as 3-vectors. Constant across the patch.
+    fn uv_gradient(&self, _mapping_point: &Point3) -> (Vec3, Vec3) {
+        let a = &self.side_a;
+        let b = &self.side_b;
+        let aa = a.dot(a);
+        let bb = b.dot(b);
+        let ab = a.dot(b);
+        let det = (aa * bb - ab * ab).max(1e-12);
+
+        // du_dp = (bb·side_a − ab·side_b) / det
+        let du_dp = (*b * bb - *a * ab) / det;
+        // dv_dp = (−ab·side_a + aa·side_b) / det
+        let dv_dp = (*a * -ab + *b * aa) / det;
+        (du_dp, dv_dp)
+    }
+}
+
 impl<R: Region2D, M: Borrow<Material> + Send + Sync> Intersectable for PlanarPatch<R, M> {
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         let hit = self.hit_plane(ray, ray_t)?;
@@ -170,13 +191,20 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Intersectable for PlanarPat
             return None;
         }
 
+        // Compute the UV coordinates for texture mapping.
+        let uv = self.region.uv(hit.a, hit.b);
+
+        // Precompute UV derivatives for texture filtering.
+        let uv_gradients = self.uv_gradient(&hit.point);
+
         Some(MaterialHit {
             hit: Hit::new(
                 hit.time,
                 hit.point,
                 hit.point,
                 self.normal,
-                Some(self.region.uv(hit.a, hit.b)),
+                Some(uv),
+                Some(uv_gradients),
             ),
             material: self.material(),
         })
@@ -259,8 +287,8 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         // The surface is front-facing when the light normal points toward the shaded surface.
         let front_face = self.normal.dot(&(-direction)) > 0.0;
         let point = origin + direction;
-        let hit = Hit::new(time, point, point, self.normal, None);
-        let si = SurfaceInteraction::new(hit, self.normal, front_face, self.material());
+        let hit = Hit::new(time, point, point, self.normal, None, None);
+        let si = SurfaceInteraction::new(hit, self.normal, front_face, self.material(), None);
         let wo = -direction.unit_vector();
         let emission = self.material().emitted(wo, &si);
 

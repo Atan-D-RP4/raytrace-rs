@@ -223,7 +223,10 @@ where
                         // Dims 0-1: AA jitter, dims 2-3: lens (defocus)
                         let camera_sampler = CameraSampler::new_sampled((x, y), &mut dim_cursor);
 
-                        if let Some(mut cam_ray) = camera.generate_ray(&camera_sampler) {
+                        let cam_ray = camera
+                            .generate_ray_differential(&camera_sampler)
+                            .or_else(|| camera.generate_ray(&camera_sampler));
+                        if let Some(mut cam_ray) = cam_ray {
                             let radiance = self.integrator.li(
                                 &mut cam_ray.ray,
                                 world,

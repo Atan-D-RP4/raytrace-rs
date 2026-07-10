@@ -15,9 +15,9 @@ use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::{BsdfScatter, Material, PdfKind};
 use crate::pdf::{EmitterPDF, PDF, PdfEnum, power_heuristic};
-use crate::ray::Ray;
+use crate::ray::{Ray, RayDifferentials};
 use crate::sampler::{DimCursor, SampleDims, Sampler};
-use crate::vec3::{Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect, refract};
 
 /// One-sample MIS estimator with power heuristic (β=2).
 ///
@@ -162,6 +162,15 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
                 let material = si.material();
 
+                let light_pdf = if lights.is_empty() {
+                    0.0
+                } else {
+                    <EmitterPDF as PDF<S>>::value(
+                        &EmitterPDF::new(lights, si.point(), ray.time),
+                        ray.direction.unit_vector(),
+                    )
+                };
+
                 // Accumulate emission with MIS weight to avoid double-counting with NEE.
                 // At bounce 0 or after a delta bounce, no previous scatter exists that could
                 // overlap with NEE, so emission is added at full weight (PBRT convention).
@@ -172,10 +181,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     accumulated_color += accumulated_attenuation * emission;
                 } else {
                     // Compute the light's solid-angle PDF for the continuation direction.
-                    let light_pdf_emit = <EmitterPDF as PDF<S>>::value(
-                        &EmitterPDF::new(lights, si.point(), ray.time),
-                        ray.direction.unit_vector(),
-                    );
+                    let light_pdf_emit = light_pdf;
                     let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + light_pdf_emit * light_pdf_emit;
                     let w_emit = power_heuristic(prev_bsdf_pdf, sum_sq);
                     accumulated_color += w_emit * accumulated_attenuation * emission;
@@ -220,10 +226,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                         // MIS weight: compare the light sampler's PDF against the BSDF mixture PDF
                         // at the NEE direction. This weights NEE proportionally to how much better
                         // it is than the continuation ray for this particular direction.
-                        let light_pdf_at_nee = <EmitterPDF as PDF<S>>::value(
-                            &EmitterPDF::new(lights, si.point(), ray.time),
-                            light_unit,
-                        );
+                        let light_pdf_at_nee = light_pdf;
                         let bsdf_pdf_at_nee = bsdf_mixture_pdf::<S>(
                             wo,
                             light_unit,
@@ -290,7 +293,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     let mut new_prev_was_delta = false;
                     let mut new_prev_bsdf_pdf = 0.0;
                     let (direction, bias) = match scatter {
-                        BsdfScatter::Delta { wi, f_cos } => {
+                        BsdfScatter::Delta { wi, f_cos, eta: _ } => {
                             // Pad to fixed 4-dim stride so subsequent bounces use consistent
                             // Sobol dimensions regardless of this bounce's path structure.
                             for _ in 0..4 {
@@ -377,7 +380,48 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     prev_was_delta = new_prev_was_delta;
                     prev_bsdf_pdf = new_prev_bsdf_pdf;
                     accumulated_attenuation = accumulated_attenuation * bias;
-                    ray = Ray::new_with_time(si.point(), direction, ray.time);
+
+                    // Update the ray for the next bounce, preserving and regenerating
+                    // ray differentials so texture filtering survives indirect bounces.
+                    let mut new_ray = Ray::new_with_time(si.point(), direction, ray.time);
+                    if let Some(rd) = ray.differentials {
+                        let n = si.shading_normal();
+                        let t_hit = si.time();
+                        // Preserve the spatial footprint: offset the new ray origins by
+                        // the incoming position derivatives (dpdx / dpdy at the hit).
+                        let dpdx =
+                            (rd.rx_origin - ray.origin) + t_hit * (rd.rx_direction - ray.direction);
+                        let dpdy =
+                            (rd.ry_origin - ray.origin) + t_hit * (rd.ry_direction - ray.direction);
+
+                        // Regenerate differential directions from the scatter kind.
+                        let (rx_direction, ry_direction) = match scatter {
+                            BsdfScatter::Delta { eta, .. } => {
+                                if let Some(eta) = eta {
+                                    (
+                                        refract(&rd.rx_direction, &n, eta),
+                                        refract(&rd.ry_direction, &n, eta),
+                                    )
+                                } else {
+                                    (reflect(&rd.rx_direction, &n), reflect(&rd.ry_direction, &n))
+                                }
+                            }
+                            // Non-delta (Lambertian, rough glossy): approximate the lobe
+                            // as locally specular about the normal so indirect bounces keep
+                            // a non-zero (if approximate) footprint instead of point sampling.
+                            BsdfScatter::NonDelta { .. } => {
+                                (reflect(&rd.rx_direction, &n), reflect(&rd.ry_direction, &n))
+                            }
+                        };
+
+                        new_ray.differentials = Some(RayDifferentials {
+                            rx_origin: si.point() + dpdx,
+                            ry_origin: si.point() + dpdy,
+                            rx_direction,
+                            ry_direction,
+                        });
+                    }
+                    ray = new_ray;
                 } else {
                     // Emissive materials return None — no scattering. Emission already added
                     // to accumulated_color via emitted() above.

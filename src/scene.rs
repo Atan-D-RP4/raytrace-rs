@@ -726,11 +726,14 @@ impl Scene {
             image::open("./kiara_1_dawn_4k.hdr").unwrap().into(),
         )));
 
-        let ground_material = Material::lambertian(checker_texture(
-            0.32,
-            Color3::new(0.2, 0.4, 0.1),
-            Color3::new(0.9, 0.9, 0.9),
-        ));
+        let ground_material = Material::coated(
+            Material::lambertian(checker_texture(
+                0.32,
+                Color3::new(0.2, 0.4, 0.1),
+                Color3::new(0.9, 0.9, 0.9),
+            )),
+            Material::dielectric_tinted(1.5, Color3::new(0.8, 0.8, 1.0)),
+        );
         scene.add_sphere(Point3::new(0., -1000., 0.), 1000., ground_material);
 
         for a in -21..21 {

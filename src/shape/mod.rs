@@ -8,6 +8,7 @@ use crate::hittable::{
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
+use crate::texture::UVDifferentiable;
 use crate::vec3::{Point3, Vec3};
 
 mod sphere;
@@ -21,7 +22,7 @@ pub use sphere::{SphereShape, moving_sphere, sphere};
 /// are handled by [`ShapeObject`].
 ///
 /// [Region2D]: crate::planar::Region2D
-pub trait Shape3D: Send + Sync {
+pub trait Shape3D: UVDifferentiable + Send + Sync {
     /// Intersect a ray in local space. Returns a bare [`Hit`] for the
     /// caller to wrap in [`MaterialHit`].
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit>;
@@ -49,6 +50,9 @@ pub trait Shape3D: Send + Sync {
 
     /// Sample a point on the light and return a [`LightSample`] with direction,
     /// surface normal, distance, and area PDF.
+    ///
+    /// Default fallback: uniform area sampling via [`sample()`]. Override for
+    /// solid-angle-uniform sampling (less noise for small shapes like spheres).
     fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample {
         let (point, normal) = self.sample(u, v, time);
         let offset = point - origin;
@@ -133,7 +137,9 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Bounded for ShapeObject<Sh,
 
 impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Intersectable for ShapeObject<Sh, M> {
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
-        let hit = self.shape.intersect_shape(ray, ray_t)?;
+        let mut hit = self.shape.intersect_shape(ray, ray_t)?;
+        // Precompute UV derivatives for texture filtering.
+        hit.uv_gradients = Some(self.shape.uv_gradient(&hit.mapping_point));
         Some(MaterialHit {
             hit,
             material: self.material.borrow(),
@@ -158,8 +164,8 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<
         let light_unit = sample.direction.unit_vector();
         // Front face: light's normal faces toward the shaded surface.
         let front_face = sample.normal.dot(&(-light_unit)) > 0.0;
-        let hit = Hit::new(time, point, point, sample.normal, None);
-        let si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material());
+        let hit = Hit::new(time, point, point, sample.normal, None, None);
+        let si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material(), None);
         // Direct call — no sentinel, no overwriting
         let wo = -light_unit;
         sample.emission = self.material().emitted(wo, &si);

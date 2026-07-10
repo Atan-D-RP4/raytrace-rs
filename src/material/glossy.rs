@@ -71,6 +71,7 @@ impl Bsdf for GlossyMaterial {
             return Some(BsdfScatter::Delta {
                 wi,
                 f_cos: albedo_ * f,
+                eta: None,
             });
         }
 

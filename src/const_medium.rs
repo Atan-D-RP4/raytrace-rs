@@ -185,7 +185,7 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         // of a hemisphere-based one.  set_face_normal() will compute
         // front_face=false and shading_normal=Vec3::ZERO for this case.
         Some(MaterialHit {
-            hit: Hit::new(new_time, point, point, Vec3::ZERO, None),
+            hit: Hit::new(new_time, point, point, Vec3::ZERO, None, None),
             material: &self.phase_fn,
         })
     }

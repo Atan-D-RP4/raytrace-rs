@@ -72,6 +72,7 @@ impl Bsdf for CoatedMaterial {
             return Some(BsdfScatter::Delta {
                 wi: reflect(&-wo, &n),
                 f_cos: throughput,
+                eta: None,
             });
         }
 
@@ -86,6 +87,7 @@ impl Bsdf for CoatedMaterial {
             return Some(BsdfScatter::Delta {
                 wi: reflect(&-wo, &n),
                 f_cos: throughput,
+                eta: None,
             });
         }
         let mut wi = refract(&-wo, &n, ri);
@@ -127,6 +129,7 @@ impl Bsdf for CoatedMaterial {
                 BsdfScatter::Delta {
                     wi: wi_internal,
                     f_cos: f_cos_internal,
+                    eta,
                 } => {
                     // Beer's law for the upward crossing through the coating layer
                     let path_len_up = self.thickness / wi_internal.dot(&n).abs();
@@ -165,6 +168,7 @@ impl Bsdf for CoatedMaterial {
                         return Some(BsdfScatter::Delta {
                             wi: exit_dir,
                             f_cos: bounded_f_cos,
+                            eta,
                         });
                     }
                 }
@@ -268,6 +272,7 @@ impl Bsdf for CoatedMaterial {
                             return Some(BsdfScatter::Delta {
                                 wi: exit_dir,
                                 f_cos: bounded_f_cos,
+                                eta: None,
                             });
                         }
                     }

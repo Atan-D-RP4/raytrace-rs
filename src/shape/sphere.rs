@@ -7,6 +7,7 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::onb::Onb;
 use crate::ray::{ParametricCurve, Ray};
+use crate::texture::UVDifferentiable;
 use crate::vec3::{Point3, Vec3};
 
 use super::{Shape3D, ShapeObject};
@@ -67,6 +68,29 @@ impl SphereShape {
     }
 }
 
+impl UVDifferentiable for SphereShape {
+    /// Returns (∂u/∂p, ∂v/∂p) for the unit-sphere mapping point `p`.
+    fn uv_gradient(&self, mapping_point: &Point3) -> (Vec3, Vec3) {
+        let (x, y, z) = (mapping_point.x, mapping_point.y, mapping_point.z);
+        let xz2 = (x * x + z * z).max(1e-12);
+
+        // Differentiating this:
+        // u = (atan2(-z, x) + π) / 2π
+        let du_dp = Vec3::new(
+            -z / (2.0 * PI * xz2), // ∂u/∂x
+            0.,                    // ∂u/∂y
+            x / (2.0 * PI * xz2),  // ∂u/∂z
+        );
+
+        // Differentiating this:
+        // v = acos(-y) / π -> d/dy acos(-y) = 1/√(1-y²)
+        let sin_theta = (1.0 - y * y).sqrt().max(1e-12);
+        let dv_dp = Vec3::new(0., (PI * sin_theta).recip(), 0.);
+
+        (du_dp, dv_dp)
+    }
+}
+
 impl Shape3D for SphereShape {
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
         // Quadratic form with h = dot(d, oc). Near root first, far root fallback.
@@ -101,6 +125,7 @@ impl Shape3D for SphereShape {
             outward_normal,
             outward_normal,
             Some((u, v)),
+            None,
         ))
     }
 

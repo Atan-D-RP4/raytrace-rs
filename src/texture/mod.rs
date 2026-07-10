@@ -21,6 +21,17 @@ pub use impls::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Solid
 
 use crate::vec3::{Color3, Point3, Vec3};
 
+pub trait UVDifferentiable {
+    /// Returns the UV coordinates and their screen-space derivatives.
+    ///
+    /// (∂u/∂p, ∂v/∂p) at a mapping-space point.
+    /// Default: zeroed → textures fall back to point sampling (volumes, no-UV).
+    fn uv_gradient(&self, _mapping_point: &Point3) -> (Vec3, Vec3) {
+        // Default: no derivatives (zeroed)
+        (Vec3::ZERO, Vec3::ZERO)
+    }
+}
+
 /// Coordinate spaces carried through the texture pipeline.
 #[derive(Debug, Clone, Copy)]
 pub struct TexturePoints {
@@ -53,9 +64,8 @@ impl TexturePoints {
 
 /// Screen-space partial derivatives for texture filtering and LOD.
 ///
-/// When populated, these enable anisotropic filtering and mipmap selection
-/// on GPU. Currently zeroed — ray/pixel differentials are not yet computed
-/// by the path tracer.
+/// When populated, these enable anisotropic filtering and mipmap selection.
+/// The path tracer computes them via ray differentials (`RayDifferentials`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextureDerivatives {
     /// Screen-space derivative of the hit position with respect to screen x.
@@ -70,6 +80,44 @@ pub struct TextureDerivatives {
     pub dvdx: f64,
     /// Screen-space derivative of V with respect to screen y.
     pub dvdy: f64,
+}
+
+impl TextureDerivatives {
+    /// Creates a new derivative bundle.
+    pub fn new(dpdx: Vec3, dpdy: Vec3, dudx: f64, dudy: f64, dvdx: f64, dvdy: f64) -> Self {
+        Self {
+            dpdx,
+            dpdy,
+            dudx,
+            dudy,
+            dvdx,
+            dvdy,
+        }
+    }
+
+    /// Build UV derivatives from world-space position derivatives and the
+    /// surface's UV Jacobian (∂u/∂p, ∂v/∂p).
+    pub fn from_surface(dpdx: Vec3, dpdy: Vec3, dudp: Vec3, dvdp: Vec3) -> Self {
+        Self {
+            dpdx,
+            dpdy,
+            dudx: dpdx.dot(&dudp),
+            dudy: dpdy.dot(&dudp),
+            dvdx: dpdx.dot(&dvdp),
+            dvdy: dpdy.dot(&dvdp),
+        }
+    }
+
+    /// Returns true if all derivatives are zero.
+    pub fn is_zero(&self) -> bool {
+        const EPS: f64 = 1e-12;
+        self.dpdx.length() < EPS
+            && self.dpdy.length() < EPS
+            && self.dudx.abs() < EPS
+            && self.dudy.abs() < EPS
+            && self.dvdx.abs() < EPS
+            && self.dvdy.abs() < EPS
+    }
 }
 
 /// Full texture evaluation context passed to mappings and textures.
@@ -99,13 +147,14 @@ impl TextureCoords {
         world_point: Point3,
         mapping_point: Point3,
         geometry_normal: Vec3,
+        derivatives: Option<TextureDerivatives>,
     ) -> Self {
         Self {
             u,
             v,
             tex_points: TexturePoints::new(world_point, mapping_point),
             geometry_normal,
-            derivatives: TextureDerivatives::default(),
+            derivatives: derivatives.unwrap_or_default(),
         }
     }
 

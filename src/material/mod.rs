@@ -139,6 +139,8 @@ pub enum BsdfScatter {
         wi: Vec3,
         /// BSDF × cosine. Tint for dielectrics, white for lossless coatings.
         f_cos: Color3,
+        /// GGX alpha for microfacet materials, or `None` for non-GGX materials.
+        eta: Option<f64>,
     },
     /// Non-specular — integrator evaluates the BSDF and uses MIS weighting.
     /// `count` indicates how many PDF descriptors are valid (1 for leaf, up to 2 for Mix).
