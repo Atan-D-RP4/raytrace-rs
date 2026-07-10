@@ -180,7 +180,11 @@ impl ImageTexture {
     fn texel(&self, level: usize, x: i32, y: i32) -> Color3 {
         let img = &self.image_mips[level];
         let (w, h) = (img.width() as i32, img.height() as i32);
-        let p = img.get_pixel(x.rem_euclid(w) as u32, y.rem_euclid(h) as u32);
+        // u (longitude) wraps around the seam; v (latitude) must clamp — wrapping it
+        // would pull opposite-hemisphere colors across the poles.
+        let px = x.rem_euclid(w);
+        let py = y.clamp(0, h - 1);
+        let p = img.get_pixel(px as u32, py as u32);
         Color3::new(p[0] as f64, p[1] as f64, p[2] as f64)
     }
 
@@ -291,12 +295,15 @@ impl ImageTexture {
             return self.trilinear(coords.u, coords.v, lod);
         }
 
-        // Sample along the major axis, averaging the results.
+        // Sample along the major axis, centered on the footprint, averaging the results.
+        // major_len is in texels-per-pixel (from the structure tensor eigenvalues,
+        // which use duv_dx/duv_dy in texel space), so divide by (w, h) to convert
+        // the offset to UV [0,1] space before adding to coords.u/coords.v.
         let mut color_sum = Color3::ZERO;
         for i in 0..num_samples {
             let t = i as f64 / (num_samples - 1) as f64;
-            let u_sample = coords.u + t * dir_x * major_len;
-            let v_sample = coords.v + t * dir_y * major_len;
+            let u_sample = coords.u + (t - 0.5) * dir_x * major_len / w;
+            let v_sample = coords.v + (t - 0.5) * dir_y * major_len / h;
             color_sum += self.trilinear(u_sample, v_sample, lod);
         }
 

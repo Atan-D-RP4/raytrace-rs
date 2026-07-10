@@ -69,25 +69,32 @@ impl SphereShape {
 }
 
 impl UVDifferentiable for SphereShape {
-    /// Returns (∂u/∂p, ∂v/∂p) for the unit-sphere mapping point `p`.
+    /// Returns (∂u/∂p, ∂v/∂p) where `p` is the **world-space** hit position.
+    ///
+    /// `mapping_point` is the unit-sphere direction `(p - center)/r`, so the chain
+    /// rule contributes a `1/r` scale: `∂u/∂p_world = ∂u/∂p_mapping / r`. Without it
+    /// the texture-space footprint is overstated by `r` (e.g. 2× for the earth sphere),
+    /// pushing mip selection too coarse and blurring the image.
     fn uv_gradient(&self, mapping_point: &Point3) -> (Vec3, Vec3) {
         let (x, y, z) = (mapping_point.x, mapping_point.y, mapping_point.z);
         let xz2 = (x * x + z * z).max(1e-12);
 
-        // Differentiating this:
         // u = (atan2(-z, x) + π) / 2π
+        // ∂u/∂x = +z / (2π·xz²)
+        // ∂u/∂z = -x / (2π·xz²)
         let du_dp = Vec3::new(
-            -z / (2.0 * PI * xz2), // ∂u/∂x
+            z / (2.0 * PI * xz2),  // ∂u/∂x
             0.,                    // ∂u/∂y
-            x / (2.0 * PI * xz2),  // ∂u/∂z
+            -x / (2.0 * PI * xz2), // ∂u/∂z
         );
 
-        // Differentiating this:
-        // v = acos(-y) / π -> d/dy acos(-y) = 1/√(1-y²)
+        // v = acos(-y) / π  ->  d/dy acos(-y) = 1/√(1-y²)
         let sin_theta = (1.0 - y * y).sqrt().max(1e-12);
         let dv_dp = Vec3::new(0., (PI * sin_theta).recip(), 0.);
 
-        (du_dp, dv_dp)
+        // Scale unit-sphere (mapping) gradients to world space: d/dp_world = d/dp_mapping / r.
+        let r_inv = 1.0 / self.radius;
+        (du_dp * r_inv, dv_dp * r_inv)
     }
 }
 

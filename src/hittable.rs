@@ -122,8 +122,25 @@ impl<'si> SurfaceInteraction<'si> {
             && let Some(rd) = ray.differentials
         {
             let t_hit = mat_hit.hit.time;
-            let dpdx = (rd.rx_origin - ray.origin) + t_hit * (rd.rx_direction - ray.direction);
-            let dpdy = (rd.ry_origin - ray.origin) + t_hit * (rd.ry_direction - ray.direction);
+            let p = ray.at(t_hit);
+            let dpdx = Ray::differential_footprint(
+                rd.rx_origin,
+                rd.rx_direction,
+                p,
+                geometric_normal,
+                t_hit,
+                ray.origin,
+                ray.direction,
+            );
+            let dpdy = Ray::differential_footprint(
+                rd.ry_origin,
+                rd.ry_direction,
+                p,
+                geometric_normal,
+                t_hit,
+                ray.origin,
+                ray.direction,
+            );
             let (du_dp, dv_dp) = gradients;
             Some(TextureDerivatives::from_surface(dpdx, dpdy, du_dp, dv_dp))
         } else {

@@ -76,6 +76,35 @@ impl Ray {
         origin + direction * t
     }
 
+    /// World-space footprint of one pixel (dpdx) at a surface hit, using the
+    /// tangent-plane projection (Igehy 1999 / pbrt `ComputeDifferentials`):
+    /// intersect the offset ray with the tangent plane at the hit point rather
+    /// than evaluating it at the primary ray's own hit distance. This accounts
+    /// for surface foreshortening, which the `t_hit`-scaled estimate cannot.
+    ///
+    /// Falls back to the bounded `t_hit` estimate when the offset ray is nearly
+    /// parallel to the tangent plane (grazing angles on curved surfaces), where
+    /// the tangent-plane intersection is ill-conditioned and would blow up to
+    /// infinity — producing extreme LOD and warping at the limb.
+    pub(crate) fn differential_footprint(
+        rx_origin: Point3,
+        rx_direction: Vec3,
+        hit_point: Point3,
+        normal: Vec3,
+        t_hit: f64,
+        primary_origin: Point3,
+        primary_direction: Vec3,
+    ) -> Vec3 {
+        let denom = normal.dot(&rx_direction);
+        if denom.abs() < 1e-4 {
+            // Grazing angle: tangent-plane formula is ill-conditioned.
+            // Fall back to the bounded t_hit estimate.
+            return (rx_origin - primary_origin) + t_hit * (rx_direction - primary_direction);
+        }
+        let t = normal.dot(&(hit_point - rx_origin)) / denom;
+        (rx_origin + rx_direction * t) - hit_point
+    }
+
     /// Propagate ray differentials through a surface scatter event.
     pub fn propagate_differentials(
         &self,
@@ -87,8 +116,24 @@ impl Ray {
         if let Some(rd) = self.differentials {
             // Preserve the spatial footprint: offset the new ray origins by
             // the incoming position derivatives (dpdx / dpdy at the hit).
-            let dpdx = (rd.rx_origin - self.origin) + hit_time * (rd.rx_direction - self.direction);
-            let dpdy = (rd.ry_origin - self.origin) + hit_time * (rd.ry_direction - self.direction);
+            let dpdx = Ray::differential_footprint(
+                rd.rx_origin,
+                rd.rx_direction,
+                hit_point,
+                normal,
+                hit_time,
+                self.origin,
+                self.direction,
+            );
+            let dpdy = Ray::differential_footprint(
+                rd.ry_origin,
+                rd.ry_direction,
+                hit_point,
+                normal,
+                hit_time,
+                self.origin,
+                self.direction,
+            );
 
             // Regenerate the ray differentials for the scattered ray. For reflection, the direction derivatives
             // are reflected. For refraction, the direction derivatives are refracted.
