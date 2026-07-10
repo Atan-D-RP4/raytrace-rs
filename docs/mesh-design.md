@@ -14,6 +14,14 @@ ______________________________________________________________________
   (denoiser.md, adaptive-sampling.md, renderer_arch.md, samplestream-refactor.md).
   Fixed scene integration (Arc-based dual reg), added cross-doc refs,
   documented rasterizer tension as deferred integration point.
+- **v3 (2026-07-10)** — Resolved Open Questions.
+  - OQ1 resolved: merge `src/bvh.rs` + `src/flat_bvh.rs` into `src/bvh/` module.
+    FlatBvhNode shared. MeshBvh lives in `src/bvh/mesh.rs`.
+  - OQ4 updated: watertight intersection = permute+shear ray transform (primary)
+    + double-precision fallback at edges (secondary). Not deferred.
+  - OQ5 resolved: `MeshShape` exposes `triangles()` iterator for rasterizer.
+  - §3.7 updated: `TransformObject` uses `Arc<MeshShape>` for instancing.
+  - Added glam migration note (§2.2).
 
 ______________________________________________________________________
 
@@ -134,6 +142,15 @@ BvhNode / FlatBvh (src/bvh.rs, src/flat_bvh.rs)
   `Arc<dyn Intersectable>` for the object list and an
   `Arc<dyn Sampleable>` for the light list (same geometry, two Arcs).
 
+- **Upcoming: vec3 → glam migration.** The custom `Vec3`, `Point3`, etc.
+  will be replaced with `glam::Vec3`, `glam::Vec3A`, and `glam::Affine3A`
+  for the Transform system. Mesh `MeshData.positions` will store
+  `glam::Vec3A` (aligned for SIMD) — critical for BVH AABB computation
+  and Möller–Trumbore performance. The mesh design is type-agnostic;
+  switching the concrete type is a mechanical rename in data structures.
+  Möller–Trumbore remains the same math. TransformObject will use
+  `glam::Affine3A` or `glam::Mat4` instead of the current `Transform`.
+
 ### 2.3 Non-Goal: Individual Mesh Triangles as Shape3Ds
 
 We will NOT create a pbrt-style `MeshTriangle` index-pair that implements
@@ -174,9 +191,12 @@ and shared by all references to the mesh geometry. Immutable after
 construction.
 
 ```rust
-// ─── src/mesh/bvh.rs ───
+// ─── src/bvh/mesh.rs ───
 
 /// Internal flat BVH over mesh triangles. Geometry-only.
+///
+/// Lives in src/bvh/ alongside the scene BVH types, sharing FlatBvhNode.
+/// Exported as MeshBvh to distinguish from FlatBvh (scene-level).
 ///
 /// Differs from the scene-level FlatBvh:
 ///   - Leaf primitives are triangle index ranges, not Arc<dyn Intersectable>
@@ -271,8 +291,20 @@ struct MeshHit {
 
 The triangle intersection routine needs to handle:
 
-- **Watertight intersection** near edges (double-precision fallback when
-  barycentric coordinates are near-zero, following pbrt-v4's approach).
+- **Watertight intersection** via pbrt-v4's two-layer approach:
+  1. **Primary: ray-space permute + shear transform.** Find the ray's dominant
+     axis (`kz`), permute vertices so `kz` is the shear axis, then shear the
+     transformed 2D coordinates so the ray is axis-aligned. This uses
+     `DifferenceOfProducts` (a fused multiply-subtract that reduces catastrophic
+     cancellation) for edge function evaluation.
+  2. **Secondary: double-precision fallback.** When edge coefficients `e0`, `e1`,
+     or `e2` are exactly zero in single precision, re-evaluate the problematic
+     terms using double-precision arithmetic.
+  
+  The key insight: the permute+shear transform itself makes intersection robust
+  by simplifying the math. The double-precision fallback is only triggered at
+  edges where single precision produces exact zero. This is required for
+  production quality — **do not defer** to Phase 2.
 - **Back-face culling** is NOT performed — the `set_face_normal` logic
   in `SurfaceInteraction` handles front-face determination.
 - **UV interpolation** when `mesh.normals` / `mesh.uvs` are present.
@@ -355,22 +387,32 @@ Key points:
 - Two `ShapeObject<Arc<MeshShape>, Arc<Material>>` instances share the same
   `MeshShape` and BVH arrays — no deep-copy.
 
-### 3.7 TransformObject Compatibility
+### 3.7 Transform Sharing via Arc\<MeshShape\>
 
-`Mesh` wraps naturally:
+Multiple transforms can share the same mesh geometry via `Arc<MeshShape>`:
 
 ```rust
-TransformObject<Translate, ShapeObject<MeshShape, Arc<Material>>>
+// Build once
+let mesh_shape = Arc::new(MeshShape::from_data(data));
+
+// Use at multiple transforms — cheap Arc::clone(), no BVH duplication
+TransformObject<Translate, ShapeObject<Arc<MeshShape>, Arc<Material>>>
+TransformObject<RotateY,   ShapeObject<Arc<MeshShape>, Arc<Material>>>
 ```
+
+This enables forest scenes, cityscapes, etc. where one mesh appears many times.
+
+`ShapeObject<Arc<MeshShape>, Arc<Material>>` works because:
+- `Arc<MeshShape>: Shape3D` via the delegation impl (§3.6).
+- `Arc<Material>: Borrow<Material>` via standard library impl.
+- `ShapeObject` types with `Arc<MeshShape>` implement `Intersectable`,
+  so `TransformObject<...>` accepts them.
 
 `TransformObject` implements `Intersectable` by:
 
 1. Transform ray → object space via `world_to_object_point`
 2. Intersect mesh in object space
 3. Transform hit back via `Transform::hit()`
-
-This works unchanged because `ShapeObject<MeshShape, M>` implements
-`Intersectable` (which `TransformObject` requires).
 
 ______________________________________________________________________
 
@@ -405,30 +447,42 @@ ______________________________________________________________________
 
 ## 5. Files to Create / Modify
 
-### New files
+### BVH module restructure (prerequisite: merge bvh.rs + flat_bvh.rs)
+
+Before adding MeshBvh, consolidate the two standalone BVH files into a module:
+
+| Action | File | Contents |
+|---|---|---|
+| Create | `src/bvh/mod.rs` | Re-export `BvhNode`, `FlatBvh`, `FlatBvhNode`, `MeshBvh` |
+| Create | `src/bvh/scene.rs` | `BvhNode`, `FlatBvh` (moved from `src/bvh.rs`, `src/flat_bvh.rs`) |
+| Create | `src/bvh/mesh.rs` | `MeshBvh` struct + flat BVH traversal + SAH construction |
+| Remove | `src/bvh.rs` | Content moved to `src/bvh/scene.rs` |
+| Remove | `src/flat_bvh.rs` | Content moved to `src/bvh/scene.rs` |
+
+`FlatBvhNode` becomes shared by both `FlatBvh` and `MeshBvh` via `src/bvh/mod.rs`.
+
+### New mesh files
 
 | File | Contents |
 |---|---|
-| `src/mesh/mod.rs` | Module root: re-exports from data, bvh, shape |
-| `src/mesh/data.rs` | `MeshData` struct + OBJ/PLY parsing |
-| `src/mesh/bvh.rs` | `MeshBvh` struct + flat BVH traversal + SAH construction |
+| `src/mesh/mod.rs` | Module root: re-exports from data, shape |
+| `src/mesh/data.rs` | `MeshData` struct + OBJ/PLY parsing + `MeshShape::triangles()` |
 | `src/mesh/shape.rs` | `MeshShape` struct + `Shape3D` impl + free `mesh()` constructor |
 
 ### Modified files
 
 | File | Change |
 |---|---|
-| `src/shape/mod.rs` | Add `impl Shape3D for Arc<MeshShape>` (delegation blanket — 6 methods). Required for shared-BVH dual registration. |
-| `src/lib.rs` | Add `pub mod mesh;` |
+| `src/lib.rs` | Replace `pub mod bvh;` + `pub mod flat_bvh;` with `pub mod bvh;` (module), add `pub mod mesh;` |
+| `src/shape/mod.rs` | Add `impl Shape3D for Arc<MeshShape>` (delegation blanket — 6 methods). Required for shared-BVH dual registration + transform sharing. |
 | `src/scene.rs` | Add `add_mesh()` with Arc-based BVH sharing for emissive meshes |
+| All files importing `crate::bvh` or `crate::flat_bvh` | Update imports to `crate::bvh::*` |
 
 ### No changes needed
 
 | File | Reason |
 |---|---|
 | `src/hittable.rs` | Traits unchanged. `Hit`, `MaterialHit` unchanged. |
-| `src/bvh.rs` | Scene BVH unchanged — builds over `Arc<dyn Intersectable>` as before. |
-| `src/flat_bvh.rs` | Scene flat BVH unchanged. MeshBvh reuses `FlatBvhNode` layout. |
 | `src/planar/mod.rs` | Individual `Tri<M>` via `PlanarPatch<TriRegion, M>` unchanged. |
 
 ______________________________________________________________________
@@ -437,11 +491,17 @@ ______________________________________________________________________
 
 ### Phase 1 — Core Geometry (this PR)
 
+0. **Prerequisite: consolidate `src/bvh/` module.** Merge `src/bvh.rs` +
+   `src/flat_bvh.rs` into `src/bvh/scene.rs`. Update all imports.
+   Shared `FlatBvhNode` in `src/bvh/mod.rs`.
 1. `MeshData` — positions, normals, uvs, indices. OBJ file format parser.
-2. `MeshBvh` — SAH construction, flat-node iterative traversal.
-3. `MeshShape: Shape3D` — intersection via internal BVH + Möller–Trumbore.
-4. `mesh()` constructor + `add_mesh()` scene method.
-5. Integration test: Cornell box mesh variant with a single quad/tri mesh.
+2. `MeshBvh` — SAH construction, flat-node iterative traversal. `src/bvh/mesh.rs`.
+3. `MeshShape: Shape3D` — intersection via internal BVH + Möller–Trumbore
+   with watertight permute+shear + double-precision fallback.
+4. `impl Shape3D for Arc<MeshShape>` — delegation impl for dual registration
+   and transform sharing. `src/shape/mod.rs`.
+5. `mesh()` constructor + `add_mesh()` scene method.
+6. Integration test: Cornell box mesh variant with a single quad/tri mesh.
 
 ### Phase 2 — Sampling + Light Integration
 
@@ -466,10 +526,12 @@ ______________________________________________________________________
 
 ## 7. Open Questions
 
-1. **`FlatBvhNode` reuse.** Should `MeshBvh` own a separate copy of the
-   `FlatBvhNode` struct (same layout), or should `FlatBvhNode` be extracted
-   into a shared module? Current code is in `src/flat_bvh.rs`. Extracting
-   avoids duplication but broadens the API surface.
+1. ~~**`FlatBvhNode` reuse.**~~ **RESOLVED in v3.** Merge `src/bvh.rs` and
+   `src/flat_bvh.rs` into a `src/bvh/` module. Content goes in
+   `src/bvh/scene.rs`. `FlatBvhNode` is shared by both `FlatBvh` (scene)
+   and `MeshBvh`. `MeshBvh` lives in `src/bvh/mesh.rs` since it directly
+   reuses `FlatBvhNode` — avoids cross-module dependency from `src/mesh/`
+   to `src/bvh/` at the struct level.
 
 2. ~~**`MeshShape::clone()` for dual light registration.**~~ **RESOLVED in v2.**
    The scene code (§3.6) uses `impl Shape3D for Arc<MeshShape>` so an
@@ -484,19 +546,26 @@ ______________________________________________________________________
    acceptable? Yes — each mesh's BVH is traversed once per ray, and the
    scene BVH culls non-hit meshes.
 
-4. **Watertight intersection.** pbrt-v4 uses double-precision fallback
-   for near-zero barycentric coordinates. Required for production quality
-   but can be deferred to Phase 2.
+4. ~~**Watertight intersection.**~~ **UPDATED in v3.** Verified against pbrt-v4
+   source. The technique has two layers:
+   - **Primary: ray-space permute + shear transform.** Align the ray with its
+     dominant axis (`kz`), permute vertices so `kz` maps to z, then shear the
+     transformed 2D coordinates so the ray is axis-aligned. Edge functions use
+     `DifferenceOfProducts` (fused multiply-subtract) to reduce cancellation.
+   - **Secondary: double-precision fallback.** When `e0`, `e1`, or `e2` are
+     exactly zero in single precision, re-evaluate with `double`.
+   
+   The import: the permute+shear transform is the primary robustness mechanism,
+   not the double-precision fallback. The fallback only fires at exact-zero
+   edges. **This is required for production quality — do not defer.** Implement
+   in Phase 1 alongside Möller–Trumbore.
 
-5. **renderer_arch TriangleRasterizer ↔ mesh triangle access.**
-   renderer_arch.md §2 describes a `TriangleRasterizer` that iterates all
-   world triangles by vertex transform → clip → rasterize. A `MeshShape`
-   (single `Shape3D`) is opaque to per-triangle iteration — the rasterizer
-   cannot extract vertex data from it. This is a deferred integration point:
-   either (a) `MeshShape` exposes a `triangles()` iterator, (b) the
-   rasterizer uses intersection-based rasterization (ray-per-pixel), or
-   (c) the rasterizer requires scene geometry to be decomposed into
-   individual triangles (contradicts our mesh design). Not blocking Phase 1.
+5. ~~**renderer_arch TriangleRasterizer ↔ mesh triangle access.**~~
+   **RESOLVED in v3.** `MeshShape` exposes a `triangles()` accessor/iterator
+   that yields triangle index + vertex positions. The rasterizer calls
+   `mesh.triangles()` to iterate, transform vertices, and rasterize.
+   This preserves `MeshShape` as a single `Shape3D` while enabling
+   rasterization. Not blocking Phase 1 — implement when rasterizer is built.
 
 ______________________________________________________________________
 
@@ -506,7 +575,7 @@ ______________________________________________________________________
 
 | Doc | Relationship to Mesh | Status |
 |---|---|---|
-| `renderer_arch.md` §2, §9 | `SampleableEnum` needs `Mesh` variant (additive). `TriangleRasterizer` needs mesh triangle access (deferred, see §7.5). Primitive registration pattern matches. | ✅ Compatible, 2 tensions documented |
+| `renderer_arch.md` §2, §9 | `SampleableEnum` needs `Mesh` variant (additive). `TriangleRasterizer` uses `MeshShape::triangles()` (§7.5 — resolved in v3). Primitive registration pattern matches. | ✅ Compatible |
 | `denoiser.md` | Denoiser post-processes film output. Orthogonal to geometry. No shared interfaces. | ✅ No conflict |
 | `adaptive-sampling.md` | Variance estimation + convergence criteria. Orthogonal to geometry types. | ✅ No conflict |
 | `samplestream-refactor.md` | `SampleStreamEnum` replaces `DimCursor` in integrator signatures. Mesh uses `Sampleable` (non-generic, raw params). | ✅ No conflict |
@@ -515,5 +584,5 @@ ______________________________________________________________________
 ### Codebase references
 
 - `src/shape/mod.rs` — Shape3D trait, ShapeObject wrapper.
-- `src/flat_bvh.rs` — FlatBvhNode layout (64 bytes), iterative traversal.
+- `src/bvh/` — Shared BVH module: `scene.rs` (BvhNode + FlatBvh), `mesh.rs` (MeshBvh), FlatBvhNode layout (64B, iterative traversal).
 - `src/planar/mod.rs` and `src/planar/tri.rs` — TriRegion (existing single-triangle primitive).
