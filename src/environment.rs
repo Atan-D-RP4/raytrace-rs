@@ -66,7 +66,7 @@ impl EnvironmentMap {
     }
 
     /// Evaluate the pixel-domain PDF at (i, j). For solid-angle PDF, divide by
-    /// sin(θ) · 2π² (see `PdfEnum::value()` for the conversion).
+    /// sin(θ) · 2π² (see `EnvironmentMap::to_solid_angle_pdf()`).
     pub fn pdf(&self, i: usize, j: usize) -> f64 {
         self.distribution.pdf(i, j)
     }

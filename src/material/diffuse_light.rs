@@ -17,7 +17,6 @@ use crate::vec3::{Color3, Vec3};
 
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 use crate::material::{GPU_NONE, PdfKind};
-use crate::sampler::SampleDims;
 
 use super::gpu::GpuSerializable;
 
@@ -36,7 +35,7 @@ impl Bsdf for DiffuseLightMaterial {
         &self,
         _wo: Vec3,
         _si: &SurfaceInteraction,
-        _dims: SampleDims,
+        _next_dim: &mut dyn FnMut() -> f64,
     ) -> Option<BsdfScatter> {
         None
     }

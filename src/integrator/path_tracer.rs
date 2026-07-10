@@ -14,9 +14,9 @@ use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::{BsdfScatter, Material, PdfKind};
-use crate::pdf::{EmitterPDF, PDF, PdfEnum, power_heuristic};
+use crate::pdf::{EmitterPDF, EnvPdf, PDF, power_heuristic};
 use crate::ray::{Ray, RayDifferentials};
-use crate::sampler::{DimCursor, SampleDims, Sampler};
+use crate::sampler::{SampleStream, SamplerRng};
 use crate::vec3::{Color3, Vec3, reflect, refract};
 
 /// One-sample MIS estimator with power heuristic (β=2).
@@ -31,29 +31,26 @@ use crate::vec3::{Color3, Vec3, reflect, refract};
 /// at the sampled direction. This is provably unbiased and has lower variance
 /// than the mixture-based f/p_mix estimator.
 ///
-/// NOTE: if we need to swap out the MIS strategy, we can make this generic over a
-/// MisWeightingStrategy trait that takes the selected PDF and all PDFs and returns the weight.
+/// `sel_idx` is the pre-selected strategy index (from `SamplerRng`).
+/// `(pdf_u, pdf_v)` are the correlated 2D samples for direction generation.
 #[inline(always)]
-fn mis_sample<S: Sampler, const N: usize>(
-    pdfs: [&dyn PDF<S>; N],
+fn mis_sample<const N: usize>(
+    pdfs: [&dyn PDF; N],
     eval_fn: impl FnOnce(Vec3) -> crate::vec3::Color3,
-    dim_cursor: &mut DimCursor<S>,
+    sel_idx: usize,
+    pdf_u: f64,
+    pdf_v: f64,
 ) -> (Vec3, Color3, f64) {
     let n = pdfs.len();
     debug_assert!(n > 0, "mis_sample requires at least one PDF strategy");
 
-    // 1. Select strategy uniformly: 1 QMC dim for selection
-    let u_select = dim_cursor.next_sample();
-    let sel_idx = (u_select * n as f64).min(n as f64 - 1e-15) as usize;
+    // 1. Generate direction from selected strategy
+    let direction = pdfs[sel_idx].generate(pdf_u, pdf_v).unit_vector();
 
-    // 2. Generate direction from selected strategy
-    let direction = pdfs[sel_idx].generate(dim_cursor).unit_vector();
-
-    // 3. Evaluate ALL PDFs at the sampled direction, compute sum of squares
+    // 2. Evaluate ALL PDFs at the sampled direction, compute sum of squares
     let mut pdf_sum_sq = 0.0;
     let mut pdf_sum = 0.0;
-    // Stack-allocate for the small strategy counts we support (max ~4).
-    let mut pdf_vals = [0.0f64; 8];
+    let mut pdf_vals = [0.0f64; N];
     for (i, pdf) in pdfs.iter().enumerate() {
         let v = pdf.value(direction);
         pdf_vals[i] = v;
@@ -61,18 +58,17 @@ fn mis_sample<S: Sampler, const N: usize>(
         pdf_sum += v;
     }
 
-    // 4. Compute MIS weight: w_sel = p_sel² / Σ(p_j²)
+    // 3. Compute MIS weight: w_sel = p_sel² / Σ(p_j²)
     let p_sel = pdf_vals[sel_idx];
     let mis_weight = power_heuristic(p_sel, pdf_sum_sq);
 
-    // 5. Compute contribution: N * w_sel * f / p_sel
+    // 4. Compute contribution: N * w_sel * f / p_sel
     let f = eval_fn(direction);
     let contribution = if p_sel > 1e-10 {
         f * (n as f64 * mis_weight / p_sel)
     } else {
         crate::vec3::Color3::ZERO
     };
-    // Return the sampled direction, the MIS-weighted contribution, and the mixture PDF value
     (direction, contribution, pdf_sum / n as f64)
 }
 
@@ -81,7 +77,7 @@ fn mis_sample<S: Sampler, const N: usize>(
 /// Matches the mixture structure used in the scatter step (env + material PDFs, without light_pdf,
 /// since NEE handles light sampling separately).
 #[inline]
-fn bsdf_mixture_pdf<S: Sampler>(
+fn bsdf_mixture_pdf(
     wo: Vec3,
     wi: Vec3,
     si: &SurfaceInteraction,
@@ -91,7 +87,7 @@ fn bsdf_mixture_pdf<S: Sampler>(
 ) -> f64 {
     // env_pdf value: UniformHemisphere (surfaces) or UniformSphere (volumes)
     let env_value = match env_map {
-        Some(env_map) => PdfEnum::<S>::environment(env_map.clone()).value(wi),
+        Some(env_map) => env_map.to_solid_angle_pdf(wi),
         None => {
             if is_volume {
                 1.0 / (4.0 * PI)
@@ -109,7 +105,7 @@ fn bsdf_mixture_pdf<S: Sampler>(
     // Material PDF values — matches the strategy structure in the scatter step
     let (mat_sum, n_mat) = match material {
         Material::Mix(inner) => {
-            let (a, b) = (inner.a.clone(), inner.b.clone());
+            let (a, b) = (inner.a.as_ref(), inner.b.as_ref());
             let pa = a.pdf(wo, wi, si);
             let pb = b.pdf(wo, wi, si);
             let has_a = a.pdf_kind(wo, si).is_some();
@@ -143,13 +139,14 @@ impl PathTracingIntegrator {
     }
 }
 
-impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
+impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator {
     fn li(
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
         lights: &[Arc<dyn Sampleable>],
-        dim_cursor: &mut DimCursor<S>,
+        stream: &mut S,
+        rng: &mut R,
     ) -> Color3 {
         let mut accumulated_attenuation = Color3::ONE;
         let mut accumulated_color = Color3::ZERO;
@@ -161,14 +158,12 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
             if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f64::INFINITY)) {
                 let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
                 let material = si.material();
+                let normal = si.shading_normal();
 
                 let light_pdf = if lights.is_empty() {
                     0.0
                 } else {
-                    <EmitterPDF as PDF<S>>::value(
-                        &EmitterPDF::new(lights, si.point(), ray.time),
-                        ray.direction.unit_vector(),
-                    )
+                    EmitterPDF::new(lights, si.point(), ray.time).value(ray.direction.unit_vector())
                 };
 
                 // Accumulate emission with MIS weight to avoid double-counting with NEE.
@@ -176,7 +171,8 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 // overlap with NEE, so emission is added at full weight (PBRT convention).
                 // Outgoing direction (away from the surface) is the negative of the ray direction.
                 let wo = -ray.direction.unit_vector();
-                let emission = material.emitted(wo, &si); // NEE uses wo-aware emission (e.g., Beer's law for coated)
+                // NEE uses wo-aware emission (e.g., Beer's law for coated)
+                let emission = material.emitted(wo, &si);
                 if bounce == 0 || prev_was_delta {
                     accumulated_color += accumulated_attenuation * emission;
                 } else {
@@ -198,18 +194,18 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     return accumulated_color;
                 }
 
-                let is_volume = si.shading_normal().near_zero();
+                let is_volume = normal.near_zero();
 
                 // Shadow ray based Next Event Estimation (NEE) for direct lighting.
                 // Skip for delta materials (mirrors, glass) — BSDF is zero for any
                 // direction that doesn't match the single specular direction.
                 if !lights.is_empty() && !material.is_delta() {
                     // Pick a random light source to sample from the list
-                    let light_idx = (dim_cursor.next_sample() * lights.len() as f64) as usize;
+                    let light_idx = (rng.next() * lights.len() as f64) as usize;
                     let light = &lights[light_idx % lights.len()];
 
                     // Sample a point on the light source — returns direction, normal, distance, and area PDF
-                    let (u, v) = (dim_cursor.next_sample(), dim_cursor.next_sample());
+                    let (u, v) = stream.next_2d();
                     let sample = light.sample_light(si.point(), u, v, ray.time);
                     let light_unit = sample.direction.unit_vector();
                     let light_emission = sample.emission;
@@ -227,7 +223,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                         // at the NEE direction. This weights NEE proportionally to how much better
                         // it is than the continuation ray for this particular direction.
                         let light_pdf_at_nee = light_pdf;
-                        let bsdf_pdf_at_nee = bsdf_mixture_pdf::<S>(
+                        let bsdf_pdf_at_nee = bsdf_mixture_pdf(
                             wo,
                             light_unit,
                             &si,
@@ -258,7 +254,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 }
 
                 // Sample a random number for Russian Roulette
-                let rr = dim_cursor.next_sample();
+                let rr = rng.next();
 
                 // Russian Roulette: survival probability proportional to current
                 // path throughput.  The 0.05 floor bounds variance from low-throughput paths.
@@ -271,107 +267,82 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                 }
 
                 // Sample the material to get the next ray and attenuation
-                let u_mat = dim_cursor.next_sample();
-                let v_mat = dim_cursor.next_sample();
-                let w_mat = dim_cursor.next_sample();
-                let x_mat = dim_cursor.next_sample();
-                let y_mat = dim_cursor.next_sample();
-                let z_mat = dim_cursor.next_sample();
+                let mut next_mat_dim = || -> f64 { rng.next() };
 
-                if let Some(scatter) = material.scatter(
-                    wo,
-                    &si,
-                    SampleDims {
-                        u: u_mat,
-                        v: v_mat,
-                        w: w_mat,
-                        x: x_mat,
-                        y: y_mat,
-                        z: z_mat,
-                    },
-                ) {
+                if let Some(scatter) = material.scatter(wo, &si, &mut next_mat_dim) {
                     let mut new_prev_was_delta = false;
                     let mut new_prev_bsdf_pdf = 0.0;
                     let (direction, bias) = match scatter {
                         BsdfScatter::Delta { wi, f_cos, eta: _ } => {
-                            // Pad to fixed 4-dim stride so subsequent bounces use consistent
-                            // Sobol dimensions regardless of this bounce's path structure.
-                            for _ in 0..4 {
-                                let _ = dim_cursor.next_dim();
-                            }
                             new_prev_was_delta = true;
                             (wi, f_cos)
                         }
-                        BsdfScatter::NonDelta { pdf_kinds, count } => {
+                        BsdfScatter::NonDelta { pdf_kinds } => {
                             // One-sample MIS with power heuristic (β=2).
                             // Selects one strategy uniformly, generates direction from it,
                             // evaluates ALL PDFs, computes weighted estimator:
                             //   N * (p_sel² / Σp_j²) * f / p_sel
                             //
                             // Strategy selection:
-                            // - Always include env_pdf: provides hemisphere/sphere fallback
+                            // - Always include env PDF: provides hemisphere/sphere fallback
                             //   for indirect illumination and escape directions. Without it,
                             //   MIS weights become suboptimal for multi-bounce paths and
                             //   caustic-adjacent geometry (e.g. glass sphere in Cornell box).
-                            // - Surfaces: env_pdf = UniformHemisphere (general fallback, never
-                            //   duplicates material PDFs). Volumes: env_pdf = UniformSphere.
+                            // - Surfaces: env_fallback = UniformHemisphere (general fallback,
+                            //   never duplicates material PDFs). Volumes: UniformSphere.
                             // - light_pdf is excluded — NEE handles light sampling separately.
+                            //
+                            // PdfKind directly implements PDF, so we store copies on the stack
+                            // and take &dyn PDF references to them.
 
-                            // PdfEnum dispatches via match on a hand-rolled enum (zero-cost).
-                            let env_pdf: PdfEnum<S> = match self.env_map {
-                                Some(ref env_map) => PdfEnum::environment(env_map.clone()),
-                                None => {
-                                    if is_volume {
-                                        PdfEnum::new(&crate::material::PdfKind::UniformSphere)
-                                    } else {
-                                        PdfEnum::new(&PdfKind::UniformHemisphere {
-                                            normal: si.shading_normal(),
-                                        })
-                                    }
-                                }
-                            };
-
-                            // Track consumption for fixed-dim stride padding.
-                            let mix_start = dim_cursor.offset();
-
-                            // Build surface PDFs only for valid slots.
                             let eval = |d: Vec3| material.eval(wo, d, &si);
 
-                            // Build the strategy list in a fixed-size array.
-                            // light_pdf is excluded — NEE handles light sampling separately.
-                            // Max capacity: env(1) + s0(0/1) + s1(0/1) = 1..3.
-                            // env_pdf is UniformHemisphere (surfaces) or UniformSphere (volumes) —
-                            // never duplicates a material PDF (Cosine, Ggx, UniformSphere).
-                            let make_pdf = |idx: usize| -> Option<PdfEnum<S>> {
-                                if count > idx as u8 {
-                                    Some(PdfEnum::new(&pdf_kinds[idx]))
-                                } else {
-                                    None
-                                }
-                            };
-                            let s0 = make_pdf(0);
-                            let s1 = make_pdf(1);
+                            // Environment strategies
+                            let env_fallback = PdfKind::UniformHemisphere { normal };
+                            let vol_fallback = PdfKind::UniformSphere;
+                            let env_holder = self.env_map.as_ref().map(EnvPdf::new);
 
-                            // Fixed-size array replaces Vec — zero heap allocation.
-                            // Indices 1..3 are overwritten with material PDFs before use.
-                            let mut pdf_refs: [&dyn PDF<S>; 4] = [&env_pdf; 4]; // env_pdf is always present at index 0
+                            // Material strategies — PdfKind is Copy, so we can store
+                            // copies directly.
+                            let mut mat_storage: [PdfKind; 2] = [PdfKind::UniformSphere; 2];
+                            let mut mat_count = 0usize;
+                            if let Some(pk) = pdf_kinds[0] {
+                                mat_storage[mat_count] = pk;
+                                mat_count += 1;
+                            }
+                            if let Some(pk) = pdf_kinds[1] {
+                                mat_storage[mat_count] = pk;
+                                mat_count += 1;
+                            }
+
+                            // Build reference array: env at index 0, materials follow.
+                            // Max capacity: env(1) + s0(0/1) + s1(0/1) = 1..3.
+                            let mut pdf_refs = [&env_fallback as &dyn PDF; 4];
+
+                            // Index 0: environment strategy
+                            if let Some(ref env_pdf) = env_holder {
+                                pdf_refs[0] = env_pdf;
+                            } else if is_volume {
+                                pdf_refs[0] = &vol_fallback;
+                            } else {
+                                pdf_refs[0] = &env_fallback;
+                            }
                             let mut n = 1usize;
-                            if let Some(ref s) = s0 {
-                                pdf_refs[n] = s;
+
+                            // Material strategies at indices 1..n
+                            mat_storage.iter().take(mat_count).for_each(|mat| {
+                                pdf_refs[n] = mat;
                                 n += 1;
-                            }
-                            if let Some(ref s) = s1 {
-                                pdf_refs[n] = s;
-                            }
+                            });
+
+                            // Selection: independent random from RNG
+                            let sel_idx_raw = rng.next();
+                            let sel_idx = (sel_idx_raw * n as f64).min(n as f64 - 1e-15) as usize;
+                            // Direction: correlated 2D from stream
+                            let (pdf_u, pdf_v) = stream.next_2d();
 
                             let (direction, contribution, p_mix) =
-                                mis_sample(pdf_refs, eval, dim_cursor);
-
-                            // Pad mixture dims to exactly 4 (1 selection + 3 direction).
-                            let mix_consumed = dim_cursor.offset() - mix_start;
-                            for _ in mix_consumed..4 {
-                                let _ = dim_cursor.next_dim();
-                            }
+                                mis_sample(pdf_refs, eval, sel_idx, pdf_u, pdf_v);
                             new_prev_bsdf_pdf = p_mix;
                             (direction, contribution)
                         }
@@ -385,7 +356,6 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     // ray differentials so texture filtering survives indirect bounces.
                     let mut new_ray = Ray::new_with_time(si.point(), direction, ray.time);
                     if let Some(rd) = ray.differentials {
-                        let n = si.shading_normal();
                         let t_hit = si.time();
                         // Preserve the spatial footprint: offset the new ray origins by
                         // the incoming position derivatives (dpdx / dpdy at the hit).
@@ -399,19 +369,23 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             BsdfScatter::Delta { eta, .. } => {
                                 if let Some(eta) = eta {
                                     (
-                                        refract(&rd.rx_direction, &n, eta),
-                                        refract(&rd.ry_direction, &n, eta),
+                                        refract(&rd.rx_direction, &normal, eta),
+                                        refract(&rd.ry_direction, &normal, eta),
                                     )
                                 } else {
-                                    (reflect(&rd.rx_direction, &n), reflect(&rd.ry_direction, &n))
+                                    (
+                                        reflect(&rd.rx_direction, &normal),
+                                        reflect(&rd.ry_direction, &normal),
+                                    )
                                 }
                             }
                             // Non-delta (Lambertian, rough glossy): approximate the lobe
                             // as locally specular about the normal so indirect bounces keep
                             // a non-zero (if approximate) footprint instead of point sampling.
-                            BsdfScatter::NonDelta { .. } => {
-                                (reflect(&rd.rx_direction, &n), reflect(&rd.ry_direction, &n))
-                            }
+                            BsdfScatter::NonDelta { .. } => (
+                                reflect(&rd.rx_direction, &normal),
+                                reflect(&rd.ry_direction, &normal),
+                            ),
                         };
 
                         new_ray.differentials = Some(RayDifferentials {
@@ -444,17 +418,14 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     // First bounce or delta path: the direction was determined by the camera
                     // or a deterministic scatter — no MIS weight needed.
                     return accumulated_color + accumulated_attenuation * background_color;
-                } else {
-                    let env_pdf = match &self.env_map {
-                        Some(env_map) => {
-                            PdfEnum::<S>::environment(env_map.clone()).value(direction)
-                        }
-                        None => 1.0 / (4.0 * PI),
-                    };
-                    let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + env_pdf * env_pdf;
-                    let w_miss = power_heuristic(prev_bsdf_pdf, sum_sq);
-                    return accumulated_color + w_miss * accumulated_attenuation * background_color;
                 }
+                let env_pdf = match &self.env_map {
+                    Some(env_map) => env_map.to_solid_angle_pdf(direction),
+                    None => 1.0 / (4.0 * PI),
+                };
+                let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + env_pdf * env_pdf;
+                let w_miss = power_heuristic(prev_bsdf_pdf, sum_sq);
+                return accumulated_color + w_miss * accumulated_attenuation * background_color;
             }
         }
 

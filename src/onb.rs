@@ -1,5 +1,6 @@
 use crate::vec3::Vec3;
 
+#[derive(Clone)]
 pub struct Onb {
     /// u is bitangent
     u: Vec3,

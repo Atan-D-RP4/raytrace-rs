@@ -33,7 +33,6 @@ use super::gpu::GpuSerializable;
 use super::{
     Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, ggx_sample_h,
 };
-use crate::sampler::SampleDims;
 
 use super::{fresnel_schlick, geometry_schlick_ggx, ggx_d};
 
@@ -63,7 +62,12 @@ impl Bsdf for MetalMaterial {
     /// When `roughness` is effectively zero (below 0.01), the microsurface is a
     /// near-mirror — returns `BsdfScatter::Delta` so the integrator skips
     /// the mixture PDF and uses the reflected direction directly.
-    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
+    fn scatter(
+        &self,
+        wo: Vec3,
+        si: &SurfaceInteraction,
+        next_dim: &mut dyn FnMut() -> f64,
+    ) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
         if self.is_delta() {
             let wi = reflect(&-wo, &si.shading_normal());
@@ -86,7 +90,9 @@ impl Bsdf for MetalMaterial {
 
         let alpha = self.ggx_alpha()?;
         // Sample H from GGX NDF.
-        let h_local = ggx_sample_h(alpha, dims.u, dims.v);
+        let u = next_dim();
+        let v = next_dim();
+        let h_local = ggx_sample_h(alpha, u, v);
 
         let onb = Onb::build_from_normal(si.shading_normal());
         let h_world = onb.local_to_world(h_local);
@@ -100,14 +106,13 @@ impl Bsdf for MetalMaterial {
 
         Some(BsdfScatter::NonDelta {
             pdf_kinds: [
-                PdfKind::Ggx {
+                Some(PdfKind::Ggx {
                     wo,
                     normal: si.shading_normal(),
                     alpha,
-                },
-                PdfKind::Delta,
+                }),
+                None,
             ],
-            count: 1,
         })
     }
 

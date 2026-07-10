@@ -22,7 +22,6 @@ use crate::vec3::{Color3, Vec3, reflect, refract};
 use crate::material::fresnel_schlick;
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 use crate::material::{GPU_NONE, PdfKind};
-use crate::sampler::SampleDims;
 
 use super::gpu::GpuSerializable;
 
@@ -40,7 +39,12 @@ pub struct DielectricMaterial {
 impl Bsdf for DielectricMaterial {
     /// Compute refraction ratio from the two media using Snell's Law.
     /// Then use Fresnel to decide between reflection and refraction.
-    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
+    fn scatter(
+        &self,
+        wo: Vec3,
+        si: &SurfaceInteraction,
+        next_dim: &mut dyn FnMut() -> f64,
+    ) -> Option<BsdfScatter> {
         // Determine the ratio of indices of refraction based on whether the ray is entering or exiting the material.
         let ri = if si.front_face() {
             1.0 / self.ior
@@ -54,7 +58,8 @@ impl Bsdf for DielectricMaterial {
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 
         // Use Fresnel's equations to determine the probability of reflection vs refraction.
-        let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > dims.u {
+        let u = next_dim();
+        let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > u {
             reflect(&-wo, &si.shading_normal())
         } else {
             refract(&-wo, &si.shading_normal(), ri)

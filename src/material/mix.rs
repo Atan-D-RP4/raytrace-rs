@@ -12,7 +12,6 @@ use crate::vec3::{Color3, Vec3};
 
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 use crate::material::{GPU_NONE, PdfKind};
-use crate::sampler::SampleDims;
 
 use super::gpu::GpuSerializable;
 
@@ -28,27 +27,22 @@ pub struct MixMaterial {
 }
 
 impl Bsdf for MixMaterial {
-    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
-        let (chosen, selection_prob) = if dims.u < self.weight {
+    fn scatter(
+        &self,
+        wo: Vec3,
+        si: &SurfaceInteraction,
+        next_dim: &mut dyn FnMut() -> f64,
+    ) -> Option<BsdfScatter> {
+        let sel = next_dim();
+        let (chosen, selection_prob) = if sel < self.weight {
             (self.b.as_ref() as &dyn Bsdf, self.weight)
         } else {
             (self.a.as_ref() as &dyn Bsdf, 1.0 - self.weight)
         };
-        // Dims: `u` consumed for selection, pass v-w for child directional
-        // sampling, x-y-z as padding. `z` is recycled for child's z — no
-        // material reads z, so the dependency is semantically harmless.
-        let mut result = chosen.scatter(
-            wo,
-            si,
-            SampleDims {
-                u: dims.v,
-                v: dims.w,
-                w: dims.x,
-                x: dims.y,
-                y: dims.z,
-                z: dims.z,
-            },
-        )?;
+        // Pass a fresh `next_dim` wrapper to the child so it can consume as many
+        // dimensions as it needs (replaces the old fixed-field SampleDims).
+        let mut child_next_dim = || -> f64 { next_dim() };
+        let mut result = chosen.scatter(wo, si, &mut child_next_dim)?;
         // The child was selected with probability `selection_prob`. For Delta
         // paths the direction comes directly from the child (no MIS mixture),
         // so f_cos must be divided by the selection probability. NonDelta paths
@@ -58,17 +52,19 @@ impl Bsdf for MixMaterial {
             BsdfScatter::Delta { f_cos, .. } => {
                 *f_cos /= selection_prob;
             }
-            BsdfScatter::NonDelta { pdf_kinds, count } => {
-                let other = if dims.u < self.weight {
+            BsdfScatter::NonDelta { pdf_kinds } => {
+                let other = if sel < self.weight {
                     self.a.as_ref()
                 } else {
                     self.b.as_ref()
                 };
-                if let Some(other_kind) = other.pdf_kind(wo, si)
-                    && (*count as usize) < pdf_kinds.len()
-                {
-                    pdf_kinds[*count as usize] = other_kind;
-                    *count += 1;
+                if let Some(other_kind) = other.pdf_kind(wo, si) {
+                    // Fill the first empty slot.
+                    if pdf_kinds[0].is_none() {
+                        pdf_kinds[0] = Some(other_kind);
+                    } else if pdf_kinds[1].is_none() {
+                        pdf_kinds[1] = Some(other_kind);
+                    }
                 }
             }
         }

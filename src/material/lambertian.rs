@@ -21,7 +21,6 @@ use crate::vec3::{Color3, Vec3};
 use super::GPU_NONE;
 use super::gpu::GpuSerializable;
 use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
-use crate::sampler::SampleDims;
 
 /// Diffuse (Lambertian) surface.
 #[derive(Clone)]
@@ -42,16 +41,15 @@ impl Bsdf for LambertianMaterial {
         &self,
         _wo: Vec3,
         si: &SurfaceInteraction,
-        _dims: SampleDims,
+        _next_dim: &mut dyn FnMut() -> f64,
     ) -> Option<BsdfScatter> {
         Some(BsdfScatter::NonDelta {
             pdf_kinds: [
-                PdfKind::Cosine {
+                Some(PdfKind::Cosine {
                     normal: si.shading_normal(),
-                },
-                PdfKind::Delta,
+                }),
+                None,
             ],
-            count: 1,
         })
     }
 

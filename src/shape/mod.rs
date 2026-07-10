@@ -1,5 +1,4 @@
 use std::borrow::Borrow;
-use std::sync::Arc;
 
 use crate::aabb::Aabb;
 use crate::hittable::{
@@ -103,7 +102,7 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
 /// Default is `Arc<Material>`.
 ///
 /// [PlanarPatch]: crate::planar::PlanarPatch
-pub struct ShapeObject<Sh: Shape3D, M: Borrow<Material> = Arc<Material>> {
+pub struct ShapeObject<Sh: Shape3D, M: Borrow<Material>> {
     shape: Sh,
     material: M,
     bbox: Aabb,

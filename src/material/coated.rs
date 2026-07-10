@@ -17,14 +17,17 @@ use crate::material::{
     fresnel_r0, fresnel_schlick, ggx_sample_h, reflect, refract,
 };
 use crate::onb::Onb;
-use crate::sampler::SampleDims;
 use crate::vec3::{Color3, Vec3};
 
-/// Maximum number of internal bounces for a Coated material, matching the
-/// number of QMC dimensions reserved for internal Fresnel splits (dims.v
-/// through dims.z, one per bounce). The integrator terminates the path if
-/// this limit is exceeded to avoid infinite recursion.
+/// Maximum number of internal bounces for a Coated material. Each bounce
+/// gets a fresh dimension from `next_dim()` for the internal Fresnel split.
+/// The integrator terminates the path if this limit is exceeded to avoid
+/// infinite recursion.
 const MAX_INTERNAL_BOUNCES: usize = 5;
+
+/// Safety net: clamp BSDF × cosine to prevent fireflies from extreme grazing angles.
+/// This is NOT a physically derived limit — it's a heuristic backstop.
+const COATED_FIRE_FLY_LIMIT: f64 = 2.0;
 
 fn beers_absorption(throughput: Color3, tint: Color3, path_len: f64) -> Color3 {
     throughput
@@ -50,24 +53,24 @@ pub struct CoatedMaterial {
 }
 
 impl Bsdf for CoatedMaterial {
-    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
+    fn scatter(
+        &self,
+        wo: Vec3,
+        si: &SurfaceInteraction,
+        next_dim: &mut dyn FnMut() -> f64,
+    ) -> Option<BsdfScatter> {
         let wo_global = wo;
         let n = si.shading_normal();
         let mut throughput = Color3::new(1.0, 1.0, 1.0);
 
-        // Clamp coating tint to [0, 1] per component.
-        // Values > 1 would amplify via powf (physically invalid Beer's law).
-        let coating_tint = Color3::new(
-            self.coating_tint.x.clamp(0.0, 1.0),
-            self.coating_tint.y.clamp(0.0, 1.0),
-            self.coating_tint.z.clamp(0.0, 1.0),
-        );
+        // coating_tint is already clamped to [0, 1] in the constructor.
+        let coating_tint = self.coating_tint;
 
         // Fresnel split at coating-air boundary (top interface).
-        // Uses dims.u as the QMC-stratified Fresnel threshold.
+        let top_fresnel = next_dim();
         let cos_wo = wo.dot(&n).abs();
         let f_top = fresnel_schlick(cos_wo, fresnel_r0(self.coating_ior));
-        if dims.u < f_top {
+        if top_fresnel < f_top {
             // Reflect off the coating, i.e., exit immediately
             return Some(BsdfScatter::Delta {
                 wi: reflect(&-wo, &n),
@@ -95,35 +98,22 @@ impl Bsdf for CoatedMaterial {
         let path_len = self.thickness / wi.dot(&n).abs();
         throughput = beers_absorption(throughput, coating_tint, path_len);
 
-        // Internal Fresnel splits use dims.v through dims.z (one per bounce).
-        // The substrate gets default dims — for Delta substrates (metal,
-        // dielectric) this is fine; NonDelta exits the walk immediately.
-        let internal_dims = [dims.v, dims.w, dims.x, dims.y, dims.z];
+        // Bounce internally between coating and substrate interfaces.
+        // Each bounce gets a fresh dimension from `next_dim()` for the
+        // internal Fresnel split at the coating-air boundary.
+        for _bounce_idx in 0..MAX_INTERNAL_BOUNCES {
+            let internal_dim = next_dim();
 
-        // Bounce internally between coating and substrate interfaces
-        for (bounce_idx, internal_dim) in
-            internal_dims.iter().enumerate().take(MAX_INTERNAL_BOUNCES)
-        {
-            // Sample the substrate material (scatter upwards)
-            // Each bounce gets a shifted QMC dimension to preserve stratification.
-            let bounce_offset = bounce_idx as f64 * 0.123456789;
-            let sub_u = (dims.u + bounce_offset).fract();
-            let sub_v = (dims.v + bounce_offset * 2.0).fract();
-            let sub_w = (dims.w + bounce_offset * 3.0).fract();
-            let sub_dims = SampleDims {
-                u: sub_u,
-                v: sub_v,
-                w: sub_w,
-                x: dims.x,
-                y: dims.y,
-                z: dims.z,
-            };
+            // Sample the substrate material (scatter upwards).
+            // Pass a fresh next_dim wrapper so the substrate consumes its own
+            // dimensions independently of the coated layer's internal state.
+            let mut sub_next_dim = || -> f64 { next_dim() };
             // wi instead of wo because the substrate sees the incoming direction from the
             // coating layer
             // sub.wi points upward (away from substrate, toward coating top)
             // Negate wi: the substrate's sample() expects wo pointing OUTWARD
             // (away from surface, toward coating), but wi points inward (toward substrate).
-            let sub = self.substrate.scatter(-wi, si, sub_dims)?;
+            let sub = self.substrate.scatter(-wi, si, &mut sub_next_dim)?;
 
             match sub {
                 BsdfScatter::Delta {
@@ -133,38 +123,33 @@ impl Bsdf for CoatedMaterial {
                 } => {
                     // Beer's law for the upward crossing through the coating layer
                     let path_len_up = self.thickness / wi_internal.dot(&n).abs();
-                    throughput = Color3::new(
-                        throughput.x * coating_tint.x.powf(path_len_up.abs()),
-                        throughput.y * coating_tint.y.powf(path_len_up.abs()),
-                        throughput.z * coating_tint.z.powf(path_len_up.abs()),
-                    );
+                    throughput = beers_absorption(throughput, coating_tint, path_len_up);
 
                     // Fresnel split at top interface (coating-air boundary),
-                    // using a QMC-stratified threshold from internal_dims.
+                    // using a fresh dimension from next_dim().
                     let cos_wi_internal = wi_internal.dot(&n).abs();
                     let sin2_theta = (1.0 - cos_wi_internal * cos_wi_internal).max(0.0);
                     let tir = self.coating_ior * self.coating_ior * sin2_theta > 1.0;
                     let f_top_internal =
                         fresnel_schlick(cos_wi_internal, fresnel_r0(self.coating_ior));
 
-                    if tir || *internal_dim < f_top_internal {
+                    if tir || internal_dim < f_top_internal {
                         // Must reflect (TIR) or stochastic Fresnel reflection.
                         wi = reflect(&wi_internal, &n);
                         // Beer's law for the downward crossing (back through the coating)
                         let path_len_down = self.thickness / wi.dot(&n).abs();
-                        throughput = Color3::new(
-                            throughput.x * coating_tint.x.powf(path_len_down.abs()),
-                            throughput.y * coating_tint.y.powf(path_len_down.abs()),
-                            throughput.z * coating_tint.z.powf(path_len_down.abs()),
-                        );
+                        throughput = beers_absorption(throughput, coating_tint, path_len_down);
                     } else {
                         // Transmit out of the coating layer, i.e., exit to air
                         let exit_dir = refract(&wi_internal, &-n, self.coating_ior);
                         let raw = throughput * f_cos_internal;
                         // Frame-independent heuristic firefly backstop:
                         // `f_cos` = BSDF × cosine should be bounded
-                        let bounded_f_cos =
-                            Color3::new(raw.x.min(2.0), raw.y.min(2.0), raw.z.min(2.0));
+                        let bounded_f_cos = Color3::new(
+                            raw.x.min(COATED_FIRE_FLY_LIMIT),
+                            raw.y.min(COATED_FIRE_FLY_LIMIT),
+                            raw.z.min(COATED_FIRE_FLY_LIMIT),
+                        );
                         return Some(BsdfScatter::Delta {
                             wi: exit_dir,
                             f_cos: bounded_f_cos,
@@ -181,10 +166,9 @@ impl Bsdf for CoatedMaterial {
                 // because the Lambertian eval only depends on cos(θ) · dot(n, wi).
                 BsdfScatter::NonDelta {
                     pdf_kinds: sub_pdf_kinds,
-                    count: sub_count,
                 } => {
-                    // Check if any pdf_kind is GGX
-                    let ggx_info = sub_pdf_kinds[..sub_count as usize].iter().find_map(|pk| {
+                    // Check if any pdf_kind is GGX (flatten skips Nones)
+                    let ggx_info = sub_pdf_kinds.iter().flatten().find_map(|pk| {
                         if let PdfKind::Ggx { normal, alpha, .. } = pk {
                             Some((*normal, *alpha))
                         } else {
@@ -207,9 +191,12 @@ impl Bsdf for CoatedMaterial {
                             n
                         };
 
-                        // GGX importance sampling using the internal wo.
-                        // Uses the same inverse-CDF as Metal/Glossy.
-                        let h_local = ggx_sample_h(alpha, dims.u, dims.v);
+                        // GGX importance sampling using fresh dimensions from next_dim().
+                        // This fixes the old reuse of dims from the old SampleDims struct
+                        // (the top Fresnel split already consumed a dimension from next_dim()).
+                        let ggx_u = next_dim();
+                        let ggx_v = next_dim();
+                        let h_local = ggx_sample_h(alpha, ggx_u, ggx_v);
 
                         let onb = Onb::build_from_normal(normal);
                         let h_world = onb.local_to_world(h_local);
@@ -221,11 +208,7 @@ impl Bsdf for CoatedMaterial {
                         if wi_int.dot(&n) > 0.0 {
                             // Beer's law for the upward crossing
                             let path_len_up = self.thickness / wi_int.dot(&n).abs();
-                            throughput = Color3::new(
-                                throughput.x * coating_tint.x.powf(path_len_up.abs()),
-                                throughput.y * coating_tint.y.powf(path_len_up.abs()),
-                                throughput.z * coating_tint.z.powf(path_len_up.abs()),
-                            );
+                            throughput = beers_absorption(throughput, coating_tint, path_len_up);
 
                             // Fresnel split at top interface
                             let cos_wi_int = wi_int.dot(&n).abs();
@@ -234,15 +217,12 @@ impl Bsdf for CoatedMaterial {
                             let f_top_int =
                                 fresnel_schlick(cos_wi_int, fresnel_r0(self.coating_ior));
 
-                            if tir || *internal_dim < f_top_int {
+                            if tir || internal_dim < f_top_int {
                                 // Internal reflection — continue bouncing
                                 wi = reflect(&wi_int, &n);
                                 let path_len_down = self.thickness / wi.dot(&n).abs();
-                                throughput = Color3::new(
-                                    throughput.x * coating_tint.x.powf(path_len_down.abs()),
-                                    throughput.y * coating_tint.y.powf(path_len_down.abs()),
-                                    throughput.z * coating_tint.z.powf(path_len_down.abs()),
-                                );
+                                throughput =
+                                    beers_absorption(throughput, coating_tint, path_len_down);
                                 continue;
                             }
 
@@ -267,8 +247,11 @@ impl Bsdf for CoatedMaterial {
                             // (Lambertian max ≈ 0.32, GGX max ≈ 2-3 at extreme grazing).
                             // This is NOT a physically derived limit — it's a safety net.
                             let raw = throughput * substrate_f * exit_fresnel;
-                            let bounded_f_cos =
-                                Color3::new(raw.x.min(2.0), raw.y.min(2.0), raw.z.min(2.0));
+                            let bounded_f_cos = Color3::new(
+                                raw.x.min(COATED_FIRE_FLY_LIMIT),
+                                raw.y.min(COATED_FIRE_FLY_LIMIT),
+                                raw.z.min(COATED_FIRE_FLY_LIMIT),
+                            );
                             return Some(BsdfScatter::Delta {
                                 wi: exit_dir,
                                 f_cos: bounded_f_cos,
@@ -289,20 +272,18 @@ impl Bsdf for CoatedMaterial {
                     if let Some(alpha) = self.coating.ggx_alpha() {
                         return Some(BsdfScatter::NonDelta {
                             pdf_kinds: [
-                                PdfKind::Cosine { normal: n },
-                                PdfKind::Ggx {
+                                Some(PdfKind::Cosine { normal: n }),
+                                Some(PdfKind::Ggx {
                                     wo: wo_global,
                                     normal: n,
                                     alpha,
-                                },
+                                }),
                             ],
-                            count: 2,
                         });
                     }
 
                     return Some(BsdfScatter::NonDelta {
-                        pdf_kinds: [PdfKind::Cosine { normal: n }, PdfKind::Delta],
-                        count: 1,
+                        pdf_kinds: [Some(PdfKind::Cosine { normal: n }), None],
                     });
                 }
             }
@@ -361,23 +342,9 @@ impl Bsdf for CoatedMaterial {
         let path_i = self.thickness / cos_wi_int;
 
         // Absorption in the coating layer (Beer's law) for outgoing and incoming paths.
-        // Clamp tint components to [0, 1] to prevent amplification (tint > 1 would
-        // add energy via powf).
-        let tint = Color3::new(
-            self.coating_tint.x.clamp(0.0, 1.0),
-            self.coating_tint.y.clamp(0.0, 1.0),
-            self.coating_tint.z.clamp(0.0, 1.0),
-        );
-        let coating_absorption_o = Color3::new(
-            tint.x.powf(path_o),
-            tint.y.powf(path_o),
-            tint.z.powf(path_o),
-        );
-        let coating_absorption_i = Color3::new(
-            tint.x.powf(path_i),
-            tint.y.powf(path_i),
-            tint.z.powf(path_i),
-        );
+        // coating_tint is already clamped to [0, 1] in the constructor.
+        let coating_absorption_o = beers_absorption(Color3::ONE, self.coating_tint, path_o);
+        let coating_absorption_i = beers_absorption(Color3::ONE, self.coating_tint, path_i);
 
         // Transmission coefficient/components through the coating layer (Beer's law).
         let t_o = coating_absorption_o * fresnel_o;
@@ -414,7 +381,11 @@ impl Bsdf for CoatedMaterial {
         // Total contribution: direct coating reflection + transmitted substrate reflection
         // (with Jacobian) + inter-reflection correction.
         let raw = direct_coat + t_o * substrate_direct * jacobian_sub * t_i * (1.0 + series);
-        Color3::new(raw.x.min(2.0), raw.y.min(2.0), raw.z.min(2.0))
+        Color3::new(
+            raw.x.min(COATED_FIRE_FLY_LIMIT),
+            raw.y.min(COATED_FIRE_FLY_LIMIT),
+            raw.z.min(COATED_FIRE_FLY_LIMIT),
+        )
     }
 
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
@@ -510,16 +481,8 @@ impl Bsdf for CoatedMaterial {
         // Beer's law absorption through the coating at the INTERNAL angle
         let cos_wo_int = wo_internal.dot(&sn).abs().max(1e-10);
         let path_o = self.thickness / cos_wo_int;
-        let tint = Color3::new(
-            self.coating_tint.x.clamp(0.0, 1.0),
-            self.coating_tint.y.clamp(0.0, 1.0),
-            self.coating_tint.z.clamp(0.0, 1.0),
-        );
-        let coating_absorption = Color3::new(
-            tint.x.powf(path_o),
-            tint.y.powf(path_o),
-            tint.z.powf(path_o),
-        );
+        // coating_tint is already clamped to [0, 1] in the constructor.
+        let coating_absorption = beers_absorption(Color3::ONE, self.coating_tint, path_o);
         self.coating.emitted(wo, si)
             + coating_absorption * fresnel_t * self.substrate.emitted(wo, si)
     }

@@ -20,7 +20,6 @@ use crate::vec3::{Color3, Vec3};
 use super::GPU_NONE;
 use super::gpu::GpuSerializable;
 use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
-use crate::sampler::SampleDims;
 
 /// Isotropic scattering medium (volumes).
 #[derive(Clone)]
@@ -39,11 +38,10 @@ impl Bsdf for IsotropicMaterial {
         &self,
         _wo: Vec3,
         _si: &SurfaceInteraction,
-        _dims: SampleDims,
+        _next_dim: &mut dyn FnMut() -> f64,
     ) -> Option<BsdfScatter> {
         Some(BsdfScatter::NonDelta {
-            pdf_kinds: [PdfKind::UniformSphere, PdfKind::Delta],
-            count: 1,
+            pdf_kinds: [Some(PdfKind::UniformSphere), None],
         })
     }
 

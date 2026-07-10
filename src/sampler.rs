@@ -4,13 +4,23 @@
 //! This makes samplers deterministic, `Sync`, and immune to state corruption
 //! from variable-length paths.
 
-use rand::RngExt;
-
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
 ///
 /// Same `(n, d)` always returns the same value — deterministic across threads.
-pub trait Sampler: Send + Sync {
+pub(crate) trait Sampler: Send + Sync {
     fn sample(&self, n: u32, d: u32) -> f64;
+}
+
+/// Stateful stream of correlated 2D sample points.
+/// Each call advances by one 2D point, without waste.
+pub trait SampleStream {
+    /// Returns the next 2D sample point as (u, v) in [0, 1)^2.
+    fn next_2d(&mut self) -> (f64, f64);
+}
+
+/// Stateful source of independent random numbers in [0, 1).
+pub trait SamplerRng: Send + Sync {
+    fn next(&mut self) -> f64;
 }
 
 const MAX_DIMS: usize = 21200;
@@ -62,13 +72,8 @@ pub struct SobolQmcSampler {
 }
 
 impl SobolQmcSampler {
-    pub fn new() -> Self {
-        use rand::RngExt;
-        Self {
-            seed: rand::rng().random(),
-        }
-    }
-
+    /// Create a sampler with an explicit seed for deterministic results.
+    /// For per-pixel deterministic seeding, use [`for_pixel()`](Self::for_pixel).
     pub fn with_seed(seed: u64) -> Self {
         Self { seed }
     }
@@ -84,7 +89,7 @@ impl SobolQmcSampler {
 
 impl Default for SobolQmcSampler {
     fn default() -> Self {
-        Self::new()
+        Self::with_seed(0)
     }
 }
 
@@ -143,6 +148,26 @@ impl Sampler for NaiveRandomSampler {
     }
 }
 
+impl SampleStream for NaiveRandomSampler {
+    #[inline(always)]
+    fn next_2d(&mut self) -> (f64, f64) {
+        let u = self.next();
+        let v = self.next();
+        (u, v)
+    }
+}
+
+impl SamplerRng for NaiveRandomSampler {
+    #[inline(always)]
+    fn next(&mut self) -> f64 {
+        let n = self.seed as u32;
+        let d = (self.seed >> 32) as u32;
+        let v = hash_sample(n, d, self.seed);
+        self.seed = self.seed.wrapping_add(1);
+        v
+    }
+}
+
 /// Stratified (jittered) grid for dims 0-1, SplitMix fallback for rest.
 pub struct StratifiedRandomSampler {
     seed: u64,
@@ -174,172 +199,116 @@ impl Sampler for StratifiedRandomSampler {
     }
 }
 
-/// Factory trait for creating per-pixel samplers.
-///
-/// Each pixel gets its own sampler instance with a deterministic seed derived
-/// from its coordinates. This trait decouples sampler creation from the
-/// renderer, making it easy to swap sampling strategies without modifying
-/// renderer internals.
-pub trait SamplerFactory: Send + Sync {
-    type Sampler: Sampler;
-
-    /// Create a sampler seeded for the given pixel coordinates.
-    fn for_pixel(&self, x: i32, y: i32) -> Self::Sampler;
-}
-
-/// Factory for `SobolQmcSampler` — per-pixel Sobol' QMC.
-pub struct SobolSamplerFactory;
-
-impl SamplerFactory for SobolSamplerFactory {
-    type Sampler = SobolQmcSampler;
-
-    #[inline]
-    fn for_pixel(&self, x: i32, y: i32) -> SobolQmcSampler {
-        SobolQmcSampler::for_pixel(x, y)
+impl SampleStream for StratifiedRandomSampler {
+    #[inline(always)]
+    fn next_2d(&mut self) -> (f64, f64) {
+        let n = self.seed as u32;
+        self.seed = self.seed.wrapping_add(1);
+        (self.sample(n, 0), self.sample(n, 1))
     }
 }
 
-/// Factory for `NaiveRandomSampler` — per-pixel hash-based.
-pub struct NaiveSamplerFactory {
-    seed: u64,
-}
-
-impl NaiveSamplerFactory {
-    pub fn new(seed: u64) -> Self {
-        Self { seed }
+impl SamplerRng for StratifiedRandomSampler {
+    #[inline(always)]
+    fn next(&mut self) -> f64 {
+        let n = self.seed as u32;
+        self.seed = self.seed.wrapping_add(1);
+        self.sample(n, 0)
     }
 }
 
-impl SamplerFactory for NaiveSamplerFactory {
-    type Sampler = NaiveRandomSampler;
+/// Factory for creating per-pixel `SampleStream` instances.
+pub trait SampleStreamFactory: Send + Sync {
+    type SampleStream: crate::sampler::SampleStream;
+    fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> Self::SampleStream;
+}
 
-    #[inline]
-    fn for_pixel(&self, x: i32, y: i32) -> NaiveRandomSampler {
-        NaiveRandomSampler::with_seed(self.seed.wrapping_add(pixel_seed(x, y)))
+/// Factory for creating per-pixel `SamplerRng` instances.
+pub trait RngFactory: Send + Sync {
+    type Rng: crate::sampler::SamplerRng;
+    fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> Self::Rng;
+}
+
+/// Factory for `SampleStreamWriter` — per-pixel Sobol stream.
+pub struct SobolStreamFactory;
+
+impl SampleStreamFactory for SobolStreamFactory {
+    type SampleStream = SampleStreamWriter;
+    fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> SampleStreamWriter {
+        SampleStreamWriter::for_pixel(x, y, sample_idx)
     }
 }
 
-/// Factory for `StratifiedRandomSampler` — per-pixel jittered grid.
-pub struct StratifiedSamplerFactory {
-    sqrt_spp: u32,
-    seed: u64,
-}
+/// Factory for `HashRng` — per-pixel hash RNG.
+pub struct HashRngFactory;
 
-impl StratifiedSamplerFactory {
-    pub fn new(sqrt_spp: u32) -> Self {
-        Self {
-            sqrt_spp: sqrt_spp.max(1),
-            seed: rand::rng().random(),
-        }
+impl RngFactory for HashRngFactory {
+    type Rng = HashRng;
+    fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> HashRng {
+        HashRng::for_pixel(x, y, sample_idx)
     }
 }
 
-impl SamplerFactory for StratifiedSamplerFactory {
-    type Sampler = StratifiedRandomSampler;
-
-    #[inline]
-    fn for_pixel(&self, x: i32, y: i32) -> StratifiedRandomSampler {
-        StratifiedRandomSampler::new(self.sqrt_spp, self.seed.wrapping_add(pixel_seed(x, y)))
-    }
-}
-
-/// Cursor for consuming dimensions from a sampler.
-///
-/// The cursor tracks the current dimension offset and sample index, allowing
-/// for sequential sampling across multiple dimensions and samples.
-#[derive(Clone, Debug)]
-pub struct DimCursor<S: Sampler> {
-    /// The base dimension index for this cursor.
-    base: u32,
-    /// The current offset from the base dimension.
-    offset: u32,
-    /// The current sample index for this cursor.
+/// Stateful Sobol stream — wraps a stateless `SobolQmcSampler` and advances
+/// through 2D dimension pairs. Each `next_2d()` call returns the next
+/// correlated (u, v) pair from sequential Sobol dimensions.
+pub struct SampleStreamWriter {
+    sampler: SobolQmcSampler,
     sample_idx: u32,
-    /// The sampler used to generate samples.
-    sampler: S,
+    next_pair: u32,
 }
 
-impl<S: Sampler> DimCursor<S> {
-    /// Creates a cursor starting at dimension `base`, sample_idx = 0.
-    #[inline(always)]
-    pub fn new(base: u32, sampler: S) -> Self {
+impl SampleStreamWriter {
+    pub fn new(sampler: SobolQmcSampler, sample_idx: u32) -> Self {
         Self {
-            base,
-            offset: 0,
-            sample_idx: 0,
             sampler,
-        }
-    }
-
-    /// Creates a cursor starting at dimension `base` with the given sample index.
-    #[inline(always)]
-    pub fn new_at(base: u32, sample_idx: u32, sampler: S) -> Self {
-        Self {
-            base,
-            offset: 0,
             sample_idx,
-            sampler,
+            next_pair: 0,
         }
     }
 
-    /// Returns the current dimension and advances by one.
+    pub fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
+        Self::new(SobolQmcSampler::for_pixel(pixel_x, pixel_y), sample_idx)
+    }
+}
+
+impl SampleStream for SampleStreamWriter {
     #[inline(always)]
-    pub fn next_dim(&mut self) -> u32 {
-        let v = self.base + self.offset;
-        self.offset += 1;
+    fn next_2d(&mut self) -> (f64, f64) {
+        let d = self.next_pair * 2;
+        let u = self.sampler.sample(self.sample_idx, d);
+        let v = self.sampler.sample(self.sample_idx, d + 1);
+        self.next_pair += 1;
+        (u, v)
+    }
+}
+
+/// Hash-based independent random number generator.
+/// Each call produces an independent value via SplitMix64.
+pub struct HashRng {
+    seed: u64,
+    counter: u32,
+}
+
+impl HashRng {
+    pub fn new(seed: u64) -> Self {
+        Self { seed, counter: 0 }
+    }
+
+    pub fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
+        let seed =
+            pixel_seed(pixel_x, pixel_y).wrapping_add(sample_idx as u64 * 0x9E3779B97F4A7C15);
+        Self { seed, counter: 0 }
+    }
+}
+
+impl SamplerRng for HashRng {
+    #[inline(always)]
+    fn next(&mut self) -> f64 {
+        let v = hash_sample(self.counter, 0, self.seed);
+        self.counter += 1;
         v
     }
-
-    /// Returns next sample and advances dimension.
-    #[inline(always)]
-    pub fn next_sample(&mut self) -> f64 {
-        let d = self.next_dim();
-        self.sampler.sample(self.sample_idx, d)
-    }
-
-    /// Returns the number of dimensions consumed so far (current offset).
-    #[inline(always)]
-    pub fn offset(&self) -> u32 {
-        self.offset
-    }
-
-    /// Snapshots current offset for later stride assertions.
-    ///
-    /// ```
-    /// use raytrace_rs::sampler::{DimCursor, SobolQmcSampler};
-    ///
-    /// let s = SobolQmcSampler::with_seed(42);
-    /// let mut cursor = DimCursor::new(0, s);
-    /// cursor.next_sample();
-    /// let ck = cursor.checkpoint();
-    /// cursor.next_sample();
-    /// cursor.next_sample();
-    /// assert_eq!(cursor.offset() - ck, 2);
-    /// ```
-    #[inline(always)]
-    pub fn checkpoint(&self) -> u32 {
-        self.offset
-    }
-}
-
-/// Random dimensions consumed by material sampling.
-///
-/// A material call consumes 6 dimensions from the sampler:
-/// `u` for categorical decisions, `(v, w)` for 2D directional sampling,
-/// and `(x, y, z)` reserved for future use. `z` is sometimes recycled
-/// when composition variants need an extra dimension for a child's
-/// directional sampling.
-#[derive(Clone, Copy, Debug)]
-pub struct SampleDims {
-    /// Categorical decision (lobe selection, Fresnel check).
-    pub u: f64,
-    /// 2D directional sampling on the sphere/hemisphere.
-    pub v: f64,
-    pub w: f64,
-    /// Reserved for future use.
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
 }
 
 #[cfg(test)]
@@ -457,9 +426,8 @@ mod tests {
 
     #[test]
     fn naive_different_pixels_different_samples() {
-        let factory = NaiveSamplerFactory::new(42);
-        let s1 = factory.for_pixel(0, 0);
-        let s2 = factory.for_pixel(10, 10);
+        let s1 = NaiveRandomSampler::with_seed(pixel_seed(0, 0));
+        let s2 = NaiveRandomSampler::with_seed(pixel_seed(10, 10));
         let mut same = 0u32;
         for n in 0..64 {
             for d in 0..8 {
@@ -476,9 +444,8 @@ mod tests {
 
     #[test]
     fn stratified_different_pixels_different_samples() {
-        let factory = StratifiedSamplerFactory::new(4);
-        let s1 = factory.for_pixel(0, 0);
-        let s2 = factory.for_pixel(10, 10);
+        let s1 = StratifiedRandomSampler::new(4, pixel_seed(0, 0));
+        let s2 = StratifiedRandomSampler::new(4, pixel_seed(10, 10));
         let mut same = 0u32;
         for n in 0..64 {
             for d in 0..8 {

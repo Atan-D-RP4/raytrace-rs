@@ -8,14 +8,16 @@ use crate::film::{Film, FilmTile, SharedFramebuffer, rgb::FILTER_RADIUS};
 use crate::hittable::{Intersectable, Sampleable};
 use crate::integrator::Integrator;
 use crate::renderer::Renderer;
-use crate::sampler::{DimCursor, SamplerFactory};
+use crate::sampler::{RngFactory, SampleStreamFactory};
 use crate::vec3::Color3;
 
-pub struct CpuRenderer<I, S, Fact>
+pub struct CpuRenderer<I, S, R, SF, RF>
 where
-    I: Integrator<S>,
-    S: crate::sampler::Sampler,
-    Fact: SamplerFactory<Sampler = S>,
+    I: Integrator<S, R>,
+    S: crate::sampler::SampleStream + Send + Sync,
+    R: crate::sampler::SamplerRng,
+    SF: SampleStreamFactory<SampleStream = S>,
+    RF: RngFactory<Rng = R>,
 {
     /// Number of samples to take per pixel. Higher values yield better quality but take longer.
     samples_per_pixel: u32,
@@ -33,26 +35,33 @@ where
     /// The integrator used to compute radiance along rays. This is a generic parameter
     /// that allows different integration strategies (e.g., path tracing, direct lighting).
     integrator: I,
-    /// Factory for creating per-pixel samplers. Decouples sampler creation from the renderer.
-    sampler_factory: Fact,
-    _phantom: std::marker::PhantomData<S>,
+    /// Factory for creating per-pixel sample streams (QMC/Sobol).
+    stream_factory: SF,
+    /// Factory for creating per-pixel RNG instances (hash-based).
+    rng_factory: RF,
+    _phantom_s: std::marker::PhantomData<S>,
+    _phantom_r: std::marker::PhantomData<R>,
 }
 
-impl<I, S, Fact> CpuRenderer<I, S, Fact>
+impl<I, S, R, SF, RF> CpuRenderer<I, S, R, SF, RF>
 where
-    I: Integrator<S>,
-    S: crate::sampler::Sampler,
-    Fact: SamplerFactory<Sampler = S>,
+    I: Integrator<S, R>,
+    S: crate::sampler::SampleStream + Send + Sync,
+    R: crate::sampler::SamplerRng,
+    SF: SampleStreamFactory<SampleStream = S>,
+    RF: RngFactory<Rng = R>,
 {
-    pub fn new(samples_per_pixel: u32, integrator: I, sampler_factory: Fact) -> Self {
+    pub fn new(samples_per_pixel: u32, integrator: I, stream_factory: SF, rng_factory: RF) -> Self {
         Self {
             samples_per_pixel,
             threshold_abs: 1e-4,
             threshold_rel: 0.02,
             min_samples_before_adapt: 64,
             integrator,
-            sampler_factory,
-            _phantom: std::marker::PhantomData,
+            stream_factory,
+            rng_factory,
+            _phantom_s: std::marker::PhantomData,
+            _phantom_r: std::marker::PhantomData,
         }
     }
 
@@ -69,14 +78,16 @@ where
     }
 }
 
-impl<W, I, C, F, S, Fact> Renderer<W, C, F, S> for CpuRenderer<I, S, Fact>
+impl<W, I, C, F, S, R, SF, RF> Renderer<W, C, F> for CpuRenderer<I, S, R, SF, RF>
 where
     W: Intersectable,
-    I: Integrator<S>,
+    I: Integrator<S, R>,
     C: Camera,
     F: Film,
-    S: crate::sampler::Sampler,
-    Fact: SamplerFactory<Sampler = S>,
+    S: crate::sampler::SampleStream + Send + Sync,
+    R: crate::sampler::SamplerRng,
+    SF: SampleStreamFactory<SampleStream = S>,
+    RF: RngFactory<Rng = R>,
 {
     fn render(
         &self,
@@ -215,13 +226,15 @@ where
                             continue; // Skip pixels that have already converged
                         }
 
-                        // Create sampler from factory — decoupled from renderer internals
-                        let sampler = self.sampler_factory.for_pixel(x as i32, y as i32);
-                        let mut dim_cursor = DimCursor::new_at(0, sample_idx, sampler);
+                        // Create stream and rng from factories — decoupled from renderer internals
+                        let mut stream = self
+                            .stream_factory
+                            .for_pixel(x as i32, y as i32, sample_idx);
+                        let mut rng = self.rng_factory.for_pixel(x as i32, y as i32, sample_idx);
 
-                        // Generate a camera sample for the pixel from sampler dimensions
-                        // Dims 0-1: AA jitter, dims 2-3: lens (defocus)
-                        let camera_sampler = CameraSampler::new_sampled((x, y), &mut dim_cursor);
+                        // Generate a camera sample for the pixel from stream (AA jitter, lens) + rng (time)
+                        let camera_sampler =
+                            CameraSampler::new_sampled((x, y), &mut stream, &mut rng);
 
                         let cam_ray = camera
                             .generate_ray_differential(&camera_sampler)
@@ -231,7 +244,8 @@ where
                                 &mut cam_ray.ray,
                                 world,
                                 lights,
-                                &mut dim_cursor,
+                                &mut stream,
+                                &mut rng,
                             );
                             let sample = radiance * cam_ray.weight;
                             // Guard against NaN/Inf poisoning the accumulation buffer.

@@ -3,7 +3,7 @@ pub mod perspective;
 pub use perspective::PerspectiveCamera;
 
 use crate::ray::Ray;
-use crate::sampler::{DimCursor, Sampler};
+use crate::sampler::{SampleStream, SamplerRng};
 use crate::vec3::Color3;
 
 pub struct CameraSampler {
@@ -27,16 +27,21 @@ impl CameraSampler {
         }
     }
 
-    /// Samples all camera parameters from a QMC dimension cursor.
+    /// Samples all camera parameters from a stream and RNG.
     ///
-    /// Consumes dims 0–4 per pixel: 0–1 for pixel AA jitter, 2–3 for lens,
-    /// 4 for motion-blur time. The integrator must start at dim 5.
-    pub fn new_sampled<S: Sampler>(pixel: (u32, u32), dim_cursor: &mut DimCursor<S>) -> Self {
+    /// Consumes 2 stream pairs (4 values via `stream.next_2d()` twice: jitter xy and lens xy) + 1 from rng (time).
+    pub fn new_sampled<S: SampleStream, R: SamplerRng>(
+        pixel: (u32, u32),
+        stream: &mut S,
+        rng: &mut R,
+    ) -> Self {
+        let (jx, jy) = stream.next_2d();
+        let (lx, ly) = stream.next_2d();
         Self {
             pixel,
-            jitter: (dim_cursor.next_sample(), dim_cursor.next_sample()),
-            lens: (dim_cursor.next_sample(), dim_cursor.next_sample()),
-            time: dim_cursor.next_sample(),
+            jitter: (jx, jy),
+            lens: (lx, ly),
+            time: rng.next().clamp(0.0, 1.0),
         }
     }
 }

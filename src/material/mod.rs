@@ -58,7 +58,8 @@ use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
-use crate::sampler::SampleDims;
+use crate::onb::Onb;
+use crate::pdf::cosine_hemisphere_direction;
 use crate::texture::Texture;
 use crate::vec3::refract;
 use crate::vec3::{Color3, Vec3, reflect};
@@ -143,12 +144,10 @@ pub enum BsdfScatter {
         eta: Option<f64>,
     },
     /// Non-specular — integrator evaluates the BSDF and uses MIS weighting.
-    /// `count` indicates how many PDF descriptors are valid (1 for leaf, up to 2 for Mix).
+    /// Each slot is `Some(PdfKind)` for valid entries, `None` for unused slots.
     NonDelta {
         /// Up to 2 surface PDF descriptors (first from chosen child, second from other).
-        pdf_kinds: [PdfKind; 2],
-        /// Number of valid entries in `pdf_kinds` (1 or 2).
-        count: u8,
+        pdf_kinds: [Option<PdfKind>; 2],
     },
 }
 
@@ -178,6 +177,77 @@ pub enum PdfKind {
     Delta,
 }
 
+impl PdfKind {
+    /// Generate a direction from this PDF distribution.
+    pub fn generate(&self, u: f64, v: f64) -> Vec3 {
+        match self {
+            PdfKind::Cosine { normal } => {
+                let uvw = Onb::build_from_normal(*normal);
+                uvw.local_to_world(cosine_hemisphere_direction(u, v))
+            }
+            PdfKind::Ggx { wo, normal, alpha } => {
+                let onb = Onb::build_from_normal(*normal);
+                let wo_unit = wo.unit_vector();
+                let h_local = ggx_sample_h(*alpha, u, v);
+                let h_world = onb.local_to_world(h_local);
+                reflect(&-wo_unit, &h_world)
+            }
+            PdfKind::UniformSphere => {
+                let phi = 2.0 * PI * u;
+                let (sin_phi, cos_phi) = phi.sin_cos();
+                let z = 1.0 - 2.0 * v;
+                let r = (1.0 - z * z).max(0.0).sqrt();
+                Vec3::new(r * cos_phi, r * sin_phi, z)
+            }
+            PdfKind::UniformHemisphere { normal } => {
+                let uvw = Onb::build_from_normal(*normal);
+                let phi = 2.0 * PI * u;
+                let (sin_phi, cos_phi) = phi.sin_cos();
+                let z = v;
+                let r = (1.0 - z * z).max(0.0).sqrt();
+                let local_dir = Vec3::new(r * cos_phi, r * sin_phi, z);
+                uvw.local_to_world(local_dir)
+            }
+            PdfKind::Delta => unreachable!("Delta PDF cannot generate directions"),
+        }
+    }
+
+    /// Evaluate the PDF value for a given direction.
+    pub fn value(&self, direction: Vec3) -> f64 {
+        match self {
+            PdfKind::Cosine { normal } => {
+                let uvw = Onb::build_from_normal(*normal);
+                let cos_theta = direction.dot(&uvw.w);
+                (cos_theta / PI).max(0.0)
+            }
+            PdfKind::Ggx { wo, normal, alpha } => {
+                let onb = Onb::build_from_normal(*normal);
+                let wo_unit = wo.unit_vector();
+                let h = (wo_unit + direction).unit_vector();
+                let cos_h = wo_unit.dot(&h).abs();
+                if cos_h <= 0.0 {
+                    return 0.0;
+                }
+                let h_local = onb.world_to_local(h);
+                let cos_h_n = h_local.z.max(0.0);
+                let d = ggx_d(cos_h_n, *alpha);
+                d * cos_h_n / (4.0 * cos_h)
+            }
+            PdfKind::UniformSphere => 1.0 / (4.0 * PI),
+            PdfKind::UniformHemisphere { normal } => {
+                let uvw = Onb::build_from_normal(*normal);
+                let cos_theta = direction.dot(&uvw.w);
+                if cos_theta > 0.0 {
+                    1.0 / (2.0 * PI)
+                } else {
+                    0.0
+                }
+            }
+            PdfKind::Delta => 0.0,
+        }
+    }
+}
+
 /// Bi-directional scattering distribution function (BSDF) sampling interface — reflection (BRDF),
 /// transmission (BTDF), or volumetric scattering. The returned [`BsdfScatter`] encodes the scattered
 /// direction and BSDF×cosine throughput.
@@ -187,7 +257,12 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// Sample an outgoing direction. Returns `None` for pure emitters.
     /// wo: Outgoing direction (surface → camera), world space.
     /// wi: Incoming direction (surface → light), world space.
-    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter>;
+    fn scatter(
+        &self,
+        wo: Vec3,
+        si: &SurfaceInteraction,
+        next_dim: &mut dyn FnMut() -> f64,
+    ) -> Option<BsdfScatter>;
 
     /// Evaluate the BSDF for an externally-sampled direction pair.
     /// wo: Outgoing direction (surface → camera), world space.
@@ -285,19 +360,19 @@ impl Material {
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
-        dims: SampleDims,
+        next_dim: &mut dyn FnMut() -> f64,
     ) -> Option<BsdfScatter> {
         match self {
             Material::Void => None,
-            Material::Lambertian(inner) => inner.scatter(wo, si, dims),
-            Material::Metal(inner) => inner.scatter(wo, si, dims),
-            Material::Dielectric(inner) => inner.scatter(wo, si, dims),
-            Material::DiffuseLight(inner) => inner.scatter(wo, si, dims),
-            Material::Isotropic(inner) => inner.scatter(wo, si, dims),
-            Material::Glossy(inner) => inner.scatter(wo, si, dims),
-            Material::Custom(inner) => inner.scatter(wo, si, dims),
-            Material::Mix(inner) => inner.scatter(wo, si, dims),
-            Material::Coated(inner) => inner.scatter(wo, si, dims),
+            Material::Lambertian(inner) => inner.scatter(wo, si, next_dim),
+            Material::Metal(inner) => inner.scatter(wo, si, next_dim),
+            Material::Dielectric(inner) => inner.scatter(wo, si, next_dim),
+            Material::DiffuseLight(inner) => inner.scatter(wo, si, next_dim),
+            Material::Isotropic(inner) => inner.scatter(wo, si, next_dim),
+            Material::Glossy(inner) => inner.scatter(wo, si, next_dim),
+            Material::Custom(inner) => inner.scatter(wo, si, next_dim),
+            Material::Mix(inner) => inner.scatter(wo, si, next_dim),
+            Material::Coated(inner) => inner.scatter(wo, si, next_dim),
         }
     }
 
@@ -415,8 +490,13 @@ impl Material {
 }
 
 impl Bsdf for Material {
-    fn scatter(&self, wo: Vec3, si: &SurfaceInteraction, dims: SampleDims) -> Option<BsdfScatter> {
-        self.scatter(wo, si, dims)
+    fn scatter(
+        &self,
+        wo: Vec3,
+        si: &SurfaceInteraction,
+        next_dim: &mut dyn FnMut() -> f64,
+    ) -> Option<BsdfScatter> {
+        self.scatter(wo, si, next_dim)
     }
 
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
@@ -633,6 +713,13 @@ impl Material {
             Material::Dielectric(d) => (d.ior, d.tint),
             _ => (1.5, Color3::new(1.0, 1.0, 1.0)),
         };
+        // Clamp coating tint to [0, 1] per component.
+        // Values > 1 would amplify via powf (physically invalid Beer's law).
+        let coating_tint = Color3::new(
+            coating_tint.x.clamp(0.0, 1.0),
+            coating_tint.y.clamp(0.0, 1.0),
+            coating_tint.z.clamp(0.0, 1.0),
+        );
         Material::Coated(CoatedMaterial {
             substrate: Arc::new(self) as Arc<dyn Bsdf>,
             coating: Arc::new(coat) as Arc<dyn Bsdf>,
@@ -778,7 +865,7 @@ mod tests {
                 &self,
                 _wo: Vec3,
                 _si: &SurfaceInteraction,
-                _dims: SampleDims,
+                _next_dim: &mut dyn FnMut() -> f64,
             ) -> Option<BsdfScatter> {
                 None
             }
