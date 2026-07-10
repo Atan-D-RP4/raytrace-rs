@@ -15,9 +15,9 @@ use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::{BsdfScatter, Material, PdfKind};
 use crate::pdf::{EmitterPDF, EnvPdf, PDF, power_heuristic};
-use crate::ray::{Ray, RayDifferentials};
+use crate::ray::Ray;
 use crate::sampler::{SampleStream, SamplerRng};
-use crate::vec3::{Color3, Vec3, reflect, refract};
+use crate::vec3::{Color3, Vec3};
 
 /// One-sample MIS estimator with power heuristic (β=2).
 ///
@@ -140,6 +140,14 @@ impl PathTracingIntegrator {
 }
 
 impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator {
+    fn env_map(&self) -> Option<&Arc<EnvironmentMap>> {
+        self.env_map.as_ref()
+    }
+
+    fn background_color(&self) -> Color3 {
+        self.background
+    }
+
     fn li(
         &self,
         initial_ray: &mut Ray,
@@ -272,10 +280,10 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
                 if let Some(scatter) = material.scatter(wo, &si, &mut next_mat_dim) {
                     let mut new_prev_was_delta = false;
                     let mut new_prev_bsdf_pdf = 0.0;
-                    let (direction, bias) = match scatter {
-                        BsdfScatter::Delta { wi, f_cos, eta: _ } => {
+                    let (direction, bias, eta) = match scatter {
+                        BsdfScatter::Delta { wi, f_cos, eta } => {
                             new_prev_was_delta = true;
-                            (wi, f_cos)
+                            (wi, f_cos, eta)
                         }
                         BsdfScatter::NonDelta { pdf_kinds } => {
                             // One-sample MIS with power heuristic (β=2).
@@ -344,7 +352,7 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
                             let (direction, contribution, p_mix) =
                                 mis_sample(pdf_refs, eval, sel_idx, pdf_u, pdf_v);
                             new_prev_bsdf_pdf = p_mix;
-                            (direction, contribution)
+                            (direction, contribution, None)
                         }
                     };
 
@@ -352,49 +360,17 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
                     prev_bsdf_pdf = new_prev_bsdf_pdf;
                     accumulated_attenuation = accumulated_attenuation * bias;
 
+                    let hit_time = si.time();
+                    let hit_point = si.point();
+
                     // Update the ray for the next bounce, preserving and regenerating
                     // ray differentials so texture filtering survives indirect bounces.
-                    let mut new_ray = Ray::new_with_time(si.point(), direction, ray.time);
-                    if let Some(rd) = ray.differentials {
-                        let t_hit = si.time();
-                        // Preserve the spatial footprint: offset the new ray origins by
-                        // the incoming position derivatives (dpdx / dpdy at the hit).
-                        let dpdx =
-                            (rd.rx_origin - ray.origin) + t_hit * (rd.rx_direction - ray.direction);
-                        let dpdy =
-                            (rd.ry_origin - ray.origin) + t_hit * (rd.ry_direction - ray.direction);
-
-                        // Regenerate differential directions from the scatter kind.
-                        let (rx_direction, ry_direction) = match scatter {
-                            BsdfScatter::Delta { eta, .. } => {
-                                if let Some(eta) = eta {
-                                    (
-                                        refract(&rd.rx_direction, &normal, eta),
-                                        refract(&rd.ry_direction, &normal, eta),
-                                    )
-                                } else {
-                                    (
-                                        reflect(&rd.rx_direction, &normal),
-                                        reflect(&rd.ry_direction, &normal),
-                                    )
-                                }
-                            }
-                            // Non-delta (Lambertian, rough glossy): approximate the lobe
-                            // as locally specular about the normal so indirect bounces keep
-                            // a non-zero (if approximate) footprint instead of point sampling.
-                            BsdfScatter::NonDelta { .. } => (
-                                reflect(&rd.rx_direction, &normal),
-                                reflect(&rd.ry_direction, &normal),
-                            ),
-                        };
-
-                        new_ray.differentials = Some(RayDifferentials {
-                            rx_origin: si.point() + dpdx,
-                            ry_origin: si.point() + dpdy,
-                            rx_direction,
-                            ry_direction,
-                        });
-                    }
+                    let new_ray = Ray::new_with_differentials(
+                        si.point(),
+                        direction,
+                        ray.time,
+                        ray.propagate_differentials(normal, hit_time, eta, hit_point),
+                    );
                     ray = new_ray;
                 } else {
                     // Emissive materials return None — no scattering. Emission already added

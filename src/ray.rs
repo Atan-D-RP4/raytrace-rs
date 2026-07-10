@@ -1,5 +1,5 @@
 use crate::aabb::Aabb;
-use crate::vec3::{Point3, Vec3};
+use crate::vec3::{Point3, Vec3, reflect, refract};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RayDifferentials {
@@ -53,7 +53,7 @@ impl Ray {
         origin: Point3,
         direction: Vec3,
         time: f64,
-        differentials: RayDifferentials,
+        differentials: Option<RayDifferentials>,
     ) -> Self {
         debug_assert!(
             !direction.near_zero(),
@@ -64,7 +64,7 @@ impl Ray {
             direction,
             time,
             inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
-            differentials: Some(differentials),
+            differentials,
         }
     }
 
@@ -74,6 +74,45 @@ impl Ray {
         let origin: Vec3 = self.origin;
         let direction = self.direction;
         origin + direction * t
+    }
+
+    /// Propagate ray differentials through a surface scatter event.
+    pub fn propagate_differentials(
+        &self,
+        normal: Vec3,
+        hit_time: f64,
+        eta: Option<f64>,
+        hit_point: Point3,
+    ) -> Option<RayDifferentials> {
+        if let Some(rd) = self.differentials {
+            // Preserve the spatial footprint: offset the new ray origins by
+            // the incoming position derivatives (dpdx / dpdy at the hit).
+            let dpdx = (rd.rx_origin - self.origin) + hit_time * (rd.rx_direction - self.direction);
+            let dpdy = (rd.ry_origin - self.origin) + hit_time * (rd.ry_direction - self.direction);
+
+            // Regenerate the ray differentials for the scattered ray. For reflection, the direction derivatives
+            // are reflected. For refraction, the direction derivatives are refracted.
+            let (rx_direction, ry_direction) = if let Some(eta) = eta {
+                (
+                    refract(&rd.rx_direction, &normal, eta),
+                    refract(&rd.ry_direction, &normal, eta),
+                )
+            } else {
+                (
+                    reflect(&rd.rx_direction, &normal),
+                    reflect(&rd.ry_direction, &normal),
+                )
+            };
+
+            Some(RayDifferentials {
+                rx_origin: hit_point + dpdx,
+                ry_origin: hit_point + dpdy,
+                rx_direction,
+                ry_direction,
+            })
+        } else {
+            None
+        }
     }
 }
 

@@ -200,12 +200,12 @@ impl Camera for PerspectiveCamera {
                 primary_ray.ray.origin,
                 primary_ray.ray.direction,
                 sample.time,
-                RayDifferentials {
+                Some(RayDifferentials {
                     rx_origin: primary_ray.ray.origin,
                     ry_origin: primary_ray.ray.origin,
                     rx_direction: pixel_sampler_x - primary_ray.ray.origin,
                     ry_direction: pixel_sampler_y - primary_ray.ray.origin,
-                },
+                }),
             ),
             weight: Color3::new(1.0, 1.0, 1.0),
         })

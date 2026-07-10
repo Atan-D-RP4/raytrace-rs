@@ -158,7 +158,7 @@ impl<'a> PDF for LightPDF<'a> {
 pub struct EnvPdf<'a>(&'a Arc<EnvironmentMap>);
 
 impl EnvPdf<'_> {
-    pub fn new(env_map: &Arc<EnvironmentMap>) -> EnvPdf {
+    pub fn new(env_map: &Arc<EnvironmentMap>) -> EnvPdf<'_> {
         EnvPdf(env_map)
     }
 }

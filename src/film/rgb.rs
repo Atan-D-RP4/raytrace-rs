@@ -209,7 +209,6 @@ impl Film for RgbFilm {
                 continue;
             }
             let idx = (ty * self.width + tx) as usize;
-            let tile_idx = tile_idx;
 
             // Accumulate raw color sum.
             let tile_color = tile.pixels[tile_idx];

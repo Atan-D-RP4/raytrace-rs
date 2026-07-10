@@ -17,9 +17,10 @@ fn main() {
     let mut directions = [[0u32; 32]; MAX_DIMS];
 
     // Van der Corput (dim 0)
-    for j in 0..32 {
-        directions[0][j] = 1u32 << (31 - j);
-    }
+    directions[0]
+        .iter_mut()
+        .enumerate()
+        .for_each(|(j, val)| *val = 1u32 << (31 - j));
 
     for line in file.lines().skip(1) {
         let line = line.trim();

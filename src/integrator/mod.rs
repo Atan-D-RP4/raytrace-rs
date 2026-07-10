@@ -1,5 +1,7 @@
 pub mod path_tracer;
 
+use crate::environment::EnvironmentMap;
+use crate::vec3::Vec3;
 pub use path_tracer::PathTracingIntegrator;
 
 use std::sync::Arc;
@@ -10,6 +12,21 @@ pub use crate::sampler::{SampleStream, SamplerRng};
 use crate::vec3::Color3;
 
 pub trait Integrator<S: SampleStream, R: SamplerRng>: Send + Sync {
+    /// Default background radiance for a ray that missed all geometry.
+    fn background(&self, direction: Vec3) -> Color3 {
+        match self.env_map() {
+            Some(env) => env.le(direction),
+            None => self.background_color(),
+        }
+    }
+
+    /// Returns the environment map used for background lighting, if any.
+    fn env_map(&self) -> Option<&Arc<EnvironmentMap>>;
+
+    /// Returns the default background color for rays that miss all geometry, used when no
+    /// environment map is provided.
+    fn background_color(&self) -> Color3;
+
     // Computes the radiance along a ray by tracing it through the scene, accounting for light
     // interactions with surfaces and materials.
     fn li(
