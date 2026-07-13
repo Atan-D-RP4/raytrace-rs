@@ -13,8 +13,8 @@ use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
-use crate::pdf::{power_heuristic, EmitterPDF, EnvPdf, PdfKind, PDF};
+use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
+use crate::pdf::{EmitterPDF, EnvPdf, PDF, PdfKind, power_heuristic};
 use crate::ray::Ray;
 use crate::sampler::{Sampler, SamplingSession};
 use crate::vec3::{Color3, Vec3};
@@ -246,7 +246,7 @@ impl PathTracingIntegrator {
                     let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time);
                     let far = (sample.distance - 0.001).max(0.001);
                     let shadow_ray_interval = Interval::from(0.001, far);
-                    let occluded = world.intersect(&shadow_ray, shadow_ray_interval).is_some();
+                    let occluded = world.occluded(&shadow_ray, shadow_ray_interval);
                     if !occluded {
                         // Unoccluded — compute direct lighting contribution.
                         // Area-sampling form: L ≈ f_r · L_e · |cos θ_s| · |cos θ_l| · V / (p_A · d²)
@@ -309,40 +309,7 @@ impl PathTracingIntegrator {
                     material.scatter(wo, &si, &mut next_mat_dim)
                 };
 
-                // Pre-process Split: trace delta path recursively, convert to NonDelta for main loop
-                let scatter = match scatter_result {
-                    Some(BsdfScatter::Split {
-                        delta_wi,
-                        delta_f_cos,
-                        delta_eta,
-                        non_delta_pdf_kinds,
-                    }) => {
-                        let delta_ray = Ray::new_with_differentials(
-                            si.point(),
-                            delta_wi,
-                            ray.time,
-                            ray.propagate_differentials(normal, hit_time, delta_eta, hit_point),
-                        );
-                        let mut delta_ray_mut = delta_ray;
-                        let delta_li = self.li_inner::<S>(
-                            &mut delta_ray_mut,
-                            world,
-                            lights,
-                            session,
-                            remaining_depth
-                                .saturating_sub(bounce + 1)
-                                .min(SPLIT_MAX_DEPTH),
-                        );
-                        accumulated_color += accumulated_attenuation * delta_f_cos * delta_li;
-
-                        Some(BsdfScatter::NonDelta {
-                            pdf_kinds: non_delta_pdf_kinds,
-                        })
-                    }
-                    other => other,
-                };
-
-                if let Some(scatter) = scatter {
+                if let Some(scatter) = scatter_result {
                     let mut new_prev_was_delta = false;
                     let mut new_prev_bsdf_pdf = 0.0;
 
@@ -352,73 +319,48 @@ impl PathTracingIntegrator {
                             (wi, f_cos, eta)
                         }
                         BsdfScatter::NonDelta { pdf_kinds } => {
-                            // One-sample MIS with power heuristic (β=2).
-                            // Selects one strategy uniformly, generates direction from it,
-                            // evaluates ALL PDFs, computes weighted estimator:
-                            //   N * (p_sel² / Σp_j²) * f / p_sel
-                            //
-                            // Strategy selection:
-                            // - Always include env PDF: provides hemisphere/sphere fallback
-                            //   for indirect illumination and escape directions. Without it,
-                            //   MIS weights become suboptimal for multi-bounce paths and
-                            //   caustic-adjacent geometry (e.g. glass sphere in Cornell box).
-                            // - Surfaces: env_fallback = UniformHemisphere (general fallback,
-                            //   never duplicates material PDFs). Volumes: UniformSphere.
-                            // - light_pdf is excluded — NEE handles light sampling separately.
-                            //
-                            // PdfKind directly implements PDF, so we store copies on the stack
-                            // and take &dyn PDF references to them.
-
-                            let eval = |d: Vec3| material.eval(wo, d, &si);
-
-                            // Environment strategies
-                            let env_fallback = PdfKind::UniformHemisphere { normal };
-                            let vol_fallback = PdfKind::UniformSphere;
-                            let env_holder = self.env_map.as_ref().map(EnvPdf::new);
-
-                            // Material strategies — PdfKind is Copy, so we can store
-                            // copies directly.
-                            let mut mat_strats: [PdfKind; MAX_BSDF_STRATS] =
-                                [PdfKind::UniformSphere; MAX_BSDF_STRATS];
-                            let mut mat_count = 0usize;
-                            for pk in pdf_kinds.iter().flatten() {
-                                mat_strats[mat_count] = *pk;
-                                mat_count += 1;
-                            }
-
-                            // Build reference array: env at index 0, materials follow.
-                            let mut pdf_refs = [&env_fallback as &dyn PDF; MAX_BSDF_STRATS + 1];
-
-                            // Index 0: environment strategy
-                            if let Some(ref env_pdf) = env_holder {
-                                pdf_refs[0] = env_pdf;
-                            } else if is_volume {
-                                pdf_refs[0] = &vol_fallback;
-                            } else {
-                                pdf_refs[0] = &env_fallback;
-                            }
-                            let mut n = 1usize;
-
-                            // Material strategies at indices 1..n
-                            mat_strats.iter().take(mat_count).for_each(|mat| {
-                                pdf_refs[n] = mat;
-                                n += 1;
-                            });
-
-                            // Selection: independent random from RNG
-                            let sel_idx_raw = session.next_1d();
-                            let sel_idx = (sel_idx_raw * n as f64).min(n as f64 - 1e-15) as usize;
-                            // Direction: correlated 2D from session
-                            let (pdf_u, pdf_v) = session.next_2d();
-
-                            let (direction, contribution, p_mix) =
-                                mis_sample(pdf_refs, n, eval, sel_idx, pdf_u, pdf_v);
-                            new_prev_bsdf_pdf = p_mix;
-                            (direction, contribution, None)
+                            let (d, c, p) = self.mis_sample_continuation::<S>(
+                                pdf_kinds, wo, &si, material, normal, session,
+                            );
+                            new_prev_bsdf_pdf = p;
+                            (d, c, None)
                         }
+                        BsdfScatter::Split {
+                            delta_wi,
+                            delta_f_cos,
+                            delta_eta,
+                            non_delta_pdf_kinds,
+                        } => {
+                            // Trace the delta child's deterministic path (mirror direction).
+                            let delta_ray = Ray::new_with_differentials(
+                                si.point(),
+                                delta_wi,
+                                ray.time,
+                                ray.propagate_differentials(normal, hit_time, delta_eta, hit_point),
+                            );
+                            let mut delta_ray_mut = delta_ray;
+                            let delta_li = self.li_inner::<S>(
+                                &mut delta_ray_mut,
+                                world,
+                                lights,
+                                session,
+                                remaining_depth
+                                    .saturating_sub(bounce + 1)
+                                    .min(SPLIT_MAX_DEPTH),
+                            );
+                            accumulated_color += accumulated_attenuation * delta_f_cos * delta_li;
 
-                        BsdfScatter::Split { .. } => {
-                            unreachable!("Split should have been pre-processed above")
+                            // Continue with the non-delta child's MIS continuation.
+                            let (d, c, p) = self.mis_sample_continuation::<S>(
+                                non_delta_pdf_kinds,
+                                wo,
+                                &si,
+                                material,
+                                normal,
+                                session,
+                            );
+                            new_prev_bsdf_pdf = p;
+                            (d, c, None)
                         }
                     };
 
@@ -471,5 +413,73 @@ impl PathTracingIntegrator {
         // Max bounce count reached — terminate the path. This can still contribute to the final
         // image if the last bounce was a non-delta and the accumulated attenuation is non-zero.
         accumulated_color
+    }
+
+    /// One-sample MIS with power heuristic (β=2).
+    ///
+    /// Selects one strategy uniformly, generates a direction from it,
+    /// evaluates ALL PDFs, and returns the weighted estimator:
+    /// `N · (p_sel² / Σp_j²) · f / p_sel`
+    ///
+    /// Strategy layout:
+    /// - Index 0 always the environment PDF.  Always including the env
+    ///   fallback gives indirect illumination an escape direction and
+    ///   prevents degenerate MIS when no material strategy reaches the
+    ///   sampled light direction (e.g. light behind a glass sphere).
+    /// - Indices 1..N are the material strategies from `pdf_kinds`.
+    /// - The light PDF (`light_pdf`) is excluded — NEE already handles
+    ///   light sampling with its own dedicated MIS weight.
+    fn mis_sample_continuation<S: Sampler>(
+        &self,
+        pdf_kinds: [Option<PdfKind>; MAX_BSDF_STRATS],
+        wo: Vec3,
+        si: &SurfaceInteraction,
+        material: &Material,
+        normal: Vec3,
+        session: &mut S::Session<'_>,
+    ) -> (Vec3, Color3, f64) {
+        let eval = |d: Vec3| material.eval(wo, d, si);
+
+        // Environment strategies
+        let env_fallback = PdfKind::UniformHemisphere { normal };
+        let vol_fallback = PdfKind::UniformSphere;
+        let is_volume = normal.near_zero();
+        let env_holder = self.env_map.as_ref().map(EnvPdf::new);
+
+        // Material strategies — PdfKind is Copy, so we can store copies directly.
+        let mut mat_strats: [PdfKind; MAX_BSDF_STRATS] = [PdfKind::UniformSphere; MAX_BSDF_STRATS];
+        let mut mat_count = 0usize;
+        for pk in pdf_kinds.iter().flatten() {
+            mat_strats[mat_count] = *pk;
+            mat_count += 1;
+        }
+
+        // Build reference array: env at index 0, materials follow.
+        let mut pdf_refs = [&env_fallback as &dyn PDF; MAX_BSDF_STRATS + 1];
+
+        // Index 0: environment strategy
+        if let Some(ref env_pdf) = env_holder {
+            pdf_refs[0] = env_pdf;
+        } else if is_volume {
+            pdf_refs[0] = &vol_fallback;
+        } else {
+            pdf_refs[0] = &env_fallback;
+        }
+        let mut n = 1usize;
+
+        // Material strategies at indices 1..n
+        mat_strats.iter().take(mat_count).for_each(|mat| {
+            pdf_refs[n] = mat;
+            n += 1;
+        });
+
+        // Selection: independent random from RNG
+        let sel_idx_raw = session.next_1d();
+        let sel_idx = (sel_idx_raw * n as f64).min(n as f64 - 1e-15) as usize;
+        // Direction: correlated 2D from session
+        let (pdf_u, pdf_v) = session.next_2d();
+
+        let (direction, contribution, p_mix) = mis_sample(pdf_refs, n, eval, sel_idx, pdf_u, pdf_v);
+        (direction, contribution, p_mix)
     }
 }

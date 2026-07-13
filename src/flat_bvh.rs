@@ -366,6 +366,82 @@ impl Intersectable for FlatBvh {
 
         best_hit
     }
+
+    fn occluded(&self, ray: &Ray, ray_t: Interval) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+
+        let mut stack = [0u32; MAX_STACK];
+        let mut sp = 0usize;
+        stack[sp] = 0;
+        sp += 1;
+
+        let ox = ray.origin.x;
+        let oy = ray.origin.y;
+        let oz = ray.origin.z;
+        let idx = ray.inverse_direction.x;
+        let idy = ray.inverse_direction.y;
+        let idz = ray.inverse_direction.z;
+        let tmin = ray_t.min;
+        let tmax = ray_t.max; // fixed — no shrinking, we don't care which hit, just whether one exists
+
+        while sp > 0 {
+            sp -= 1;
+            let node = &self.nodes[stack[sp] as usize];
+
+            let mut lo = tmin;
+            let mut hi = tmax;
+
+            let t0 = (node.min[0] - ox) * idx;
+            let t1 = (node.max[0] - ox) * idx;
+            lo = lo.max(t0.min(t1));
+            hi = hi.min(t0.max(t1));
+            if hi <= lo {
+                continue;
+            }
+
+            let t0 = (node.min[1] - oy) * idy;
+            let t1 = (node.max[1] - oy) * idy;
+            lo = lo.max(t0.min(t1));
+            hi = hi.min(t0.max(t1));
+            if hi <= lo {
+                continue;
+            }
+
+            let t0 = (node.min[2] - oz) * idz;
+            let t1 = (node.max[2] - oz) * idz;
+            lo = lo.max(t0.min(t1));
+            hi = hi.min(t0.max(t1));
+            if hi <= lo {
+                continue;
+            }
+
+            if node.is_leaf() {
+                let start = node.prim_start();
+                let count = node.prim_count();
+                if self.primitives[start..start + count]
+                    .iter()
+                    .any(|p| p.occluded(ray, Interval::from(tmin, tmax)))
+                {
+                    return true; // <-- the actual win: stop everything, right here
+                }
+            } else {
+                // Near-first push is still worth keeping, for a different reason
+                // than in intersect(): it doesn't prune correctness-wise here,
+                // but visiting the subtree statistically more likely to contain
+                // the occluder first tends to shorten expected traversal length
+                // before the first `return true`. Cheap to keep, safe to drop if
+                // you want less per-node arithmetic — genuine trade, not a
+                // correctness question either way.
+                stack[sp] = node.left_child();
+                sp += 1;
+                stack[sp] = node.right_child();
+                sp += 1;
+            }
+        }
+        false
+    }
 }
 
 impl Bounded for FlatBvh {

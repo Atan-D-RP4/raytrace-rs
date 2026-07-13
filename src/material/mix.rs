@@ -11,8 +11,8 @@ use crate::hittable::SurfaceInteraction;
 use crate::vec3::{Color3, Vec3};
 
 use crate::material::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE,
-    MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
+    MAX_BSDF_STRATS, PdfKind,
 };
 
 use super::gpu::GpuSerializable;
@@ -50,7 +50,7 @@ impl Bsdf for MixMaterial {
 
             let delta_result = delta.scatter(wo, si, next_dim)?;
             let BsdfScatter::Delta { wi, f_cos, eta } = delta_result else {
-                unreachable!()
+                unreachable!("delta child always returns Delta (is_delta() guard)")
             };
             let pk = non_delta.pdf_kind(wo, si);
 
@@ -101,6 +101,9 @@ impl Bsdf for MixMaterial {
                     }
                 }
             }
+            // Nested Split: the child was itself a one-delta Mix.
+            // Same amplification reasoning as Delta above — stochastically
+            // chosen child, Split's delta_f_cos hasn't been weighted yet.
             BsdfScatter::Split {
                 delta_f_cos,
                 non_delta_pdf_kinds,

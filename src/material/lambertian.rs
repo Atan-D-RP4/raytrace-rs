@@ -18,11 +18,11 @@ use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
-use super::gpu::GpuSerializable;
 use super::GPU_NONE;
+use super::gpu::GpuSerializable;
 use super::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    PdfKind,
 };
 
 /// Diffuse (Lambertian) surface.
@@ -71,11 +71,7 @@ impl Bsdf for LambertianMaterial {
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
     fn pdf(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         let cos_theta = si.shading_normal().dot(&wi);
-        if cos_theta < 0.0 {
-            0.0
-        } else {
-            cos_theta / PI
-        }
+        if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
     }
 
     /// Returns `PdfKind::Cosine` for the cosine-weighted hemisphere PDF.

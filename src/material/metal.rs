@@ -26,13 +26,13 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::{reflect, Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect};
 
-use super::gpu::GpuSerializable;
 use super::GPU_NONE;
+use super::gpu::GpuSerializable;
 use super::{
-    ggx_sample_h, Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    PdfKind, ggx_sample_h,
 };
 
 use super::{fresnel_schlick, geometry_schlick_ggx, ggx_d};

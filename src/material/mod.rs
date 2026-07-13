@@ -53,7 +53,7 @@ pub use lambertian::LambertianMaterial;
 pub use metal::MetalMaterial;
 pub use mix::MixMaterial;
 
-pub use crate::pdf::{ggx_d, ggx_sample_h, PdfKind};
+pub use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
 
 use gpu::GPU_NONE;
 use std::sync::Arc;

@@ -17,11 +17,11 @@ use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
-use super::gpu::GpuSerializable;
 use super::GPU_NONE;
+use super::gpu::GpuSerializable;
 use super::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    PdfKind,
 };
 
 /// Isotropic scattering medium (volumes).

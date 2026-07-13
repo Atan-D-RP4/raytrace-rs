@@ -16,7 +16,7 @@ use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
-use crate::material::{PdfKind, GPU_NONE};
+use crate::material::{GPU_NONE, PdfKind};
 
 use super::gpu::GpuSerializable;
 

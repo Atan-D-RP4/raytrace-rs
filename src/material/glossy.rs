@@ -19,12 +19,12 @@ use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::{
-    fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h, Bsdf, BsdfScatter,
-    GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE, MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
+    MAX_BSDF_STRATS, PdfKind, fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::{reflect, Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect};
 
 use super::gpu::GpuSerializable;
 

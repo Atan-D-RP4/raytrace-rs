@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::environment::EnvironmentMap;
 use crate::hittable::Sampleable;
 use crate::onb::Onb;
-use crate::vec3::{concentric_disk, reflect, Point3, Vec3};
+use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
 
 // ================================================================
 // § PDF domain newtypes
@@ -79,11 +79,7 @@ impl MisHeuristic {
         match self {
             MisHeuristic::Balance => {
                 let denom = f_pdf + g_pdf;
-                if denom <= 0.0 {
-                    0.0
-                } else {
-                    f_pdf / denom
-                }
+                if denom <= 0.0 { 0.0 } else { f_pdf / denom }
             }
             MisHeuristic::Power => {
                 let denom = f_pdf * f_pdf + g_pdf * g_pdf;
@@ -578,8 +574,6 @@ pub enum PdfKind {
     UniformSphere,
     /// Uniform over the hemisphere oriented by `normal`.
     UniformHemisphere { normal: Vec3 },
-    /// Delta distribution (perfect specular). Integrator skips MIS weighting.
-    Delta,
 }
 
 impl PdfKind {
@@ -613,7 +607,6 @@ impl PdfKind {
                 let local_dir = Vec3::new(r * cos_phi, r * sin_phi, z);
                 uvw.local_to_world(local_dir)
             }
-            PdfKind::Delta => unreachable!("Delta PDF cannot generate directions"),
         }
     }
 
@@ -648,7 +641,6 @@ impl PdfKind {
                     0.0
                 }
             }
-            PdfKind::Delta => 0.0,
         }
     }
 }

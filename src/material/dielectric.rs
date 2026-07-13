@@ -17,11 +17,11 @@
 //! sampled direction directly.
 
 use crate::hittable::SurfaceInteraction;
-use crate::vec3::{reflect, refract, Color3, Vec3};
+use crate::vec3::{Color3, Vec3, reflect, refract};
 
 use crate::material::fresnel_schlick;
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
-use crate::material::{PdfKind, GPU_NONE};
+use crate::material::{GPU_NONE, PdfKind};
 
 use super::gpu::GpuSerializable;
 

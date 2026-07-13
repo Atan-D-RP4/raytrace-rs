@@ -244,6 +244,12 @@ pub trait Intersectable: Send + Sync + Bounded {
     /// Returns the closest hit inside `[ray_t.min, ray_t.max]`, if any,
     /// along with a reference to the intersected material.
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>>;
+
+    // Returns bool and short-circuits the moment any primitive/node reports a hit inside the interval,
+    // rather than tightening best_t and continuing
+    fn occluded(&self, ray: &Ray, ray_t: Interval) -> bool {
+        self.intersect(ray, ray_t).is_some()
+    }
 }
 
 impl<T: Intersectable> Intersectable for Vec<T> {
