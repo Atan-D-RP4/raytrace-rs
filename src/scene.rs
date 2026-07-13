@@ -13,7 +13,9 @@ use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::planar::{box3d, quad};
 use crate::shape::{moving_sphere, sphere};
 use crate::texture::mapping::TextureMapping3D;
-use crate::texture::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, Texture};
+use crate::texture::{
+    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture,
+};
 use crate::transform::{RotateY, TransformObject, Translate};
 use crate::vec3::{Color3, Point3, Vec3};
 use tracing::{info, trace};
@@ -789,11 +791,7 @@ impl Scene {
                             0.275,
                         ),
                         _ => (
-                            Material::Lambertian(LambertianMaterial {
-                                albedo: rand_albedo(),
-                                tex: None,
-                            })
-                            .mix(
+                            Material::lambertian(Arc::new(SolidColor::new(rand_albedo()))).mix(
                                 Material::metal(
                                     Color3::random_range(0.5, 1.0),
                                     rand::random::<f64>() * 0.5,

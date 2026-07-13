@@ -18,9 +18,12 @@ use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
-use super::GPU_NONE;
 use super::gpu::GpuSerializable;
-use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
+use super::GPU_NONE;
+use super::{
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    MAX_BSDF_STRATS,
+};
 
 /// Diffuse (Lambertian) surface.
 #[derive(Clone)]
@@ -43,14 +46,11 @@ impl Bsdf for LambertianMaterial {
         si: &SurfaceInteraction,
         _next_dim: &mut dyn FnMut() -> f64,
     ) -> Option<BsdfScatter> {
-        Some(BsdfScatter::NonDelta {
-            pdf_kinds: [
-                Some(PdfKind::Cosine {
-                    normal: si.shading_normal(),
-                }),
-                None,
-            ],
-        })
+        let mut pk = [None; MAX_BSDF_STRATS];
+        pk[0] = Some(PdfKind::Cosine {
+            normal: si.shading_normal(),
+        });
+        Some(BsdfScatter::NonDelta { pdf_kinds: pk })
     }
 
     /// Lambertian BRDF: `albedo · cos(θ) / π`. Returns zero if `wi` is below the surface.
@@ -71,7 +71,11 @@ impl Bsdf for LambertianMaterial {
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
     fn pdf(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
         let cos_theta = si.shading_normal().dot(&wi);
-        if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
+        if cos_theta < 0.0 {
+            0.0
+        } else {
+            cos_theta / PI
+        }
     }
 
     /// Returns `PdfKind::Cosine` for the cosine-weighted hemisphere PDF.

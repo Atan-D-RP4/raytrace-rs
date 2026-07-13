@@ -13,11 +13,17 @@ use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::{BsdfScatter, Material, PdfKind};
-use crate::pdf::{EmitterPDF, EnvPdf, PDF, power_heuristic};
+use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
+use crate::pdf::{power_heuristic, EmitterPDF, EnvPdf, PdfKind, PDF};
 use crate::ray::Ray;
 use crate::sampler::{Sampler, SamplingSession};
 use crate::vec3::{Color3, Vec3};
+
+/// Maximum depth for the split delta path (mirror direction from Mix one-delta).
+/// Prevents exponential cascade when `max_depth` is large (e.g. 50) and the
+/// mirror direction repeatedly hits delta-Mix surfaces.  Matches
+/// `MAX_INTERNAL_BOUNCES` in Coated material.
+const SPLIT_MAX_DEPTH: u32 = 5;
 
 /// One-sample MIS estimator with power heuristic (β=2).
 ///
@@ -159,17 +165,32 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
         lights: &[Arc<dyn Sampleable>],
         session: &mut S::Session<'_>,
     ) -> Color3 {
+        self.li_inner::<S>(initial_ray, world, lights, session, self.max_depth)
+    }
+}
+
+impl PathTracingIntegrator {
+    fn li_inner<S: Sampler>(
+        &self,
+        initial_ray: &mut Ray,
+        world: &dyn Intersectable,
+        lights: &[Arc<dyn Sampleable>],
+        session: &mut S::Session<'_>,
+        remaining_depth: u32,
+    ) -> Color3 {
         let mut accumulated_attenuation = Color3::ONE;
         let mut accumulated_color = Color3::ZERO;
         let mut ray = *initial_ray;
         let mut prev_bsdf_pdf: f64 = 0.0;
         let mut prev_was_delta: bool = true;
 
-        for bounce in 0..self.max_depth {
+        for bounce in 0..remaining_depth {
             if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f64::INFINITY)) {
                 let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
                 let material = si.material();
                 let normal = si.shading_normal();
+                let hit_time = si.time();
+                let hit_point = si.point();
 
                 let light_pdf = if lights.is_empty() {
                     0.0
@@ -282,12 +303,49 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                     accumulated_attenuation /= survival;
                 }
 
-                // NLL releases session borrow after scatter() — session is usable again below.
-                let mut next_mat_dim = || -> f64 { session.next_1d() };
+                // Scope-limited next_dim to release session borrow before Split recursion.
+                let scatter_result = {
+                    let mut next_mat_dim = || -> f64 { session.next_1d() };
+                    material.scatter(wo, &si, &mut next_mat_dim)
+                };
 
-                if let Some(scatter) = material.scatter(wo, &si, &mut next_mat_dim) {
+                // Pre-process Split: trace delta path recursively, convert to NonDelta for main loop
+                let scatter = match scatter_result {
+                    Some(BsdfScatter::Split {
+                        delta_wi,
+                        delta_f_cos,
+                        delta_eta,
+                        non_delta_pdf_kinds,
+                    }) => {
+                        let delta_ray = Ray::new_with_differentials(
+                            si.point(),
+                            delta_wi,
+                            ray.time,
+                            ray.propagate_differentials(normal, hit_time, delta_eta, hit_point),
+                        );
+                        let mut delta_ray_mut = delta_ray;
+                        let delta_li = self.li_inner::<S>(
+                            &mut delta_ray_mut,
+                            world,
+                            lights,
+                            session,
+                            remaining_depth
+                                .saturating_sub(bounce + 1)
+                                .min(SPLIT_MAX_DEPTH),
+                        );
+                        accumulated_color += accumulated_attenuation * delta_f_cos * delta_li;
+
+                        Some(BsdfScatter::NonDelta {
+                            pdf_kinds: non_delta_pdf_kinds,
+                        })
+                    }
+                    other => other,
+                };
+
+                if let Some(scatter) = scatter {
                     let mut new_prev_was_delta = false;
                     let mut new_prev_bsdf_pdf = 0.0;
+
                     let (direction, bias, eta) = match scatter {
                         BsdfScatter::Delta { wi, f_cos, eta } => {
                             new_prev_was_delta = true;
@@ -320,20 +378,16 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
 
                             // Material strategies — PdfKind is Copy, so we can store
                             // copies directly.
-                            let mut mat_storage: [PdfKind; 2] = [PdfKind::UniformSphere; 2];
+                            let mut mat_strats: [PdfKind; MAX_BSDF_STRATS] =
+                                [PdfKind::UniformSphere; MAX_BSDF_STRATS];
                             let mut mat_count = 0usize;
-                            if let Some(pk) = pdf_kinds[0] {
-                                mat_storage[mat_count] = pk;
-                                mat_count += 1;
-                            }
-                            if let Some(pk) = pdf_kinds[1] {
-                                mat_storage[mat_count] = pk;
+                            for pk in pdf_kinds.iter().flatten() {
+                                mat_strats[mat_count] = *pk;
                                 mat_count += 1;
                             }
 
                             // Build reference array: env at index 0, materials follow.
-                            // Max capacity: env(1) + s0(0/1) + s1(0/1) = 1..3.
-                            let mut pdf_refs = [&env_fallback as &dyn PDF; 4];
+                            let mut pdf_refs = [&env_fallback as &dyn PDF; MAX_BSDF_STRATS + 1];
 
                             // Index 0: environment strategy
                             if let Some(ref env_pdf) = env_holder {
@@ -346,7 +400,7 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             let mut n = 1usize;
 
                             // Material strategies at indices 1..n
-                            mat_storage.iter().take(mat_count).for_each(|mat| {
+                            mat_strats.iter().take(mat_count).for_each(|mat| {
                                 pdf_refs[n] = mat;
                                 n += 1;
                             });
@@ -362,14 +416,15 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
                             new_prev_bsdf_pdf = p_mix;
                             (direction, contribution, None)
                         }
+
+                        BsdfScatter::Split { .. } => {
+                            unreachable!("Split should have been pre-processed above")
+                        }
                     };
 
                     prev_was_delta = new_prev_was_delta;
                     prev_bsdf_pdf = new_prev_bsdf_pdf;
                     accumulated_attenuation = accumulated_attenuation * bias;
-
-                    let hit_time = si.time();
-                    let hit_point = si.point();
 
                     // Update the ray for the next bounce, preserving and regenerating
                     // ray differentials so texture filtering survives indirect bounces.

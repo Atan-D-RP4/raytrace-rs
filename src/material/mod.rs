@@ -53,46 +53,16 @@ pub use lambertian::LambertianMaterial;
 pub use metal::MetalMaterial;
 pub use mix::MixMaterial;
 
+pub use crate::pdf::{ggx_d, ggx_sample_h, PdfKind};
+
 use gpu::GPU_NONE;
-use std::f64::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
-use crate::onb::Onb;
-use crate::pdf::cosine_hemisphere_direction;
 use crate::texture::Texture;
-use crate::vec3::refract;
-use crate::vec3::{Color3, Vec3, reflect};
+use crate::vec3::{Color3, Vec3};
 
 use self::gpu::GpuSerializable;
-
-/// GGX/Trowbridge-Reitz microfacet importance sampling.
-///
-/// Samples a half-vector H from the GGX NDF given roughness² `alpha` and uniform
-/// random variables `u`, `v` in [0, 1). Returns H in tangent space (Z = normal).
-pub fn ggx_sample_h(alpha: f64, u: f64, v: f64) -> Vec3 {
-    let cos_theta = ((1.0 - v) / (1.0 + (alpha * alpha - 1.0) * v))
-        .clamp(0.0, 1.0)
-        .sqrt();
-    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
-    let phi = 2.0 * PI * u;
-    let (sin_phi, cos_phi) = phi.sin_cos();
-
-    Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta)
-}
-
-/// GGX/Trowbridge-Reitz normal distribution function (NDF).
-///
-/// Returns the probability density that a microfacet has half-vector H aligned
-/// with the surface normal. `alpha` is roughness²; controls specular lobe width.
-pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
-    if cos_theta_h <= 0.0 {
-        return 0.0;
-    }
-    let a2 = alpha * alpha;
-    let denom = cos_theta_h * cos_theta_h * (a2 - 1.0) + 1.0;
-    a2 / (PI * denom * denom)
-}
 
 /// Smith's geometry function (Schlick-GGX approximation).
 ///
@@ -131,6 +101,11 @@ fn blackbody(temp: f64) -> Color3 {
     Color3::new(r, g, b)
 }
 
+/// Maximum number of BSDF sampling strategies produced by any material.
+/// Used as the fixed capacity for `BsdfScatter::NonDelta` / `Split`.
+/// Current max ~2 (Mix + Coated); bumped to 4 as safety margin.
+pub const MAX_BSDF_STRATS: usize = 4;
+
 /// Material sample result for one bounce.
 #[derive(Clone, Copy, Debug)]
 pub enum BsdfScatter {
@@ -146,106 +121,17 @@ pub enum BsdfScatter {
     /// Non-specular — integrator evaluates the BSDF and uses MIS weighting.
     /// Each slot is `Some(PdfKind)` for valid entries, `None` for unused slots.
     NonDelta {
-        /// Up to 2 surface PDF descriptors (first from chosen child, second from other).
-        pdf_kinds: [Option<PdfKind>; 2],
+        /// Surface PDF descriptors (first N entries valid, rest is spare capacity).
+        pdf_kinds: [Option<PdfKind>; MAX_BSDF_STRATS],
     },
-}
-
-/// Describes which surface sampling PDF the integrator should use.
-///
-/// Lightweight enum returned by materials instead of heap-allocated `Box<dyn PDF>`.
-/// The integrator owns concrete PDF objects on the stack and updates them from
-/// the kind + parameters here.
-#[derive(Clone, Copy, Debug)]
-pub enum PdfKind {
-    /// Cosine-weighted hemisphere. `normal` defines the hemisphere orientation.
-    Cosine { normal: Vec3 },
-    /// GGX microfacet importance sampling. Samples half-vector from NDF, reflects.
-    Ggx {
-        /// Outgoing direction (surface → camera), world space.
-        wo: Vec3,
-        /// Surface normal.
-        normal: Vec3,
-        /// GGX alpha (roughness² clamped to [0.001, 1]).
-        alpha: f64,
+    /// One deterministic delta branch and one non-delta branch — the integrator
+    /// traces both paths, splitting the path in two at this vertex.
+    Split {
+        delta_wi: Vec3,
+        delta_f_cos: Color3,
+        delta_eta: Option<f64>,
+        non_delta_pdf_kinds: [Option<PdfKind>; MAX_BSDF_STRATS],
     },
-    /// Uniform over the full sphere (isotropic volumes).
-    UniformSphere,
-    /// Uniform over the hemisphere oriented by `normal`.
-    UniformHemisphere { normal: Vec3 },
-    /// Delta distribution (perfect specular). Integrator skips MIS weighting.
-    Delta,
-}
-
-impl PdfKind {
-    /// Generate a direction from this PDF distribution.
-    pub fn generate(&self, u: f64, v: f64) -> Vec3 {
-        match self {
-            PdfKind::Cosine { normal } => {
-                let uvw = Onb::build_from_normal(*normal);
-                uvw.local_to_world(cosine_hemisphere_direction(u, v))
-            }
-            PdfKind::Ggx { wo, normal, alpha } => {
-                let onb = Onb::build_from_normal(*normal);
-                let wo_unit = wo.unit_vector();
-                let h_local = ggx_sample_h(*alpha, u, v);
-                let h_world = onb.local_to_world(h_local);
-                reflect(&-wo_unit, &h_world)
-            }
-            PdfKind::UniformSphere => {
-                let phi = 2.0 * PI * u;
-                let (sin_phi, cos_phi) = phi.sin_cos();
-                let z = 1.0 - 2.0 * v;
-                let r = (1.0 - z * z).max(0.0).sqrt();
-                Vec3::new(r * cos_phi, r * sin_phi, z)
-            }
-            PdfKind::UniformHemisphere { normal } => {
-                let uvw = Onb::build_from_normal(*normal);
-                let phi = 2.0 * PI * u;
-                let (sin_phi, cos_phi) = phi.sin_cos();
-                let z = v;
-                let r = (1.0 - z * z).max(0.0).sqrt();
-                let local_dir = Vec3::new(r * cos_phi, r * sin_phi, z);
-                uvw.local_to_world(local_dir)
-            }
-            PdfKind::Delta => unreachable!("Delta PDF cannot generate directions"),
-        }
-    }
-
-    /// Evaluate the PDF value for a given direction.
-    pub fn value(&self, direction: Vec3) -> f64 {
-        match self {
-            PdfKind::Cosine { normal } => {
-                let uvw = Onb::build_from_normal(*normal);
-                let cos_theta = direction.dot(&uvw.w);
-                (cos_theta / PI).max(0.0)
-            }
-            PdfKind::Ggx { wo, normal, alpha } => {
-                let onb = Onb::build_from_normal(*normal);
-                let wo_unit = wo.unit_vector();
-                let h = (wo_unit + direction).unit_vector();
-                let cos_h = wo_unit.dot(&h).abs();
-                if cos_h <= 0.0 {
-                    return 0.0;
-                }
-                let h_local = onb.world_to_local(h);
-                let cos_h_n = h_local.z.max(0.0);
-                let d = ggx_d(cos_h_n, *alpha);
-                d * cos_h_n / (4.0 * cos_h)
-            }
-            PdfKind::UniformSphere => 1.0 / (4.0 * PI),
-            PdfKind::UniformHemisphere { normal } => {
-                let uvw = Onb::build_from_normal(*normal);
-                let cos_theta = direction.dot(&uvw.w);
-                if cos_theta > 0.0 {
-                    1.0 / (2.0 * PI)
-                } else {
-                    0.0
-                }
-            }
-            PdfKind::Delta => 0.0,
-        }
-    }
 }
 
 /// Bi-directional scattering distribution function (BSDF) sampling interface — reflection (BRDF),

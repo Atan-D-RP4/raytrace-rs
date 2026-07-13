@@ -3,26 +3,6 @@
 //! Every sample is `sample(n, d)` — determined by `(pass, dimension)` alone.
 //! This makes samplers deterministic, `Sync`, and immune to state corruption
 //! from variable-length paths.
-
-/// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
-///
-/// Same `(n, d)` always returns the same value — deterministic across threads.
-pub(crate) trait QmcSampler: Send + Sync {
-    fn sample(&self, n: u32, d: u32) -> f64;
-}
-
-/// Stateful stream of correlated 2D sample points.
-/// Each call advances by one 2D point, without waste.
-pub trait SampleStream: Send + Sync {
-    /// Returns the next 2D sample point as (u, v) in [0, 1)^2.
-    fn next_2d(&mut self) -> (f64, f64);
-}
-
-/// Stateful source of independent random numbers in [0, 1).
-pub trait SamplerRng: Send + Sync {
-    fn next(&mut self) -> f64;
-}
-
 const MAX_DIMS: usize = 21200;
 
 include!(concat!(env!("OUT_DIR"), "/sobol_dirs.rs"));
@@ -62,6 +42,25 @@ pub(crate) fn hash_sample(n: u32, d: u32, seed: u64) -> f64 {
             .wrapping_add(d as u64),
     );
     ((h >> 11) as f64) * INV_53
+}
+
+/// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
+///
+/// Same `(n, d)` always returns the same value — deterministic across threads.
+pub(crate) trait QmcSampler: Send + Sync {
+    fn sample(&self, n: u32, d: u32) -> f64;
+}
+
+/// Stateful stream of correlated 2D sample points.
+/// Each call advances by one 2D point, without waste.
+pub trait SampleStream: Send + Sync {
+    /// Returns the next 2D sample point as (u, v) in [0, 1)^2.
+    fn next_2d(&mut self) -> (f64, f64);
+}
+
+/// Stateful source of independent random numbers in [0, 1).
+pub trait SamplerRng: Send + Sync {
+    fn next(&mut self) -> f64;
 }
 
 /// Sobol' quasi-random sampler — stateless, uses direct Gray-code

@@ -17,9 +17,12 @@ use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Vec3};
 
-use super::GPU_NONE;
 use super::gpu::GpuSerializable;
-use super::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind};
+use super::GPU_NONE;
+use super::{
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    MAX_BSDF_STRATS,
+};
 
 /// Isotropic scattering medium (volumes).
 #[derive(Clone)]
@@ -40,9 +43,9 @@ impl Bsdf for IsotropicMaterial {
         _si: &SurfaceInteraction,
         _next_dim: &mut dyn FnMut() -> f64,
     ) -> Option<BsdfScatter> {
-        Some(BsdfScatter::NonDelta {
-            pdf_kinds: [Some(PdfKind::UniformSphere), None],
-        })
+        let mut pk = [None; MAX_BSDF_STRATS];
+        pk[0] = Some(PdfKind::UniformSphere);
+        Some(BsdfScatter::NonDelta { pdf_kinds: pk })
     }
 
     /// Isotropic phase function: `albedo / (4π)`. Returns the attenuation

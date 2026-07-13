@@ -10,8 +10,10 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::vec3::{Color3, Vec3};
 
-use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
-use crate::material::{GPU_NONE, PdfKind};
+use crate::material::{
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE,
+    MAX_BSDF_STRATS,
+};
 
 use super::gpu::GpuSerializable;
 
@@ -33,12 +35,44 @@ impl Bsdf for MixMaterial {
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f64,
     ) -> Option<BsdfScatter> {
+        let a_delta = self.a.is_delta();
+        let b_delta = self.b.is_delta();
+
+        if a_delta != b_delta {
+            // Exactly one delta child → path splitting
+            let delta = if a_delta { &self.a } else { &self.b };
+            let d_weight = if a_delta {
+                1.0 - self.weight
+            } else {
+                self.weight
+            };
+            let non_delta = if a_delta { &self.b } else { &self.a };
+
+            let delta_result = delta.scatter(wo, si, next_dim)?;
+            let BsdfScatter::Delta { wi, f_cos, eta } = delta_result else {
+                unreachable!()
+            };
+            let pk = non_delta.pdf_kind(wo, si);
+
+            return Some(BsdfScatter::Split {
+                delta_wi: wi,
+                delta_f_cos: f_cos * d_weight,
+                delta_eta: eta,
+                non_delta_pdf_kinds: {
+                    let mut arr = [None; MAX_BSDF_STRATS];
+                    arr[0] = pk;
+                    arr
+                },
+            });
+        }
+
         let sel = next_dim();
         let (chosen, selection_prob) = if sel < self.weight {
             (self.b.as_ref() as &dyn Bsdf, self.weight)
         } else {
             (self.a.as_ref() as &dyn Bsdf, 1.0 - self.weight)
         };
+
         // Pass a fresh `next_dim` wrapper to the child so it can consume as many
         // dimensions as it needs (replaces the old fixed-field SampleDims).
         let mut child_next_dim = || -> f64 { next_dim() };
@@ -59,11 +93,31 @@ impl Bsdf for MixMaterial {
                     self.b.as_ref()
                 };
                 if let Some(other_kind) = other.pdf_kind(wo, si) {
-                    // Fill the first empty slot.
-                    if pdf_kinds[0].is_none() {
-                        pdf_kinds[0] = Some(other_kind);
-                    } else if pdf_kinds[1].is_none() {
-                        pdf_kinds[1] = Some(other_kind);
+                    for slot in pdf_kinds.iter_mut() {
+                        if slot.is_none() {
+                            *slot = Some(other_kind);
+                            break;
+                        }
+                    }
+                }
+            }
+            BsdfScatter::Split {
+                delta_f_cos,
+                non_delta_pdf_kinds,
+                ..
+            } => {
+                *delta_f_cos /= selection_prob;
+                let other = if sel < self.weight {
+                    self.a.as_ref()
+                } else {
+                    self.b.as_ref()
+                };
+                if let Some(other_kind) = other.pdf_kind(wo, si) {
+                    for slot in non_delta_pdf_kinds.iter_mut() {
+                        if slot.is_none() {
+                            *slot = Some(other_kind);
+                            break;
+                        }
                     }
                 }
             }

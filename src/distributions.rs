@@ -1,3 +1,30 @@
+// ================================================================
+// § Sample1D — sum type for continuous vs discrete sampling results
+//
+// Reference: luxrays/mcdistribution.h lines 105-135
+// ================================================================
+
+/// Result of sampling a 1D distribution.
+///
+/// Explicitly distinguishes continuous from discrete sampling,
+/// eliminating the out-parameter pattern.
+#[derive(Clone, Copy, Debug)]
+pub enum Sample1D {
+    /// Continuous sample at position `x` ∈ [0, 1), its PDF, and the bucket index.
+    Continuous { x: f64, pdf: f64, offset: usize },
+    /// Discrete bucket at `index`, its PDF, and fractional remainder within the bucket.
+    Discrete { index: usize, pdf: f64, du: f64 },
+}
+
+impl Sample1D {
+    /// Extract the PDF value regardless of variant.
+    pub fn pdf(&self) -> f64 {
+        match self {
+            Sample1D::Continuous { pdf, .. } | Sample1D::Discrete { pdf, .. } => *pdf,
+        }
+    }
+}
+
 /// 1D piecewise-constant distribution with CDF-based sampling.
 /// Used internally by Dist2D for the marginal and conditional distributions.
 pub struct Dist1D {
@@ -65,6 +92,65 @@ impl Dist1D {
     /// Number of bins in the distribution.
     pub fn count(&self) -> usize {
         self.funcs.len()
+    }
+
+    /// Sample a discrete bucket, returning a `Sample1D::Discrete`.
+    pub fn sample_discrete(&self, u: f64) -> Sample1D {
+        let (index, pdf) = self.sample(u);
+        Sample1D::Discrete {
+            index,
+            pdf,
+            du: 0.0,
+        }
+    }
+
+    /// Sample a continuous position in [0, 1), returning a `Sample1D::Continuous`.
+    ///
+    /// Uses the same CDF as [`sample()`](Self::sample) but returns the
+    /// interpolated continuous position within the bucket.
+    pub fn sample_continuous(&self, u: f64) -> Sample1D {
+        let n = self.count();
+        if u <= 0.0 {
+            return Sample1D::Continuous {
+                x: 0.0,
+                pdf: self.pdf(0),
+                offset: 0,
+            };
+        }
+        if u >= 1.0 - 1e-15 {
+            return Sample1D::Continuous {
+                x: 1.0 - 1e-15,
+                pdf: self.pdf(n - 1),
+                offset: n - 1,
+            };
+        }
+        let pos = self
+            .cdfs
+            .binary_search_by(|&val| {
+                if val <= u {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                }
+            })
+            .unwrap_or_else(|idx| idx - 1)
+            .min(n - 1);
+        let du = if self.cdfs[pos + 1] > self.cdfs[pos] {
+            ((u - self.cdfs[pos]) / (self.cdfs[pos + 1] - self.cdfs[pos])).min(1.0 - 1e-15)
+        } else {
+            0.0
+        };
+        let x = ((pos as f64 + du) / n as f64).min(1.0 - 1e-15);
+        let pdf = if self.total == 0.0 {
+            1.0
+        } else {
+            (self.funcs[pos] * n as f64) / self.total
+        };
+        Sample1D::Continuous {
+            x,
+            pdf,
+            offset: pos,
+        }
     }
 }
 

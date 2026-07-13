@@ -26,12 +26,13 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3, reflect};
+use crate::vec3::{reflect, Color3, Vec3};
 
-use super::GPU_NONE;
 use super::gpu::GpuSerializable;
+use super::GPU_NONE;
 use super::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, ggx_sample_h,
+    ggx_sample_h, Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    MAX_BSDF_STRATS,
 };
 
 use super::{fresnel_schlick, geometry_schlick_ggx, ggx_d};
@@ -104,16 +105,13 @@ impl Bsdf for MetalMaterial {
             return None;
         }
 
-        Some(BsdfScatter::NonDelta {
-            pdf_kinds: [
-                Some(PdfKind::Ggx {
-                    wo,
-                    normal: si.shading_normal(),
-                    alpha,
-                }),
-                None,
-            ],
-        })
+        let mut pk = [None; MAX_BSDF_STRATS];
+        pk[0] = Some(PdfKind::Ggx {
+            wo,
+            normal: si.shading_normal(),
+            alpha,
+        });
+        Some(BsdfScatter::NonDelta { pdf_kinds: pk })
     }
 
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.

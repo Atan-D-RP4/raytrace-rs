@@ -13,11 +13,11 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    fresnel_r0, fresnel_schlick, ggx_sample_h, reflect, refract,
+    fresnel_r0, fresnel_schlick, ggx_sample_h, Bsdf, BsdfScatter, GpuMaterialBuffer,
+    GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE, MAX_BSDF_STRATS,
 };
 use crate::onb::Onb;
-use crate::vec3::{Color3, Vec3};
+use crate::vec3::{reflect, refract, Color3, Vec3};
 
 /// Maximum number of internal bounces for a Coated material. Each bounce
 /// gets a fresh dimension from `next_dim()` for the internal Fresnel split.
@@ -432,21 +432,57 @@ impl Bsdf for CoatedMaterial {
                     // narrow GGX eval peak leak through with a mismatched PDF, producing
                     // fireflies.
                     if let Some(alpha) = self.coating.ggx_alpha() {
-                        return Some(BsdfScatter::NonDelta {
-                            pdf_kinds: [
-                                Some(PdfKind::Cosine { normal: n }),
-                                Some(PdfKind::Ggx {
-                                    wo: wo_global,
-                                    normal: n,
-                                    alpha,
-                                }),
-                            ],
+                        let mut pk = [None; MAX_BSDF_STRATS];
+                        pk[0] = Some(PdfKind::Cosine { normal: n });
+                        pk[1] = Some(PdfKind::Ggx {
+                            wo: wo_global,
+                            normal: n,
+                            alpha,
                         });
+                        return Some(BsdfScatter::NonDelta { pdf_kinds: pk });
                     }
 
-                    return Some(BsdfScatter::NonDelta {
-                        pdf_kinds: [Some(PdfKind::Cosine { normal: n }), None],
-                    });
+                    let mut pk = [None; MAX_BSDF_STRATS];
+                    pk[0] = Some(PdfKind::Cosine { normal: n });
+                    return Some(BsdfScatter::NonDelta { pdf_kinds: pk });
+                }
+
+                BsdfScatter::Split {
+                    delta_wi,
+                    delta_f_cos,
+                    delta_eta,
+                    ..
+                } => {
+                    // Handle the delta component as above
+                    match self.scatter_delta_substrate(DeltaSubstrateParams {
+                        coating_tint,
+                        wi_internal: delta_wi,
+                        f_cos_internal: delta_f_cos,
+                        n,
+                        throughput,
+                        eta: delta_eta,
+                        internal_dim,
+                    }) {
+                        ScatterInternalResult::Exited {
+                            wi: exit_wi,
+                            f_cos: exit_f_cos,
+                            eta: exit_eta,
+                        } => {
+                            return Some(BsdfScatter::Delta {
+                                wi: exit_wi,
+                                f_cos: exit_f_cos,
+                                eta: exit_eta,
+                            });
+                        }
+                        ScatterInternalResult::InternalReflection {
+                            wi: new_wi,
+                            throughput: new_throughput,
+                        } => {
+                            wi = new_wi;
+                            throughput = new_throughput;
+                            continue;
+                        }
+                    }
                 }
             }
         }
