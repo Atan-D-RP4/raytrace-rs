@@ -76,16 +76,12 @@ impl Ray {
         origin + direction * t
     }
 
-    /// World-space footprint of one pixel (dpdx) at a surface hit, using the
-    /// tangent-plane projection (Igehy 1999 / pbrt `ComputeDifferentials`):
-    /// intersect the offset ray with the tangent plane at the hit point rather
-    /// than evaluating it at the primary ray's own hit distance. This accounts
-    /// for surface foreshortening, which the `t_hit`-scaled estimate cannot.
+    /// World-space pixel footprint (dpdx) using tangent-plane projection (Igehy 2000 / pbrt ComputeDifferentials):
+    /// intersect offset ray with tangent plane at hit point to account for surface foreshortening that
+    /// t_hit-scaled estimates miss.
     ///
-    /// Falls back to the bounded `t_hit` estimate when the offset ray is nearly
-    /// parallel to the tangent plane (grazing angles on curved surfaces), where
-    /// the tangent-plane intersection is ill-conditioned and would blow up to
-    /// infinity — producing extreme LOD and warping at the limb.
+    /// Fallback to bounded t_hit estimate when offset ray is nearly parallel to tangent plane (denom < 1e-4),
+    /// preventing extreme LOD and warping at grazing angles where intersection becomes ill-conditioned.
     pub(crate) fn differential_footprint(
         rx_origin: Point3,
         rx_direction: Vec3,

@@ -3,7 +3,7 @@ pub mod perspective;
 pub use perspective::PerspectiveCamera;
 
 use crate::ray::Ray;
-use crate::sampler::{SampleStream, SamplerRng};
+use crate::sampler::SamplingSession;
 use crate::vec3::Color3;
 
 pub struct CameraSampler {
@@ -26,23 +26,23 @@ impl CameraSampler {
             time: time.clamp(0.0, 1.0),
         }
     }
+}
 
-    /// Samples all camera parameters from a stream and RNG.
-    ///
-    /// Consumes 2 stream pairs (4 values via `stream.next_2d()` twice: jitter xy and lens xy) + 1 from rng (time).
-    pub fn new_sampled<S: SampleStream, R: SamplerRng>(
-        pixel: (u32, u32),
-        stream: &mut S,
-        rng: &mut R,
-    ) -> Self {
-        let (jx, jy) = stream.next_2d();
-        let (lx, ly) = stream.next_2d();
-        Self {
-            pixel,
-            jitter: (jx, jy),
-            lens: (lx, ly),
-            time: rng.next().clamp(0.0, 1.0),
-        }
+/// Generic camera sample construction — pbrt-v4 style.
+///
+/// Draws pixel AA jitter, lens position, and time from a `SamplingSession`.
+/// Consumes: 1× next_pixel_2d, 1× next_2d, 1× next_1d.
+pub fn get_camera_sample<Sess: SamplingSession>(
+    pixel: (u32, u32),
+    session: &mut Sess,
+) -> CameraSampler {
+    let (jx, jy) = session.next_pixel_2d();
+    let (lx, ly) = session.next_2d();
+    CameraSampler {
+        pixel,
+        jitter: (jx, jy),
+        lens: (lx, ly),
+        time: session.next_1d().clamp(0.0, 1.0),
     }
 }
 

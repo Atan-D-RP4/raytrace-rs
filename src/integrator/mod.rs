@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use crate::hittable::{Intersectable, Sampleable};
 use crate::ray::Ray;
-pub use crate::sampler::{SampleStream, SamplerRng};
+pub use crate::sampler::Sampler;
+
 use crate::vec3::Color3;
 
-pub trait Integrator<S: SampleStream, R: SamplerRng>: Send + Sync {
+pub trait Integrator<S: Sampler>: Send + Sync {
     /// Default background radiance for a ray that missed all geometry.
     fn background(&self, direction: Vec3) -> Color3 {
         match self.env_map() {
@@ -34,8 +35,7 @@ pub trait Integrator<S: SampleStream, R: SamplerRng>: Send + Sync {
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
         lights: &[Arc<dyn Sampleable>],
-        stream: &mut S,
-        rng: &mut R,
+        session: &mut S::Session<'_>,
     ) -> Color3;
 }
 
@@ -47,8 +47,11 @@ mod tests {
     use crate::flat_bvh::FlatBvh;
     use crate::material::Material;
     use crate::planar::quad;
-    use crate::sampler::NaiveRandomSampler;
+    use crate::sampler::{NaiveRandomSampler, Point2i, Sampler, StreamRngPair};
     use crate::vec3::{Point3, Vec3};
+
+    /// Type shortcut for the concrete sampler used in tests.
+    type TestSampler = StreamRngPair<NaiveRandomSampler, NaiveRandomSampler>;
 
     /// Minimal integration test: render a 4×4 image of a lit Cornell-box-like
     /// scene and verify the output is non-zero and finite.
@@ -83,8 +86,11 @@ mod tests {
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::new(0.0, 0.0, 0.0), None);
-        let mut stream = NaiveRandomSampler::with_seed(42);
-        let mut rng = NaiveRandomSampler::with_seed(43);
+        let mut sampler = StreamRngPair::new(
+            NaiveRandomSampler::with_seed(42),
+            NaiveRandomSampler::with_seed(43),
+            1,
+        );
         let mut film = RgbFilm::new((4, 4), 1.0, false);
 
         // Trace a few rays from a fixed origin.
@@ -96,7 +102,20 @@ mod tests {
                 let direction = Vec3::new(u - 0.5, v - 0.5, -1.0).unit_vector();
                 let mut ray = Ray::new_with_time(Vec3::new(0., 0., 4.), direction, 0.0);
 
-                let color = integrator.li(&mut ray, &world, &lights, &mut stream, &mut rng);
+                let mut session = sampler.begin_pixel(
+                    Point2i {
+                        x: x as i32,
+                        y: y as i32,
+                    },
+                    0,
+                );
+                let color = <PathTracingIntegrator as Integrator<TestSampler>>::li(
+                    &integrator,
+                    &mut ray,
+                    &world,
+                    &lights,
+                    &mut session,
+                );
                 film.add_sample(x, y, color);
             }
         }
@@ -147,12 +166,22 @@ mod tests {
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::ZERO, None);
-        let mut stream = NaiveRandomSampler::with_seed(42);
-        let mut rng = NaiveRandomSampler::with_seed(43);
+        let mut sampler = StreamRngPair::new(
+            NaiveRandomSampler::with_seed(42),
+            NaiveRandomSampler::with_seed(43),
+            1,
+        );
 
         let dir = Vec3::new(0.0, -1.0, -1.0).unit_vector();
         let mut ray = Ray::new_with_time(Vec3::new(0., 1.5, 4.), dir, 0.0);
-        let color = integrator.li(&mut ray, &world, &lights, &mut stream, &mut rng);
+        let mut session = sampler.begin_pixel(Point2i { x: 0, y: 0 }, 0);
+        let color = <PathTracingIntegrator as Integrator<TestSampler>>::li(
+            &integrator,
+            &mut ray,
+            &world,
+            &lights,
+            &mut session,
+        );
         assert!(color.x.is_finite() && color.y.is_finite() && color.z.is_finite());
     }
 }

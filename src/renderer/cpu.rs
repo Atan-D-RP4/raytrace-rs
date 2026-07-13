@@ -3,21 +3,18 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use tracing::info;
 
-use crate::camera::{Camera, CameraSampler};
+use crate::camera::{Camera, get_camera_sample};
 use crate::film::{Film, FilmTile, SharedFramebuffer, rgb::FILTER_RADIUS};
 use crate::hittable::{Intersectable, Sampleable};
 use crate::integrator::Integrator;
 use crate::renderer::Renderer;
-use crate::sampler::{RngFactory, SampleStreamFactory};
+use crate::sampler::{self, Sampler};
 use crate::vec3::Color3;
 
-pub struct CpuRenderer<I, S, R, SF, RF>
+pub struct CpuRenderer<I, S>
 where
-    I: Integrator<S, R>,
-    S: crate::sampler::SampleStream + Send + Sync,
-    R: crate::sampler::SamplerRng,
-    SF: SampleStreamFactory<SampleStream = S>,
-    RF: RngFactory<Rng = R>,
+    I: Integrator<S>,
+    S: Sampler + Sync,
 {
     /// Number of samples to take per pixel. Higher values yield better quality but take longer.
     samples_per_pixel: u32,
@@ -32,36 +29,25 @@ where
     /// Minimum number of samples to take before considering adaptive sampling.
     /// Ensures we have enough data to make a reliable variance estimate.
     min_samples_before_adapt: u32,
-    /// The integrator used to compute radiance along rays. This is a generic parameter
-    /// that allows different integration strategies (e.g., path tracing, direct lighting).
+    /// The integrator used to compute radiance along rays.
     integrator: I,
-    /// Factory for creating per-pixel sample streams (QMC/Sobol).
-    stream_factory: SF,
-    /// Factory for creating per-pixel RNG instances (hash-based).
-    rng_factory: RF,
-    _phantom_s: std::marker::PhantomData<S>,
-    _phantom_r: std::marker::PhantomData<R>,
+    /// Prototype sampler — cloned once per rayon thread via `ThreadLocal`.
+    sampler_prototype: S,
 }
 
-impl<I, S, R, SF, RF> CpuRenderer<I, S, R, SF, RF>
+impl<I, S> CpuRenderer<I, S>
 where
-    I: Integrator<S, R>,
-    S: crate::sampler::SampleStream + Send + Sync,
-    R: crate::sampler::SamplerRng,
-    SF: SampleStreamFactory<SampleStream = S>,
-    RF: RngFactory<Rng = R>,
+    I: Integrator<S>,
+    S: Sampler + Sync,
 {
-    pub fn new(samples_per_pixel: u32, integrator: I, stream_factory: SF, rng_factory: RF) -> Self {
+    pub fn new(samples_per_pixel: u32, integrator: I, sampler_prototype: S) -> Self {
         Self {
             samples_per_pixel,
             threshold_abs: 1e-4,
             threshold_rel: 0.02,
             min_samples_before_adapt: 64,
             integrator,
-            stream_factory,
-            rng_factory,
-            _phantom_s: std::marker::PhantomData,
-            _phantom_r: std::marker::PhantomData,
+            sampler_prototype,
         }
     }
 
@@ -78,16 +64,13 @@ where
     }
 }
 
-impl<W, I, C, F, S, R, SF, RF> Renderer<W, C, F> for CpuRenderer<I, S, R, SF, RF>
+impl<W, I, C, F, S> Renderer<W, C, F> for CpuRenderer<I, S>
 where
     W: Intersectable,
-    I: Integrator<S, R>,
+    I: Integrator<S>,
     C: Camera,
     F: Film,
-    S: crate::sampler::SampleStream + Send + Sync,
-    R: crate::sampler::SamplerRng,
-    SF: SampleStreamFactory<SampleStream = S>,
-    RF: RngFactory<Rng = R>,
+    S: Sampler + Sync,
 {
     fn render(
         &self,
@@ -210,6 +193,13 @@ where
                 }
             }
 
+            // Per-thread sampler instances — clone-once reuse via thread index.
+            // This replaces the old per-pixel `for_pixel()` factory allocation.
+            let num_threads = rayon::current_num_threads();
+            let samplers: Vec<std::sync::Mutex<S>> = (0..num_threads)
+                .map(|_| std::sync::Mutex::new(self.sampler_prototype.clone()))
+                .collect();
+
             // Parallelly Iterate over tiles — each thread produces its own FilmTile,
             // then we merge sequentially to avoid contention on the film.
             tile_pool
@@ -219,6 +209,10 @@ where
                     // Bounds were set at pool creation time; read them from the tile.
                     let [x_start, x_end, y_start, y_end] = tile.bounds;
 
+                    let thread_idx = rayon::current_thread_index()
+                        .expect("tile processing always runs inside rayon thread pool");
+                    let mut sampler_guard = samplers[thread_idx].lock().unwrap();
+
                     for (y, x) in
                         (y_start..y_end).flat_map(|y| (x_start..x_end).map(move |x| (y, x)))
                     {
@@ -226,34 +220,35 @@ where
                             continue; // Skip pixels that have already converged
                         }
 
-                        // Create stream and rng from factories — decoupled from renderer internals
-                        let mut stream = self
-                            .stream_factory
-                            .for_pixel(x as i32, y as i32, sample_idx);
-                        let mut rng = self.rng_factory.for_pixel(x as i32, y as i32, sample_idx);
+                        // Start a new pixel-session — reinitialises per-pixel state
+                        // (Sobol seed) from `(x, y, sample_idx)`.
+                        let mut session = sampler_guard.begin_pixel(
+                            sampler::Point2i {
+                                x: x as i32,
+                                y: y as i32,
+                            },
+                            sample_idx,
+                        );
 
-                        // Generate a camera sample for the pixel from stream (AA jitter, lens) + rng (time)
-                        let camera_sampler =
-                            CameraSampler::new_sampled((x, y), &mut stream, &mut rng);
+                        // Generate a camera sample from session (AA jitter, lens, time)
+                        let camera_sampler = get_camera_sample((x, y), &mut session);
 
                         let cam_ray = camera
                             .generate_ray_differential(&camera_sampler)
                             .or_else(|| camera.generate_ray(&camera_sampler));
                         if let Some(mut cam_ray) = cam_ray {
-                            let radiance = self.integrator.li(
-                                &mut cam_ray.ray,
-                                world,
-                                lights,
-                                &mut stream,
-                                &mut rng,
-                            );
+                            let radiance =
+                                self.integrator
+                                    .li(&mut cam_ray.ray, world, lights, &mut session);
                             let sample = radiance * cam_ray.weight;
                             // Guard against NaN/Inf poisoning the accumulation buffer.
                             if sample.is_finite() {
                                 tile.add_sample(x, y, sample);
                             }
                         }
+                        // `session` dropped here — releases the per-pixel borrow
                     }
+                    // `sampler_guard` dropped here — releases the per-thread lock
                 });
 
             // Merge only dirty tiles — skip fully-converged tiles (no new samples).

@@ -7,13 +7,13 @@
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
 ///
 /// Same `(n, d)` always returns the same value — deterministic across threads.
-pub(crate) trait Sampler: Send + Sync {
+pub(crate) trait QmcSampler: Send + Sync {
     fn sample(&self, n: u32, d: u32) -> f64;
 }
 
 /// Stateful stream of correlated 2D sample points.
 /// Each call advances by one 2D point, without waste.
-pub trait SampleStream {
+pub trait SampleStream: Send + Sync {
     /// Returns the next 2D sample point as (u, v) in [0, 1)^2.
     fn next_2d(&mut self) -> (f64, f64);
 }
@@ -67,6 +67,7 @@ pub(crate) fn hash_sample(n: u32, d: u32, seed: u64) -> f64 {
 /// Sobol' quasi-random sampler — stateless, uses direct Gray-code
 /// computation so `sample(n, d)` is fully deterministic and independent
 /// of prior sample history.
+#[derive(Clone)]
 pub struct SobolQmcSampler {
     seed: u64,
 }
@@ -93,7 +94,7 @@ impl Default for SobolQmcSampler {
     }
 }
 
-impl Sampler for SobolQmcSampler {
+impl QmcSampler for SobolQmcSampler {
     #[inline(always)]
     fn sample(&self, n: u32, d: u32) -> f64 {
         if d < MAX_DIMS as u32 {
@@ -118,6 +119,7 @@ impl Sampler for SobolQmcSampler {
 }
 
 /// Hash-based random sampler — SplitMix of (n, d, seed).
+#[derive(Clone)]
 pub struct NaiveRandomSampler {
     seed: u64,
 }
@@ -141,7 +143,7 @@ impl Default for NaiveRandomSampler {
     }
 }
 
-impl Sampler for NaiveRandomSampler {
+impl QmcSampler for NaiveRandomSampler {
     #[inline(always)]
     fn sample(&self, n: u32, d: u32) -> f64 {
         hash_sample(n, d, self.seed)
@@ -169,6 +171,7 @@ impl SamplerRng for NaiveRandomSampler {
 }
 
 /// Stratified (jittered) grid for dims 0-1, SplitMix fallback for rest.
+#[derive(Clone)]
 pub struct StratifiedRandomSampler {
     seed: u64,
     sqrt_spp: u32,
@@ -183,7 +186,7 @@ impl StratifiedRandomSampler {
     }
 }
 
-impl Sampler for StratifiedRandomSampler {
+impl QmcSampler for StratifiedRandomSampler {
     #[inline(always)]
     fn sample(&self, n: u32, d: u32) -> f64 {
         if d < 2 {
@@ -252,6 +255,7 @@ impl RngFactory for HashRngFactory {
 /// Stateful Sobol stream — wraps a stateless `SobolQmcSampler` and advances
 /// through 2D dimension pairs. Each `next_2d()` call returns the next
 /// correlated (u, v) pair from sequential Sobol dimensions.
+#[derive(Clone)]
 pub struct SampleStreamWriter {
     sampler: SobolQmcSampler,
     sample_idx: u32,
@@ -285,6 +289,7 @@ impl SampleStream for SampleStreamWriter {
 
 /// Hash-based independent random number generator.
 /// Each call produces an independent value via SplitMix64.
+#[derive(Clone)]
 pub struct HashRng {
     seed: u64,
     counter: u32,
@@ -308,6 +313,232 @@ impl SamplerRng for HashRng {
         let v = hash_sample(self.counter, 0, self.seed);
         self.counter += 1;
         v
+    }
+}
+
+// ── New Sampler API: unified per-thread sampler with GAT session ──────────
+
+/// 2D integer point for pixel coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct Point2i {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// A thread-local sampler that can enter per-pixel sampling sessions.
+///
+/// Replaces the old two-trait + two-factory approach (`SampleStream + SamplerRng`
+/// + `SampleStreamFactory + RngFactory`) with a single unified trait.
+///
+/// Each thread owns one `Sampler` clone.  For every pixel, the renderer calls
+/// [`begin_pixel()`](Self::begin_pixel) which returns a [`SamplingSession`] —
+/// a per-pixel borrowing of the sampler's internal state.  The borrow-checker
+/// guarantees that a session cannot outlive a single pixel, preventing
+/// cross-pixel sample corruption at compile time.
+pub trait Sampler: Clone + Send + 'static {
+    /// Per-pixel session that borrows this sampler.
+    type Session<'s>: SamplingSession
+    where
+        Self: 's;
+
+    /// Number of samples taken per pixel.
+    fn samples_per_pixel(&self) -> u32;
+
+    /// Begin sampling a new pixel at `(p.x, p.y)` for the given `sample_index`.
+    ///
+    /// The returned session borrows the sampler mutably for one pixel-sample.
+    /// Once the session is dropped, the sampler is free for the next pixel.
+    fn begin_pixel<'s>(&'s mut self, p: Point2i, sample_index: u32) -> Self::Session<'s>;
+}
+
+/// Per-pixel sampling session providing both correlated 2D and independent 1D samples.
+///
+/// - [`next_2d()`](Self::next_2d) → correlated pair (Sobol / stratified), used for
+///   lobe direction, NEE direction, etc.
+/// - [`next_1d()`](Self::next_1d) → independent scalar, used for strategy selection,
+///   Russian roulette, time samples, etc.
+/// - [`next_pixel_2d()`](Self::next_pixel_2d) → pixel-filter jitter (may be same as
+///   `next_2d` for QMC samplers, separate for stratified samplers).
+pub trait SamplingSession {
+    fn next_2d(&mut self) -> (f64, f64);
+    fn next_1d(&mut self) -> f64;
+    fn next_pixel_2d(&mut self) -> (f64, f64);
+}
+
+/// Thread-local storage for samplers — one clone per Rayon worker thread.
+///
+/// Each thread accesses its own slot through an uncontended `Mutex`,
+/// so there is no cross-thread lock contention.
+pub struct ThreadLocal<T: Send> {
+    items: Vec<std::sync::Mutex<T>>,
+}
+
+impl<T: Send> ThreadLocal<T> {
+    pub fn new(prototype: T, count: usize) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            items: (0..count)
+                .map(|_| std::sync::Mutex::new(prototype.clone()))
+                .collect(),
+        }
+    }
+
+    /// Returns a mutable guard to this thread's sampler.
+    ///
+    /// # Panics
+    /// Panics if called outside a Rayon thread pool, or if the thread index
+    /// exceeds the pre-allocated count.
+    pub fn get(&self) -> std::sync::MutexGuard<'_, T> {
+        let idx = rayon::current_thread_index()
+            .expect("ThreadLocal::get must be called from within a Rayon thread pool");
+        self.items[idx].lock().unwrap()
+    }
+}
+
+// ── Production sampler: Sobol (correlated) + Hash (independent) ──────────
+
+/// Production sampler pairing a `SampleStreamWriter` (Sobol QMC) with `HashRng`
+/// (SplitMix64).  `begin_pixel` re-initialises both streams from pixel
+/// coordinates so each pixel starts from dimension 0.
+#[derive(Clone)]
+pub struct SobolSampler {
+    stream: SampleStreamWriter,
+    rng: HashRng,
+    samples_per_pixel: u32,
+}
+
+impl SobolSampler {
+    pub fn new(samples_per_pixel: u32) -> Self {
+        Self {
+            stream: SampleStreamWriter::new(SobolQmcSampler::with_seed(0), 0),
+            rng: HashRng::new(0),
+            samples_per_pixel,
+        }
+    }
+}
+
+impl Sampler for SobolSampler {
+    type Session<'s>
+        = SobolSession<'s>
+    where
+        Self: 's;
+
+    fn samples_per_pixel(&self) -> u32 {
+        self.samples_per_pixel
+    }
+
+    fn begin_pixel<'s>(&'s mut self, p: Point2i, sample_index: u32) -> SobolSession<'s> {
+        self.stream = SampleStreamWriter::for_pixel(p.x, p.y, sample_index);
+        self.rng = HashRng::for_pixel(p.x, p.y, sample_index);
+        SobolSession {
+            stream: &mut self.stream,
+            rng: &mut self.rng,
+        }
+    }
+}
+
+/// Session produced by [`SobolSampler`].
+pub struct SobolSession<'s> {
+    stream: &'s mut SampleStreamWriter,
+    rng: &'s mut HashRng,
+}
+
+impl SamplingSession for SobolSession<'_> {
+    #[inline(always)]
+    fn next_2d(&mut self) -> (f64, f64) {
+        self.stream.next_2d()
+    }
+
+    #[inline(always)]
+    fn next_1d(&mut self) -> f64 {
+        self.rng.next()
+    }
+
+    #[inline(always)]
+    fn next_pixel_2d(&mut self) -> (f64, f64) {
+        self.stream.next_2d()
+    }
+}
+
+// ── Generic adapter: pair any SampleStream with any SamplerRng ────────────
+
+/// Generic adapter wrapping an existing `(SampleStream, SamplerRng)` pair.
+///
+/// Useful for custom combinations or testing.  `begin_pixel` does **not**
+/// re-initialise the stream/RNG — the caller is responsible for providing a
+/// pair whose state resets correctly, or for creating a fresh pair per pixel.
+pub struct StreamRngPair<S: SampleStream, R: SamplerRng> {
+    pub stream: S,
+    pub rng: R,
+    samples_per_pixel: u32,
+}
+
+impl<S: SampleStream + Clone, R: SamplerRng + Clone> Clone for StreamRngPair<S, R> {
+    fn clone(&self) -> Self {
+        Self {
+            stream: self.stream.clone(),
+            rng: self.rng.clone(),
+            samples_per_pixel: self.samples_per_pixel,
+        }
+    }
+}
+
+impl<S: SampleStream, R: SamplerRng> StreamRngPair<S, R> {
+    pub fn new(stream: S, rng: R, samples_per_pixel: u32) -> Self {
+        Self {
+            stream,
+            rng,
+            samples_per_pixel,
+        }
+    }
+}
+
+impl<S: SampleStream + Clone + 'static, R: SamplerRng + Clone + 'static> Sampler
+    for StreamRngPair<S, R>
+{
+    type Session<'s>
+        = StreamRngSession<'s, S, R>
+    where
+        Self: 's;
+
+    fn samples_per_pixel(&self) -> u32 {
+        self.samples_per_pixel
+    }
+
+    fn begin_pixel<'s>(
+        &'s mut self,
+        _p: Point2i,
+        _sample_index: u32,
+    ) -> StreamRngSession<'s, S, R> {
+        StreamRngSession {
+            stream: &mut self.stream,
+            rng: &mut self.rng,
+        }
+    }
+}
+
+/// Session produced by [`StreamRngPair`].
+pub struct StreamRngSession<'s, S: SampleStream, R: SamplerRng> {
+    stream: &'s mut S,
+    rng: &'s mut R,
+}
+
+impl<S: SampleStream, R: SamplerRng> SamplingSession for StreamRngSession<'_, S, R> {
+    #[inline(always)]
+    fn next_2d(&mut self) -> (f64, f64) {
+        self.stream.next_2d()
+    }
+
+    #[inline(always)]
+    fn next_1d(&mut self) -> f64 {
+        self.rng.next()
+    }
+
+    #[inline(always)]
+    fn next_pixel_2d(&mut self) -> (f64, f64) {
+        self.stream.next_2d()
     }
 }
 

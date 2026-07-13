@@ -20,7 +20,7 @@ use raytrace_rs::flat_bvh::FlatBvh;
 use raytrace_rs::integrator::PathTracingIntegrator;
 use raytrace_rs::renderer::CpuRenderer;
 use raytrace_rs::renderer::Renderer;
-use raytrace_rs::sampler::{HashRngFactory, SobolStreamFactory};
+use raytrace_rs::sampler::SobolSampler;
 use raytrace_rs::scene::Scene;
 
 struct WindowState {
@@ -435,14 +435,8 @@ fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, 
         config.background,
         scene.env_map().cloned(),
     );
-    let stream_factory = SobolStreamFactory;
-    let rng_factory = HashRngFactory;
-    let mut renderer = CpuRenderer::new(
-        config.samples_per_pixel as u32,
-        integrator,
-        stream_factory,
-        rng_factory,
-    );
+    let sampler = SobolSampler::new(config.samples_per_pixel as u32);
+    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler);
     let (width, height) = camera.image_resolution();
     let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new_with(width, height)));
 
@@ -543,14 +537,8 @@ fn headless_render(scene: Scene, scene_name: &str) {
         config.background,
         scene.env_map().cloned(),
     );
-    let stream_factory = SobolStreamFactory;
-    let rng_factory = HashRngFactory;
-    let mut renderer = CpuRenderer::new(
-        config.samples_per_pixel as u32,
-        integrator,
-        stream_factory,
-        rng_factory,
-    );
+    let sampler = SobolSampler::new(config.samples_per_pixel as u32);
+    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler);
     let (width, height) = camera.image_resolution();
 
     renderer.set_threshold_abs(1e-7);

@@ -16,42 +16,46 @@ use crate::interval::Interval;
 use crate::material::{BsdfScatter, Material, PdfKind};
 use crate::pdf::{EmitterPDF, EnvPdf, PDF, power_heuristic};
 use crate::ray::Ray;
-use crate::sampler::{SampleStream, SamplerRng};
+use crate::sampler::{Sampler, SamplingSession};
 use crate::vec3::{Color3, Vec3};
 
 /// One-sample MIS estimator with power heuristic (β=2).
 ///
-/// Selects one strategy uniformly at random (probability 1/N), generates a
-/// direction from that strategy's PDF, then evaluates ALL N PDFs at the
+/// Selects one strategy uniformly at random (probability 1/count), generates a
+/// direction from that strategy's PDF, then evaluates ALL `count` PDFs at the
 /// sampled direction. Returns the direction and the MIS-weighted estimator:
 ///
-///   contribution = N * (p_sel² / Σp_j²) * f / p_sel
+///   contribution = count * (p_sel² / Σp_j²) * f / p_sel
 ///
 /// where p_sel is the selected strategy's PDF value and p_j are all PDF values
 /// at the sampled direction. This is provably unbiased and has lower variance
 /// than the mixture-based f/p_mix estimator.
 ///
+/// `pdfs` is a fixed-size array (`N` ≥ `count`). Only the first `count`
+/// entries are populated; the remaining `N-count` slots are ignored.
 /// `sel_idx` is the pre-selected strategy index (from `SamplerRng`).
 /// `(pdf_u, pdf_v)` are the correlated 2D samples for direction generation.
 #[inline(always)]
 fn mis_sample<const N: usize>(
     pdfs: [&dyn PDF; N],
+    count: usize,
     eval_fn: impl FnOnce(Vec3) -> crate::vec3::Color3,
     sel_idx: usize,
     pdf_u: f64,
     pdf_v: f64,
 ) -> (Vec3, Color3, f64) {
-    let n = pdfs.len();
-    debug_assert!(n > 0, "mis_sample requires at least one PDF strategy");
+    debug_assert!(count > 0, "mis_sample requires at least one PDF strategy");
+    debug_assert!(count <= N, "mis_sample count exceeds array capacity");
 
     // 1. Generate direction from selected strategy
     let direction = pdfs[sel_idx].generate(pdf_u, pdf_v).unit_vector();
 
-    // 2. Evaluate ALL PDFs at the sampled direction, compute sum of squares
+    // 2. Evaluate ALL PDFs at the sampled direction, compute sum of squares.
+    //    Only count entries are populated — remaining N-count are stale.
     let mut pdf_sum_sq = 0.0;
     let mut pdf_sum = 0.0;
     let mut pdf_vals = [0.0f64; N];
-    for (i, pdf) in pdfs.iter().enumerate() {
+    for (i, pdf) in pdfs.iter().enumerate().take(count) {
         let v = pdf.value(direction);
         pdf_vals[i] = v;
         pdf_sum_sq += v * v;
@@ -65,11 +69,11 @@ fn mis_sample<const N: usize>(
     // 4. Compute contribution: N * w_sel * f / p_sel
     let f = eval_fn(direction);
     let contribution = if p_sel > 1e-10 {
-        f * (n as f64 * mis_weight / p_sel)
+        f * (count as f64 * mis_weight / p_sel)
     } else {
         crate::vec3::Color3::ZERO
     };
-    (direction, contribution, pdf_sum / n as f64)
+    (direction, contribution, pdf_sum / count as f64)
 }
 
 /// Compute the BSDF mixture PDF value for a direction.
@@ -139,7 +143,7 @@ impl PathTracingIntegrator {
     }
 }
 
-impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator {
+impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
     fn env_map(&self) -> Option<&Arc<EnvironmentMap>> {
         self.env_map.as_ref()
     }
@@ -153,8 +157,7 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
         lights: &[Arc<dyn Sampleable>],
-        stream: &mut S,
-        rng: &mut R,
+        session: &mut S::Session<'_>,
     ) -> Color3 {
         let mut accumulated_attenuation = Color3::ONE;
         let mut accumulated_color = Color3::ZERO;
@@ -209,11 +212,11 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
                 // direction that doesn't match the single specular direction.
                 if !lights.is_empty() && !material.is_delta() {
                     // Pick a random light source to sample from the list
-                    let light_idx = (rng.next() * lights.len() as f64) as usize;
+                    let light_idx = (session.next_1d() * lights.len() as f64) as usize;
                     let light = &lights[light_idx % lights.len()];
 
                     // Sample a point on the light source — returns direction, normal, distance, and area PDF
-                    let (u, v) = stream.next_2d();
+                    let (u, v) = session.next_2d();
                     let sample = light.sample_light(si.point(), u, v, ray.time);
                     let light_unit = sample.direction.unit_vector();
                     let light_emission = sample.emission;
@@ -230,7 +233,12 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
                         // MIS weight: compare the light sampler's PDF against the BSDF mixture PDF
                         // at the NEE direction. This weights NEE proportionally to how much better
                         // it is than the continuation ray for this particular direction.
-                        let light_pdf_at_nee = light_pdf;
+                        // Re-evaluate light PDF at the NEE direction (not the incoming ray's
+                        // direction): the MIS weight compares how well the light-sampling
+                        // strategy and the BSDF continuation strategy explain this sampled
+                        // NEE direction.
+                        let light_pdf_at_nee =
+                            EmitterPDF::new(lights, si.point(), ray.time).value(light_unit);
                         let bsdf_pdf_at_nee = bsdf_mixture_pdf(
                             wo,
                             light_unit,
@@ -262,7 +270,7 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
                 }
 
                 // Sample a random number for Russian Roulette
-                let rr = rng.next();
+                let rr = session.next_1d();
 
                 // Russian Roulette: survival probability proportional to current
                 // path throughput.  The 0.05 floor bounds variance from low-throughput paths.
@@ -274,8 +282,8 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
                     accumulated_attenuation /= survival;
                 }
 
-                // Sample the material to get the next ray and attenuation
-                let mut next_mat_dim = || -> f64 { rng.next() };
+                // NLL releases session borrow after scatter() — session is usable again below.
+                let mut next_mat_dim = || -> f64 { session.next_1d() };
 
                 if let Some(scatter) = material.scatter(wo, &si, &mut next_mat_dim) {
                     let mut new_prev_was_delta = false;
@@ -344,13 +352,13 @@ impl<S: SampleStream, R: SamplerRng> Integrator<S, R> for PathTracingIntegrator 
                             });
 
                             // Selection: independent random from RNG
-                            let sel_idx_raw = rng.next();
+                            let sel_idx_raw = session.next_1d();
                             let sel_idx = (sel_idx_raw * n as f64).min(n as f64 - 1e-15) as usize;
-                            // Direction: correlated 2D from stream
-                            let (pdf_u, pdf_v) = stream.next_2d();
+                            // Direction: correlated 2D from session
+                            let (pdf_u, pdf_v) = session.next_2d();
 
                             let (direction, contribution, p_mix) =
-                                mis_sample(pdf_refs, eval, sel_idx, pdf_u, pdf_v);
+                                mis_sample(pdf_refs, n, eval, sel_idx, pdf_u, pdf_v);
                             new_prev_bsdf_pdf = p_mix;
                             (direction, contribution, None)
                         }
