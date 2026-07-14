@@ -2,14 +2,10 @@ use std::path::Path;
 
 use image::ImageResult;
 
-use crate::film::{post_process, Film, FilmTile};
+use crate::film::{Film, FilmTile, post_process};
 use crate::vec3::Color3;
 
-pub const LUMINANCE: Color3 = Color3 {
-    x: 0.2126,
-    y: 0.7152,
-    z: 0.0722,
-};
+pub const LUMINANCE: Color3 = Color3::new(0.2126, 0.7152, 0.0722);
 
 /// Reconstruction filter radius in pixels. Each sample is spread across
 /// (2*R+1)² pixels via a tent (triangle) kernel.

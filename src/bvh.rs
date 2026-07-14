@@ -173,18 +173,12 @@ impl BvhNode {
                 if best_cost.is_finite() && best_cost + trav_cost < leaf_cost {
                     trace!(
                         object_count = obj_span,
-                        best_cost,
-                        best_axis,
-                        best_split,
-                        "splitting bvh node with SAH"
+                        best_cost, best_axis, best_split, "splitting bvh node with SAH"
                     );
                 } else {
                     trace!(
                         object_count = obj_span,
-                        best_cost,
-                        best_axis,
-                        best_split,
-                        "not splitting bvh node with SAH"
+                        best_cost, best_axis, best_split, "not splitting bvh node with SAH"
                     );
                     // Not worth splitting — pack into a multi-object leaf.
                     // Only pack if we can fit all objects; otherwise force split below.
@@ -205,9 +199,7 @@ impl BvhNode {
 
                 trace!(
                     object_count = obj_span,
-                    best_axis,
-                    best_split,
-                    "splitting bvh node with SAH"
+                    best_axis, best_split, "splitting bvh node with SAH"
                 );
 
                 // Sort objects by centroid along the best axis, then split at the best point.

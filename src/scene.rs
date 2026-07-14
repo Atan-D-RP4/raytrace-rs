@@ -290,14 +290,14 @@ impl Scene {
                 Material::dielectric(1.5),
             ),
             0.2,
-            Color3::new(0.2, 0.4, 0.9),
+            Color3::new(0.2, 0.4, 0.9).into_inner(),
         )));
 
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             sphere(Point3::new(0., 0., 0.), 5000., Material::dielectric(1.5)),
             0.0001,
             // Color3::from(1., 1., 1.), // Pure white
-            Color3::new(0.7, 0.1, 0.1), // A faint red tint to visualize the volume better
+            Color3::new(0.7, 0.1, 0.1).into_inner(), // A faint red tint to visualize the volume better
         )));
 
         let emat: Arc<dyn Texture> = match ImageTexture::new("./earthmap.png") {
@@ -391,7 +391,7 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat, phase_fn)| {
-                let quad_box = box3d(Point3::new(0., 0., 0.), *size, mat.clone());
+                let quad_box = box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
 
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
@@ -440,7 +440,7 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat)| {
-                let quad_box = box3d(Point3::new(0., 0., 0.), *size, mat.clone());
+                let quad_box = box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
 
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
                 let wrapped: TransformObject<
@@ -760,14 +760,14 @@ impl Scene {
                     let (material, radius) = match world_seed % 7 {
                         0 => (
                             Material::Lambertian(LambertianMaterial {
-                                albedo: rand_albedo(),
+                                albedo: Color3(rand_albedo()),
                                 tex: None,
                             }),
                             0.15,
                         ),
                         1 => (
                             Material::metal_with_ior(
-                                metal_color(),
+                                Color3(metal_color()),
                                 rand::random::<f32>() * 0.5,
                                 2.5,
                             ),
@@ -776,30 +776,38 @@ impl Scene {
                         2 => (Material::dielectric(1.5), 0.2),
                         3 => (
                             Material::Isotropic(IsotropicMaterial {
-                                albedo: rand::random::<Vec3>(),
+                                albedo: Color3(rand::random::<Vec3>()),
                                 tex: None,
                             }),
                             0.225,
                         ),
                         4 => (
-                            Material::glossy(rand::random::<Vec3>(), rand::random::<f32>(), 1.5),
+                            Material::glossy(
+                                Color3(rand::random::<Vec3>()),
+                                rand::random::<f32>(),
+                                1.5,
+                            ),
                             0.25,
                         ),
                         5 => (
                             Material::coated(
                                 Material::Lambertian(LambertianMaterial {
-                                    albedo: rand_albedo(),
+                                    albedo: Color3(rand_albedo()),
                                     tex: None,
                                 }),
-                                Material::metal(metal_color(), rand::random::<f32>() * 0.5),
+                                Material::metal(Color3(metal_color()), rand::random::<f32>() * 0.5),
                             ),
                             0.275,
                         ),
                         _ => (
-                            Material::lambertian(Arc::new(SolidColor::new(rand_albedo()))).mix(
-                                Material::metal(metal_color(), rand::random::<f32>() * 0.5),
-                                rand::random::<f32>(),
-                            ),
+                            Material::lambertian(Arc::new(SolidColor::new(Color3(rand_albedo()))))
+                                .mix(
+                                    Material::metal(
+                                        Color3(metal_color()),
+                                        rand::random::<f32>() * 0.5,
+                                    ),
+                                    rand::random::<f32>(),
+                                ),
                             0.3,
                         ),
                     };

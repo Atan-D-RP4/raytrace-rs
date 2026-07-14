@@ -2,7 +2,7 @@ use glam::Vec3;
 
 use crate::camera::{Camera, CameraRay, CameraSampler};
 use crate::ray::{Ray, RayDifferentials};
-use crate::vec3::{Color3, Point3};
+use crate::vec3::{Color3, Direction3, Point3};
 
 const WIDTH: i32 = 800;
 
@@ -71,9 +71,9 @@ pub struct PerspectiveCamera {
     /// Location of upper-left pixel in world space
     pixel00_loc: Point3,
     /// Vector from one pixel to the next in horizontal direction
-    pixel_delta_u: Point3,
+    pixel_delta_u: Vec3,
     /// Vector from one pixel to the next in vertical direction
-    pixel_delta_v: Point3,
+    pixel_delta_v: Vec3,
     /// Scale factor for averaging samples (1/samples_per_pixel)
     pixel_samples_scale: f32,
 }
@@ -96,8 +96,8 @@ impl PerspectiveCamera {
             defocus_disk_u: Vec3::default(),
             defocus_disk_v: Vec3::default(),
             pixel00_loc: Point3::default(),
-            pixel_delta_u: Point3::default(),
-            pixel_delta_v: Point3::default(),
+            pixel_delta_u: Vec3::default(),
+            pixel_delta_v: Vec3::default(),
             pixel_samples_scale: 1.0 / (config.samples_per_pixel as f32),
         };
         cam.initialize();
@@ -134,7 +134,7 @@ impl PerspectiveCamera {
         // represent the world-space vector from pixel to pixel.
         let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
         let viewport_v = viewport_height * -v; // Vector across viewport vertical edge
-                                               // Negated because the v vector points up but the image coordinates increase downwards.
+        // Negated because the v vector points up but the image coordinates increase downwards.
 
         self.pixel_delta_u = viewport_u / self.image_width as f32;
         self.pixel_delta_v = viewport_v / self.image_height as f32;
@@ -177,7 +177,7 @@ impl Camera for PerspectiveCamera {
 
         let ray_direction = pixel_sampler - ray_origin;
         Some(CameraRay {
-            ray: Ray::new_with_time(ray_origin, ray_direction, sample.time),
+            ray: Ray::new_with_time(ray_origin, Direction3(ray_direction), sample.time),
             weight: Color3::new(1.0, 1.0, 1.0),
         })
     }
@@ -204,8 +204,8 @@ impl Camera for PerspectiveCamera {
                 Some(RayDifferentials {
                     rx_origin: primary_ray.ray.origin,
                     ry_origin: primary_ray.ray.origin,
-                    rx_direction: (pixel_sampler_x - primary_ray.ray.origin),
-                    ry_direction: (pixel_sampler_y - primary_ray.ray.origin),
+                    rx_direction: Direction3(pixel_sampler_x - primary_ray.ray.origin),
+                    ry_direction: Direction3(pixel_sampler_y - primary_ray.ray.origin),
                 }),
             ),
             weight: Color3::new(1.0, 1.0, 1.0),

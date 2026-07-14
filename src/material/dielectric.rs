@@ -20,7 +20,7 @@ use glam::Vec3;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::fresnel_schlick;
-use crate::material::gpu::{GpuSerializable, GPU_NONE};
+use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 use crate::pdf::PdfKind;
 use crate::vec3::Color3;
@@ -53,16 +53,16 @@ impl Bsdf for DielectricMaterial {
         };
 
         // Compute the cosine of the angle between the outgoing direction and the surface normal.
-        let cos_theta = wo.dot(si.shading_normal()).min(1.0);
+        let cos_theta = wo.dot(si.shading_normal().into_inner()).min(1.0);
         // Compute the sine of the angle using the identity sin²(θ) + cos²(θ) = 1.
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 
         // Use Fresnel's equations to determine the probability of reflection vs refraction.
         let u = next_dim();
         let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > u {
-            -wo.reflect(si.shading_normal())
+            -wo.reflect(si.shading_normal().into_inner())
         } else {
-            -wo.refract(si.shading_normal(), ri)
+            -wo.refract(si.shading_normal().into_inner(), ri)
         };
 
         // Return the chosen direction with unit attenuation (delta material — all energy goes one way).
@@ -91,7 +91,7 @@ impl Bsdf for DielectricMaterial {
     /// Estimate the reflectance fraction for the coating layer. This is used in
     /// the integrator to determine how much light is reflected vs transmitted.
     fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
-        let cos_theta = wo.dot(si.shading_normal()).abs();
+        let cos_theta = wo.dot(si.shading_normal().into_inner()).abs();
         // Only the reflective fraction of the dielectric is returned to the
         // coating; transmitted light goes into the substrate and doesn't
         // contribute to the inter-reflection series.

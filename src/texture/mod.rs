@@ -16,7 +16,7 @@ mod gpu;
 mod impls;
 pub mod mapping;
 
-pub use gpu::{GpuTextureBuffer, GpuTextureNode, GpuTextureType, GPU_TEX_NONE};
+pub use gpu::{GPU_TEX_NONE, GpuTextureBuffer, GpuTextureNode, GpuTextureType};
 pub use impls::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor};
 
 use glam::Vec3;

@@ -26,10 +26,10 @@ use std::sync::Arc;
 use glam::Vec3;
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::gpu::{GpuSerializable, GPU_NONE};
+use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
-    fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h, Bsdf, BsdfScatter,
-    GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    PdfKind, fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::texture::Texture;
@@ -69,11 +69,11 @@ impl Bsdf for MetalMaterial {
     ) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
         if self.is_delta() {
-            let wi = -wo.reflect(si.shading_normal());
-            if wi.dot(si.shading_normal()) <= 0.0 {
+            let wi = -wo.reflect(si.shading_normal().into_inner());
+            if wi.dot(si.shading_normal().into_inner()) <= 0.0 {
                 return None;
             }
-            let cos_o = wo.dot(si.shading_normal()).max(0.0);
+            let cos_o = wo.dot(si.shading_normal().into_inner()).max(0.0);
             let f = fresnel_schlick(cos_o, self.r0);
             let albedo_ = self
                 .tex
@@ -93,20 +93,20 @@ impl Bsdf for MetalMaterial {
         let v = next_dim();
         let h_local = ggx_sample_h(alpha, u, v);
 
-        let onb = Onb::build_from_normal(si.shading_normal());
+        let onb = Onb::build_from_normal(si.shading_normal().into_inner());
         let h_world = onb.local_to_world(h_local);
 
         // Reflect wo about H to get wi.
         let wi = -wo.reflect(h_world);
 
-        if wi.dot(si.shading_normal()) <= 0.0 {
+        if wi.dot(si.shading_normal().into_inner()) <= 0.0 {
             return None;
         }
 
         let mut pk = [None; MAX_BSDF_STRATS];
         pk[0] = Some(PdfKind::Ggx {
             wo,
-            normal: si.shading_normal(),
+            normal: si.shading_normal().into_inner(),
             alpha,
         });
         Some(BsdfScatter::NonDelta { pdf_kinds: pk })
@@ -125,10 +125,10 @@ impl Bsdf for MetalMaterial {
             .unwrap_or(self.albedo);
         let alpha = self.ggx_alpha().unwrap_or(0.001);
         let h = (wo + wi).normalize();
-        let cos_h_n = h.dot(si.shading_normal()).max(0.0);
+        let cos_h_n = h.dot(si.shading_normal().into_inner()).max(0.0);
         let cos_h_o = wo.dot(h).max(0.0);
-        let cos_o = wo.dot(si.shading_normal()).max(0.0);
-        let cos_i = wi.dot(si.shading_normal()).max(0.0);
+        let cos_o = wo.dot(si.shading_normal().into_inner()).max(0.0);
+        let cos_i = wi.dot(si.shading_normal().into_inner()).max(0.0);
         if cos_h_o <= 0.0 || cos_o <= 0.0 || cos_i <= 0.0 {
             return Color3::new(0., 0., 0.);
         }
@@ -147,7 +147,7 @@ impl Bsdf for MetalMaterial {
         }
         let alpha = self.ggx_alpha().unwrap_or(0.001);
         let h = (wo + wi).normalize();
-        let cos_h_n = h.dot(si.shading_normal()).max(0.0);
+        let cos_h_n = h.dot(si.shading_normal().into_inner()).max(0.0);
         let cos_h_o = wo.dot(h).max(0.0);
         if cos_h_o <= 0.0 {
             return 0.0;
@@ -162,7 +162,7 @@ impl Bsdf for MetalMaterial {
         } else {
             Some(PdfKind::Ggx {
                 wo,
-                normal: si.shading_normal(),
+                normal: si.shading_normal().into_inner(),
                 alpha: (self.roughness * self.roughness).clamp(0.001, 1.0),
             })
         }
@@ -172,7 +172,7 @@ impl Bsdf for MetalMaterial {
     /// direction. For a smooth conductor, this is approximately the Fresnel term with a roughness
     /// boost. For rough conductors, the effective reflectance is higher due to multiple scattering.
     fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
-        let cos_theta = wo.dot(si.shading_normal()).abs();
+        let cos_theta = wo.dot(si.shading_normal().into_inner()).abs();
         // For a smooth conductor, reflectance ≈ Fresnel(θ) — the GGX lobe
         // is narrow, so most energy is at the mirror direction. Roughness
         // increases the effective reflectance due to multiple scattering.

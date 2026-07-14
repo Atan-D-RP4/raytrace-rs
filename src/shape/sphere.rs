@@ -1,6 +1,8 @@
 use std::borrow::Borrow;
 use std::f32::consts::PI;
 
+use glam::Vec3;
+
 use crate::aabb::Aabb;
 use crate::hittable::{Hit, LightSample};
 use crate::interval::Interval;
@@ -8,10 +10,8 @@ use crate::material::Material;
 use crate::onb::Onb;
 use crate::ray::{ParametricCurve, Ray};
 use crate::shape::{Shape3D, ShapeObject};
-use glam::Vec3;
-
 use crate::texture::UVDifferentiable;
-use crate::vec3::Point3;
+use crate::vec3::{Color3, Direction3, Point3};
 
 /// Sphere geometry defined by a linearly-moving center and radius.
 ///
@@ -125,13 +125,13 @@ impl Shape3D for SphereShape {
 
         let point = ray.at(root);
         let outward_normal = (point - current_center) / self.radius;
-        let (u, v) = Self::get_sphere_uv(&outward_normal);
+        let (u, v) = Self::get_sphere_uv(&Point3(outward_normal));
 
         Some(Hit::new(
             root,
             point,
-            outward_normal,
-            outward_normal,
+            Point3(outward_normal),
+            Direction3(outward_normal),
             Some((u, v)),
             None,
         ))
@@ -139,7 +139,7 @@ impl Shape3D for SphereShape {
 
     fn bounding_box(&self) -> Aabb {
         let rvec = Vec3::new(self.radius, self.radius, self.radius);
-        let local = Aabb::from_points(&(-rvec), &(rvec));
+        let local = Aabb::from_points(&Point3(-rvec), &Point3(rvec));
         self.center.sweep_aabb(&local)
     }
 
@@ -165,7 +165,7 @@ impl Shape3D for SphereShape {
         let center = self.center.at(time);
         let direction_to_center = center - origin;
         let distance_squared = direction_to_center.length_squared();
-        let uvw = Onb::build_from_normal(direction_to_center);
+        let uvw = Onb::build_from_normal(direction_to_center.into_inner());
         uvw.local_to_world(self.random_to_sphere(distance_squared, u, v))
     }
 
@@ -177,14 +177,14 @@ impl Shape3D for SphereShape {
         // Compute actual ray-sphere intersection along the sampled direction.
         // The unit direction tells us WHERE to look; the quadratic tells us HOW FAR.
         let oc = center - origin;
-        let h = direction.dot(oc);
+        let h = direction.dot(oc.into_inner());
         let c = oc.length_squared() - self.radius * self.radius;
         let discriminant = (h * h - c).max(0.0);
         let sqrtd = discriminant.sqrt();
         let distance = (h - sqrtd).max(0.001);
 
         let hit_point = origin + direction * distance;
-        let normal = (hit_point - center) / self.radius;
+        let normal = (hit_point - center.into_inner()) / self.radius;
 
         // Area PDF: convert from solid-angle PDF (1/Ω) to area measure.
         // p_A(q) = p_ω(ω) · |cos θ_l| / d²
@@ -201,11 +201,11 @@ impl Shape3D for SphereShape {
         };
 
         LightSample {
-            direction: direction * distance, // displacement from surface to light
-            normal,
+            direction: Direction3(direction * distance), // displacement from surface to light
+            normal: Direction3(normal),
             distance,
             pdf: area_pdf,
-            emission: Vec3::ZERO, // filled in by ShapeObject::sample_light via material
+            emission: Color3::ZERO, // filled in by ShapeObject::sample_light via material
         }
     }
 
@@ -215,7 +215,7 @@ impl Shape3D for SphereShape {
         let current_center = self.center.at(time);
         let oc = current_center - origin;
         let a = direction.length_squared();
-        let h = direction.dot(oc);
+        let h = direction.dot(oc.into_inner());
         let c = oc.length_squared() - (self.radius * self.radius);
         let discriminant = h * h - a * c;
 

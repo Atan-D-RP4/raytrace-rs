@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::hittable::Intersectable;
 use crate::material::Material;
 use crate::planar::quad;
-
-use glam::Vec3;
 
 use crate::vec3::Point3;
 

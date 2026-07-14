@@ -9,6 +9,7 @@ use crate::material::Material;
 use crate::ray::Ray;
 use crate::sampler;
 use crate::texture::Texture;
+use crate::vec3::{Color3, Direction3};
 
 /// Dedicated dimension for volume scattering distance.
 const VOLUME_DIM: u32 = 4096;
@@ -103,7 +104,7 @@ impl<T: Intersectable> ConstantMedium<T> {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
-            phase_fn: Material::isotropic(albedo),
+            phase_fn: Material::isotropic(Color3(albedo)),
             vol_seed: seed,
         }
     }
@@ -170,7 +171,7 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         // of a hemisphere-based one.  set_face_normal() will compute
         // front_face=false and shading_normal=Vec3::ZERO for this case.
         Some(MaterialHit {
-            hit: Hit::new(new_time, point, point, Vec3::ZERO, None, None),
+            hit: Hit::new(new_time, point, point, Direction3(Vec3::ZERO), None, None),
             material: &self.phase_fn,
         })
     }
@@ -192,11 +193,11 @@ mod tests {
 
     use glam::Vec3;
 
-    type Color3 = Vec3;
+    use crate::vec3::{Color3, Direction3, Point3};
 
     type TestSphere = ShapeObject<SphereShape, Material>;
 
-    fn make_sphere(center: Vec3, radius: f32) -> TestSphere {
+    fn make_sphere(center: Point3, radius: f32) -> TestSphere {
         crate::shape::sphere(center, radius, Material::dielectric(1.5))
     }
 
@@ -205,7 +206,7 @@ mod tests {
     fn volume_only(
         boundary: TestSphere,
         density: f32,
-        albedo: Vec3,
+        albedo: Color3,
     ) -> ConstantMedium<TestSphere, false> {
         ConstantMedium::with_surface(boundary, density, Material::isotropic(albedo))
     }
@@ -214,10 +215,14 @@ mod tests {
     /// reaching the far boundary.
     #[test]
     fn ray_through_dense_medium_scatters() {
-        let boundary = make_sphere(Vec3::ZERO, 1.0);
+        let boundary = make_sphere(Point3(Vec3::ZERO), 1.0);
         let vol = volume_only(boundary, 100.0, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(
+            Point3(Vec3::new(0., 0., 5.)),
+            Direction3(Vec3::new(0., 0., -1.)),
+            0.0,
+        );
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         assert!(
@@ -237,10 +242,14 @@ mod tests {
     /// A ray through a very sparse medium should pass through without scattering.
     #[test]
     fn ray_through_sparse_medium_passes_through() {
-        let boundary = make_sphere(Vec3::ZERO, 1.0);
+        let boundary = make_sphere(Point3(Vec3::ZERO), 1.0);
         let vol = volume_only(boundary, 0.0001, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(
+            Point3(Vec3::new(0., 0., 5.)),
+            Direction3(Vec3::new(0., 0., -1.)),
+            0.0,
+        );
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         assert!(
@@ -252,10 +261,14 @@ mod tests {
     /// The hit record for a volume scatter should have geometric_normal = ZERO.
     #[test]
     fn volume_hit_has_zero_normal() {
-        let boundary = make_sphere(Vec3::ZERO, 1.0);
+        let boundary = make_sphere(Point3(Vec3::ZERO), 1.0);
         let vol = volume_only(boundary, 100.0, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
+        let ray = Ray::new_with_time(
+            Point3(Vec3::new(0., 0., 5.)),
+            Direction3(Vec3::new(0., 0., -1.)),
+            0.0,
+        );
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         if let Some(h) = hit {

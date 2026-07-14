@@ -11,10 +11,10 @@ use image::Rgba32FImage;
 
 use crate::interval::Interval;
 use crate::perlin::Perlin;
-use crate::texture::mapping::{TextureMapping2D, TextureMapping3D, UvGen};
 use crate::texture::TextureDerivatives;
+use crate::texture::mapping::{TextureMapping2D, TextureMapping3D, UvGen};
 use crate::texture::{Texture, TextureCoords};
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Point3};
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a * (1.0 - t) + b * t
@@ -66,7 +66,7 @@ impl<T: Texture> MappedTexture<T> {
 impl<T: Texture> Texture for MappedTexture<T> {
     fn value(&self, coords: &TextureCoords) -> Color3 {
         // Apply 3D point mapping first (transforms the texture space).
-        let tex_point = self.mapping3d.map_point(coords.tex_points.texture);
+        let tex_point = self.mapping3d.map_point(*coords.tex_points.texture);
 
         let (u, v) = self
             .uv_gen
@@ -75,7 +75,7 @@ impl<T: Texture> Texture for MappedTexture<T> {
 
         let (su, sv) = self.mapping2d.map_uv(u, v);
 
-        let mapped = coords.with_texture_point(tex_point).with_uv(su, sv);
+        let mapped = coords.with_texture_point(Point3(tex_point)).with_uv(su, sv);
         self.texture.value(&mapped)
     }
 }

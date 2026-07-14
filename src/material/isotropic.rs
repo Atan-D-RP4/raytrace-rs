@@ -16,10 +16,10 @@ use std::sync::Arc;
 use glam::Vec3;
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::gpu::{GpuSerializable, GPU_NONE};
+use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    PdfKind,
 };
 use crate::texture::Texture;
 use crate::vec3::Color3;

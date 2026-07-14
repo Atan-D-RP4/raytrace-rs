@@ -7,8 +7,7 @@ use crate::distributions::Sample1D;
 use crate::environment::EnvironmentMap;
 use crate::hittable::Sampleable;
 use crate::onb::Onb;
-use crate::vec3::concentric_disk;
-use crate::vec3::Point3;
+use crate::vec3::{Point3, concentric_disk};
 
 // ================================================================
 // § PDF domain newtypes
@@ -83,11 +82,7 @@ impl MisHeuristic {
         match self {
             MisHeuristic::Balance => {
                 let denom = f_pdf + g_pdf;
-                if denom <= 0.0 {
-                    0.0
-                } else {
-                    f_pdf / denom
-                }
+                if denom <= 0.0 { 0.0 } else { f_pdf / denom }
             }
             MisHeuristic::Power => {
                 let denom = f_pdf * f_pdf + g_pdf * g_pdf;
@@ -456,7 +451,7 @@ impl<'a> PDF for EmitterPDF<'a> {
         let inv_len = 1.0 / self.objects.len() as f32;
         self.objects
             .iter()
-            .map(|o| o.pdf_value(self.origin, direction, self.time) * inv_len)
+            .map(|o| o.pdf_value(*self.origin, direction, self.time) * inv_len)
             .sum()
     }
 
@@ -472,7 +467,7 @@ impl<'a> PDF for EmitterPDF<'a> {
             return Vec3::ZERO;
         }
         let index = (u * self.objects.len() as f32).min(self.objects.len() as f32 - 1e-15) as usize;
-        self.objects[index].random_direction(self.origin, u, v, self.time)
+        self.objects[index].random_direction(*self.origin, u, v, self.time)
     }
 }
 
@@ -498,11 +493,11 @@ impl<'a> LightPDF<'a> {
 
 impl<'a> PDF for LightPDF<'a> {
     fn value(&self, direction: Vec3) -> f32 {
-        self.object.pdf_value(self.origin, direction, self.time)
+        self.object.pdf_value(*self.origin, direction, self.time)
     }
 
     fn generate(&self, u: f32, v: f32) -> Vec3 {
-        self.object.random_direction(self.origin, u, v, self.time)
+        self.object.random_direction(*self.origin, u, v, self.time)
     }
 }
 

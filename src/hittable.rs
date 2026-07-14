@@ -7,7 +7,7 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
 use crate::texture::{TextureCoords, TextureDerivatives};
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3, Point3};
 
 /// Represents a ray-object intersection hit, containing geometric information about the
 /// intersection point.
@@ -20,13 +20,13 @@ pub struct Hit {
     pub time: f32,
     /// World-space intersection position.
     // TODO(mapping-2d3d): move 3D mapping inputs into a dedicated 3D mapping payload.
-    pub point: Vec3,
+    pub point: Point3,
     /// Mapping-space position. For sphere primitives this is the unit-sphere point
     /// (normalized direction from sphere center), stable under rigid transforms.
     /// For planar primitives this is the world-space hit point (same as `point`).
     /// Procedural textures (NoiseTexture) sample from `mapping` via TexturePoints,
     /// so this decouples world-space translation from the texture coordinate frame.
-    pub mapping_point: Vec3,
+    pub mapping_point: Point3,
     /// Optional UV coordinates for the hit point. `None` for Volume or other primitives that may
     /// not have UVs.
     pub uv: Option<(f32, f32)>,
@@ -35,20 +35,22 @@ pub struct Hit {
 
     /// Outward geometric normal before face-orientation or shading adjustments.
     /// Must be unit length — set_face_normal depends on it.
-    geometric_normal: Vec3,
+    geometric_normal: Direction3,
 }
 
 impl Hit {
     pub fn new(
         time: f32,
-        point: Vec3,
-        mapping_point: Vec3,
-        geometric_normal: Vec3,
+        point: Point3,
+        mapping_point: Point3,
+        geometric_normal: Direction3,
         uv: Option<(f32, f32)>,
         uv_gradients: Option<(Vec3, Vec3)>,
     ) -> Self {
         debug_assert!(
-            geometric_normal.length_squared() < 1e-8,
+            geometric_normal.length_squared() <= 1e-6
+                || (geometric_normal.length_squared() >= 1.0 - 1e-4
+                    && geometric_normal.length_squared() <= 1.0 + 1e-4),
             "geometric_normal must be unit length or zero (for volumes)"
         );
         Self {
@@ -62,7 +64,7 @@ impl Hit {
     }
 
     /// Sets the geometric normal (must be unit length, or zero for volumes).
-    pub(crate) fn set_geometric_normal(&mut self, n: Vec3) {
+    pub(crate) fn set_geometric_normal(&mut self, n: Direction3) {
         debug_assert!(
             n.length_squared() < 1e-8,
             "geometric_normal must be unit length or zero (for volumes)"
@@ -71,7 +73,7 @@ impl Hit {
     }
 
     /// Returns the geometric normal.
-    pub fn geometric_normal(&self) -> Vec3 {
+    pub fn geometric_normal(&self) -> Direction3 {
         self.geometric_normal
     }
 }
@@ -88,7 +90,7 @@ pub struct SurfaceInteraction<'si> {
     hit: Hit,
     /// Shading normal at the hit point, which may differ from the geometric normal due to
     /// normal mapping or other shading effects. Must be unit length.
-    shading_normal: Vec3,
+    shading_normal: Direction3,
     /// Indicates whether the ray hit the front face of the surface (true) or the back face (false).
     front_face: bool,
     /// Reference to the material of the intersected surface.
@@ -101,7 +103,7 @@ impl<'si> SurfaceInteraction<'si> {
     /// Constructs a new `SurfaceInteraction` from a `Hit`, shading normal, front face flag, and material.
     pub fn new(
         hit: Hit,
-        shading_normal: Vec3,
+        shading_normal: Direction3,
         front_face: bool,
         material: &'si Material,
         tex_derivatives: Option<TextureDerivatives>,
@@ -127,21 +129,21 @@ impl<'si> SurfaceInteraction<'si> {
             let p = ray.at(t_hit);
             let dpdx = Ray::differential_footprint(
                 rd.rx_origin,
-                rd.rx_direction,
+                rd.rx_direction.into_inner(),
                 p,
-                geometric_normal,
+                geometric_normal.into_inner(),
                 t_hit,
                 ray.origin,
-                ray.direction,
+                ray.direction.into_inner(),
             );
             let dpdy = Ray::differential_footprint(
                 rd.ry_origin,
-                rd.ry_direction,
+                rd.ry_direction.into_inner(),
                 p,
-                geometric_normal,
+                geometric_normal.into_inner(),
                 t_hit,
                 ray.origin,
-                ray.direction,
+                ray.direction.into_inner(),
             );
             let (du_dp, dv_dp) = gradients;
             Some(TextureDerivatives::from_surface(dpdx, dpdy, du_dp, dv_dp))
@@ -162,7 +164,7 @@ impl<'si> SurfaceInteraction<'si> {
 
     /// Sets the front_face and shading_normal based on the ray direction and geometric normal.
     pub fn set_face_normal(&mut self, ray: &Ray) {
-        self.front_face = ray.direction.dot(self.hit.geometric_normal) < 0.0;
+        self.front_face = ray.direction.dot(self.hit.geometric_normal.into_inner()) < 0.0;
         self.shading_normal = if self.front_face {
             self.hit.geometric_normal
         } else {
@@ -171,13 +173,13 @@ impl<'si> SurfaceInteraction<'si> {
     }
 
     /// Returns the world-space intersection point.
-    pub fn point(&self) -> Vec3 {
+    pub fn point(&self) -> Point3 {
         self.hit.point
     }
 
     /// Returns the shading normal at the intersection point, which may differ from the geometric
     /// normal due to normal mapping or other shading effects.
-    pub fn shading_normal(&self) -> Vec3 {
+    pub fn shading_normal(&self) -> Direction3 {
         self.shading_normal
     }
 
@@ -204,7 +206,7 @@ impl<'si> SurfaceInteraction<'si> {
 
     /// Returns the geometric normal at the intersection point, which is the outward normal before
     /// any shading adjustments.
-    pub fn geometric_normal(&self) -> Vec3 {
+    pub fn geometric_normal(&self) -> Direction3 {
         self.hit.geometric_normal
     }
 
@@ -228,7 +230,7 @@ impl<'si> SurfaceInteraction<'si> {
             v,
             self.point(),
             self.hit.mapping_point,
-            self.geometric_normal(),
+            *self.geometric_normal(),
             self.tex_derivatives,
         )
     }
@@ -303,15 +305,15 @@ impl<T: Bounded + ?Sized> Bounded for Arc<T> {
 pub struct LightSample {
     /// Non-normalized direction from surface point to the sampled point on the light.
     /// `.unit_vector()` gives the unit direction; `.length()` gives the distance.
-    pub direction: Vec3,
+    pub direction: Direction3,
     /// Light's outward surface normal at the sampled point (unit length).
-    pub normal: Vec3,
+    pub normal: Direction3,
     /// Distance from the surface point to the sampled point on the light.
     pub distance: f32,
     /// Area PDF of this sample (probability density per unit area on the light surface).
     pub pdf: f32,
     /// Emission color of the light at the sampled point (radiance).
-    pub emission: Vec3,
+    pub emission: Color3,
 }
 
 pub trait Sampleable: Intersectable + Send + Sync {

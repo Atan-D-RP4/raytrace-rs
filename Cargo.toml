@@ -17,6 +17,7 @@ smol = "2.0.2"
 async-tungstenite = { version = "0.34.1", default-features = false, features = ["handshake", "futures-03-sink"] }
 futures-lite = { version = "2.6.1", default-features = false, features = ["std"] }
 glam = { version = "0.33.2", features = ["libm", "rand"] }
+derive_more = { version = "2", features = ["from", "display", "sum"] }
 
 [features]
 default = ["profile-with-tracing"]

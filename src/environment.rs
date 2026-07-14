@@ -10,7 +10,7 @@ use crate::film::rgb::LUMINANCE;
 use crate::hittable::{Bounded, Intersectable, LightSample, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 /// Equirectangular HDR environment map with sin(θ)-weighted luminance importance sampling.
 /// The distribution is built once at construction and reused for all sample/pdf queries.
@@ -182,9 +182,9 @@ impl Sampleable for EnvironmentLight {
         let radiance = self.env_map.le(direction);
 
         LightSample {
-            direction,
-            normal: Vec3::ZERO,      // Environment light has no surface normal
-            distance: f32::INFINITY, // Environment light is at infinity
+            direction: Direction3(direction),
+            normal: Direction3(Vec3::ZERO), // Environment light has no surface normal
+            distance: f32::INFINITY,        // Environment light is at infinity
             pdf,
             emission: radiance,
         }

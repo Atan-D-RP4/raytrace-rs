@@ -1,6 +1,8 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::aabb::Aabb;
 use crate::hittable::Bounded;
 use crate::hittable::Hit;
@@ -11,10 +13,9 @@ use crate::hittable::SurfaceInteraction;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
-use glam::Vec3;
 
 use crate::texture::UVDifferentiable;
-use crate::vec3::Point3;
+use crate::vec3::{Direction3, Point3};
 
 mod annulus;
 mod r#box;
@@ -27,11 +28,11 @@ mod superellipse;
 mod tri;
 
 pub use annulus::AnnulusRegion;
+pub use r#box::box3d;
 pub use ellipse::EllipseRegion;
 pub use function::FunctionRegion;
 pub use polygon::PolygonRegion;
 pub use quad::QuadRegion;
-pub use r#box::box3d;
 pub use rounded_rect::RoundedRectRegion;
 pub use superellipse::SuperellipseRegion;
 pub use tri::TriRegion;
@@ -129,7 +130,7 @@ impl<R: Region2D, M: Borrow<Material>> PlanarPatch<R, M> {
             material,
             bbox: bbox_diagonal1.merge(&bbox_diagonal2),
             normal,
-            d: normal.dot(corner),
+            d: normal.dot(corner.into_inner()),
             area: n.length(),
             region,
         }
@@ -138,13 +139,13 @@ impl<R: Region2D, M: Borrow<Material>> PlanarPatch<R, M> {
     /// Returns the intersection of the ray with the plane of the patch, if there is any, alongside
     /// the (a, b) coordinates in parametric space.
     pub(crate) fn hit_plane(&self, ray: &Ray, ray_t: Interval) -> Option<PlanarHit> {
-        let denom = self.normal.dot(ray.direction);
+        let denom = self.normal.dot(ray.direction.into_inner());
 
         if denom.abs() < 1e-8 {
             return None;
         }
 
-        let t = (self.d - self.normal.dot(ray.origin)) / denom;
+        let t = (self.d - self.normal.dot(ray.origin.into_inner())) / denom;
         if !ray_t.contains(t) {
             return None;
         }
@@ -204,7 +205,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Intersectable for PlanarPat
                 hit.time,
                 hit.point,
                 hit.point,
-                self.normal,
+                Direction3(self.normal),
                 Some(uv),
                 Some(uv_gradients),
             ),
@@ -242,7 +243,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         }
 
         let point = origin + direction * t;
-        let planar_hit_point_vector = point - self.corner;
+        let planar_hit_point_vector = point - self.corner.into_inner();
         let a = self.w.dot(planar_hit_point_vector.cross(self.side_b));
         let b = self.w.dot(self.side_a.cross(planar_hit_point_vector));
 
@@ -266,7 +267,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
     fn random_direction(&self, origin: Vec3, u: f32, v: f32, _time: f32) -> Vec3 {
         let (a, b) = self.region.sample(u, v);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
-        random_point - origin
+        (random_point - origin).into_inner()
     }
 
     fn sample_light(
@@ -289,14 +290,27 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         // The surface is front-facing when the light normal points toward the shaded surface.
         let front_face = self.normal.dot(-direction) > 0.0;
         let point = origin + direction;
-        let hit = Hit::new(time, point, point, self.normal, None, None);
-        let si = SurfaceInteraction::new(hit, self.normal, front_face, self.material(), None);
+        let hit = Hit::new(
+            time,
+            Point3(point),
+            Point3(point),
+            Direction3(self.normal),
+            None,
+            None,
+        );
+        let si = SurfaceInteraction::new(
+            hit,
+            Direction3(self.normal),
+            front_face,
+            self.material(),
+            None,
+        );
         let wo = -direction.normalize();
         let emission = self.material().emitted(wo, &si);
 
         crate::hittable::LightSample {
-            direction,
-            normal: self.normal,
+            direction: Direction3(direction),
+            normal: Direction3(self.normal),
             distance,
             pdf: area_pdf,
             emission,

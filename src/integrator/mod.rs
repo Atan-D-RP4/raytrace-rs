@@ -48,7 +48,7 @@ mod tests {
     use crate::planar::quad;
     use crate::sampler::{NaiveRandomSampler, Point2i, Sampler, StreamRngPair};
 
-    use crate::vec3::{Color3, Point3};
+    use crate::vec3::{Color3, Direction3, Point3};
     use glam::Vec3;
 
     /// Type shortcut for the concrete sampler used in tests.
@@ -101,7 +101,8 @@ mod tests {
                 let u = (x as f32 + 0.5) / 4.0;
                 let v = (y as f32 + 0.5) / 4.0;
                 let direction = Vec3::new(u - 0.5, v - 0.5, -1.0).normalize();
-                let mut ray = Ray::new_with_time(Vec3::new(0., 0., 4.), direction, 0.0);
+                let mut ray =
+                    Ray::new_with_time(Point3(Vec3::new(0., 0., 4.)), Direction3(direction), 0.0);
 
                 let mut session = sampler.begin_pixel(
                     Point2i {
@@ -152,14 +153,14 @@ mod tests {
             Point3::new(-1., 2., -2.),
             Vec3::new(2., 0., 0.),
             Vec3::new(0., 0., 2.),
-            Material::light(Vec3::new(8.0, 8.0, 8.0)),
+            Material::light(Color3(Vec3::new(8.0, 8.0, 8.0))),
         ));
 
         let light_sample: Arc<dyn Sampleable> = Arc::new(quad(
             Point3::new(-1., 2., -2.),
             Vec3::new(2., 0., 0.),
             Vec3::new(0., 0., 2.),
-            Material::light(Vec3::new(8.0, 8.0, 8.0)),
+            Material::light(Color3(Vec3::new(8.0, 8.0, 8.0))),
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![floor, light_quad];
@@ -174,7 +175,7 @@ mod tests {
         );
 
         let dir = Vec3::new(0.0, -1.0, -1.0).normalize();
-        let mut ray = Ray::new_with_time(Vec3::new(0., 1.5, 4.), dir, 0.0);
+        let mut ray = Ray::new_with_time(Point3(Vec3::new(0., 1.5, 4.)), Direction3(dir), 0.0);
         let mut session = sampler.begin_pixel(Point2i { x: 0, y: 0 }, 0);
         let color = <PathTracingIntegrator as Integrator<TestSampler>>::li(
             &integrator,

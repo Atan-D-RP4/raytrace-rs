@@ -4,7 +4,7 @@ use crate::aabb::Aabb;
 use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::Point3;
+use crate::vec3::{Direction3, Point3};
 
 /// A geometric transform that can map rays, hit records, and bounds.
 ///
@@ -33,7 +33,7 @@ pub trait Transform: Send + Sync {
     /// Default implementation uses a ray to map the point, which is correct for rigid transforms (rotation + translation).
     /// For non-rigid transforms (e.g. scale, shear), this may not be correct and should be overridden.
     fn world_to_object_point(&self, point: Point3) -> Point3 {
-        let ray = Ray::new_with_time(point, Vec3::X, 0.0);
+        let ray = Ray::new_with_time(point, Direction3(Vec3::X), 0.0);
         self.ray(&ray).origin
     }
 }
@@ -98,17 +98,17 @@ where
         // Transform the ray into object space and delegate to the inner object.
         // For rigid transforms (rotation + translation), the Jacobian of the
         // area mapping is 1, so the solid-angle PDF is preserved.
-        let ray = Ray::new_with_time(origin, direction, time);
+        let ray = Ray::new_with_time(Point3(origin), Direction3(direction), time);
         let transformed = self.transform.ray(&ray);
         self.object
-            .pdf_value(transformed.origin, transformed.direction, time)
+            .pdf_value(*transformed.origin, *transformed.direction, time)
     }
 
     fn random_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
-        let to_obj_origin = self.transform.world_to_object_point(origin);
+        let to_obj_origin = self.transform.world_to_object_point(Point3(origin));
 
         // Sample a direction in object space.
-        let dir = self.object.random_direction(to_obj_origin, u, v, time);
+        let dir = self.object.random_direction(*to_obj_origin, u, v, time);
         // Transform direction back to world space using the inverse rotation.
         self.transform.object_to_world_direction(dir)
     }
@@ -120,13 +120,13 @@ where
         v: f32,
         time: f32,
     ) -> crate::hittable::LightSample {
-        let to_obj_origin = self.transform.world_to_object_point(origin);
-        let sample = self.object.sample_light(to_obj_origin, u, v, time);
+        let to_obj_origin = self.transform.world_to_object_point(Point3(origin));
+        let sample = self.object.sample_light(*to_obj_origin, u, v, time);
         crate::hittable::LightSample {
-            direction: self.transform.object_to_world_direction(sample.direction),
+            direction: Direction3(self.transform.object_to_world_direction(*sample.direction)),
             // For rigid transforms, normals transform by the inverse rotation
             // (equivalent to the rotation itself for orthonormal matrices).
-            normal: self.transform.object_to_world_direction(sample.normal),
+            normal: Direction3(self.transform.object_to_world_direction(*sample.normal)),
             distance: sample.distance,
             pdf: sample.pdf,
             emission: sample.emission,
@@ -192,7 +192,7 @@ impl Transform for RotateY {
             ray.direction.y,
             (self.sin_theta * ray.direction.x) + (self.cos_theta * ray.direction.z),
         );
-        Ray::new_with_time(origin, direction, ray.time)
+        Ray::new_with_time(origin, Direction3(direction), ray.time)
     }
 
     fn hit(&self, hit: &mut Hit) {
@@ -206,13 +206,13 @@ impl Transform for RotateY {
             hit.mapping_point.y,
             (-self.sin_theta * hit.mapping_point.x) + (self.cos_theta * hit.mapping_point.z),
         );
-        hit.set_geometric_normal(Vec3::new(
+        hit.set_geometric_normal(Direction3(Vec3::new(
             (self.cos_theta * hit.geometric_normal().x)
                 + (self.sin_theta * hit.geometric_normal().z),
             hit.geometric_normal().y,
             (-self.sin_theta * hit.geometric_normal().x)
                 + (self.cos_theta * hit.geometric_normal().z),
-        ));
+        )));
     }
 
     fn bbox(&self, bbox: Aabb) -> Aabb {

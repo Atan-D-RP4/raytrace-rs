@@ -44,8 +44,8 @@ impl TextureMapping3D {
 
     /// Applies this mapping to a texture context and returns the mapped copy.
     pub fn map(&self, coords: TextureCoords) -> TextureCoords {
-        let mapped_point = self.map_point(coords.tex_points.texture);
-        coords.with_texture_point(mapped_point)
+        let mapped_point = self.map_point(*coords.tex_points.texture);
+        coords.with_texture_point(Point3(mapped_point))
     }
 
     /// Applies this mapping to a 3D point and returns the mapped copy.

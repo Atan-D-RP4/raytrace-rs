@@ -1,8 +1,8 @@
 use glam::Vec3;
 use rand::RngExt;
 
-use crate::vec3::random_unit_vector_with_rng;
 use crate::vec3::Point3;
+use crate::vec3::random_unit_vector_with_rng;
 
 #[allow(dead_code)]
 fn trilinear_interp(c: [[[f32; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {

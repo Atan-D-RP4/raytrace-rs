@@ -9,18 +9,18 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
-use crate::pdf::{power_heuristic, EmitterPDF, EnvPdf, PdfKind, PDF};
+use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
+use crate::pdf::{EmitterPDF, EnvPdf, PDF, PdfKind, power_heuristic};
 use crate::ray::Ray;
 use crate::sampler::{Sampler, SamplingSession};
 
-use glam::Vec3;
-
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 /// Maximum depth for the split delta path (mirror direction from Mix one-delta).
 /// Prevents exponential cascade when `max_depth` is large (e.g. 50) and the
@@ -105,7 +105,7 @@ fn bsdf_mixture_pdf(
             if is_volume {
                 1.0 / (4.0 * PI)
             } else {
-                let cos_theta = wi.dot(si.shading_normal());
+                let cos_theta = wi.dot(*si.shading_normal());
                 if cos_theta > 0.0 {
                     1.0 / (2.0 * PI)
                 } else {
@@ -198,14 +198,15 @@ impl PathTracingIntegrator {
                 let light_pdf = if lights.is_empty() {
                     0.0
                 } else {
-                    EmitterPDF::new(lights, si.point(), ray.time).value(ray.direction.normalize())
+                    EmitterPDF::new(lights, si.point(), ray.time)
+                        .value(ray.direction.normalize().into_inner())
                 };
 
                 // Accumulate emission with MIS weight to avoid double-counting with NEE.
                 // At bounce 0 or after a delta bounce, no previous scatter exists that could
                 // overlap with NEE, so emission is added at full weight (PBRT convention).
                 // Outgoing direction (away from the surface) is the negative of the ray direction.
-                let wo = -ray.direction.normalize();
+                let wo: Vec3 = (-ray.direction.normalize()).into_inner();
                 // NEE uses wo-aware emission (e.g., Beer's law for coated)
                 let emission = material.emitted(wo, &si);
                 if bounce == 0 || prev_was_delta {
@@ -241,9 +242,9 @@ impl PathTracingIntegrator {
 
                     // Sample a point on the light source — returns direction, normal, distance, and area PDF
                     let (u, v) = session.next_2d();
-                    let sample = light.sample_light(si.point(), u, v, ray.time);
+                    let sample = light.sample_light(si.point().into_inner(), u, v, ray.time);
                     let light_unit = sample.direction.normalize();
-                    let light_emission = sample.emission;
+                    let light_emission = Color3(*sample.emission);
 
                     // Shadow ray: test visibility/occlusion between the surface point and the light source
                     let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time);
@@ -262,10 +263,10 @@ impl PathTracingIntegrator {
                         // strategy and the BSDF continuation strategy explain this sampled
                         // NEE direction.
                         let light_pdf_at_nee =
-                            EmitterPDF::new(lights, si.point(), ray.time).value(light_unit);
+                            EmitterPDF::new(lights, si.point(), ray.time).value(*light_unit);
                         let bsdf_pdf_at_nee = bsdf_mixture_pdf(
                             wo,
-                            light_unit,
+                            *light_unit,
                             &si,
                             material,
                             self.env_map.as_ref(),
@@ -275,8 +276,8 @@ impl PathTracingIntegrator {
                             light_pdf_at_nee * light_pdf_at_nee + bsdf_pdf_at_nee * bsdf_pdf_at_nee;
                         let w_nee = power_heuristic(light_pdf_at_nee, sum_sq_nee);
 
-                        let f = material.eval(wo, light_unit, &si);
-                        let cos_light = sample.normal.dot(-light_unit).abs();
+                        let f = material.eval(wo, *light_unit, &si);
+                        let cos_light = sample.normal.dot(*-light_unit).abs();
 
                         // N factor: uniform selection over N lights, estimator = N * contribution.
                         // material.eval() already includes the surface cosine factor (|cos θ_s|)
@@ -323,7 +324,7 @@ impl PathTracingIntegrator {
                         }
                         BsdfScatter::NonDelta { pdf_kinds } => {
                             let (d, c, p) = self.mis_sample_continuation::<S>(
-                                pdf_kinds, wo, &si, material, normal, session,
+                                pdf_kinds, wo, &si, material, *normal, session,
                             );
                             new_prev_bsdf_pdf = p;
                             (d, c, None)
@@ -337,9 +338,11 @@ impl PathTracingIntegrator {
                             // Trace the delta child's deterministic path (mirror direction).
                             let delta_ray = Ray::new_with_differentials(
                                 si.point(),
-                                delta_wi,
+                                Direction3(delta_wi),
                                 ray.time,
-                                ray.propagate_differentials(normal, hit_time, delta_eta, hit_point),
+                                ray.propagate_differentials(
+                                    *normal, hit_time, delta_eta, hit_point,
+                                ),
                             );
                             let mut delta_ray_mut = delta_ray;
                             let delta_li = self.li_inner::<S>(
@@ -359,7 +362,7 @@ impl PathTracingIntegrator {
                                 wo,
                                 &si,
                                 material,
-                                normal,
+                                *normal,
                                 session,
                             );
                             new_prev_bsdf_pdf = p;
@@ -375,9 +378,9 @@ impl PathTracingIntegrator {
                     // ray differentials so texture filtering survives indirect bounces.
                     let new_ray = Ray::new_with_differentials(
                         si.point(),
-                        direction,
+                        Direction3(direction),
                         ray.time,
-                        ray.propagate_differentials(normal, hit_time, eta, hit_point),
+                        ray.propagate_differentials(*normal, hit_time, eta, hit_point),
                     );
                     ray = new_ray;
                 } else {
@@ -388,7 +391,7 @@ impl PathTracingIntegrator {
             } else {
                 let direction = ray.direction.normalize();
                 let background_color = if let Some(env_map) = &self.env_map {
-                    env_map.le(direction)
+                    env_map.le(*direction)
                 } else {
                     self.background
                 };
@@ -404,7 +407,7 @@ impl PathTracingIntegrator {
                     return accumulated_color + accumulated_attenuation * background_color;
                 }
                 let env_pdf = match &self.env_map {
-                    Some(env_map) => env_map.to_solid_angle_pdf(direction),
+                    Some(env_map) => env_map.to_solid_angle_pdf(*direction),
                     None => 1.0 / (4.0 * PI),
                 };
                 let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + env_pdf * env_pdf;

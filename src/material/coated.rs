@@ -15,8 +15,8 @@ use glam::Vec3;
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    fresnel_r0, fresnel_schlick, ggx_sample_h, Bsdf, BsdfScatter, GpuMaterialBuffer,
-    GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE, MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
+    MAX_BSDF_STRATS, PdfKind, fresnel_r0, fresnel_schlick, ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::vec3::Color3;
@@ -280,7 +280,7 @@ impl Bsdf for CoatedMaterial {
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         let wo_global = wo;
-        let n = si.shading_normal();
+        let n = si.shading_normal().into_inner();
         let mut throughput = Color3::new(1.0, 1.0, 1.0);
 
         // coating_tint is already clamped to [0, 1] in the constructor.
@@ -492,7 +492,7 @@ impl Bsdf for CoatedMaterial {
     }
 
     fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
-        let sn = si.shading_normal();
+        let sn = si.shading_normal().into_inner();
         // Compute the cosine of the angle between the outgoing/incoming directions and the
         // shading normal.
         let cos_wo = wo.dot(sn).abs();
@@ -571,7 +571,7 @@ impl Bsdf for CoatedMaterial {
     }
 
     fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
-        let sn = si.shading_normal();
+        let sn = si.shading_normal().into_inner();
         let cos_wo = wo.dot(sn).abs();
         let cos_wi = wi.dot(sn).abs();
         // Fresnel transmittance at top interface for outgoing direction
@@ -604,13 +604,13 @@ impl Bsdf for CoatedMaterial {
     fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
         // Refract global wo into the coating's internal frame so the
         // substrate's GGX PDF uses the same coordinates as eval/pdf.
-        let sn = si.shading_normal();
+        let sn = si.shading_normal().into_inner();
         let wo_frame = self.snell_internal_frame(wo, sn)?;
         self.substrate.pdf_kind(wo_frame.wo_internal, si)
     }
 
     fn emitted(&self, wo: Vec3, si: &SurfaceInteraction) -> Color3 {
-        let sn = si.shading_normal();
+        let sn = si.shading_normal().into_inner();
         let cos_wo = wo.dot(sn).abs();
         // Fresnel transmittance at coating-air boundary for the exit direction
         let fresnel_t = self.fresnel_transmittance(cos_wo);

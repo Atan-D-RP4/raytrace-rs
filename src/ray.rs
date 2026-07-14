@@ -1,29 +1,27 @@
 use glam::Vec3;
 
 use crate::aabb::Aabb;
-use crate::vec3::Point3;
+use crate::vec3::{Direction3, Point3};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RayDifferentials {
     pub rx_origin: Point3,
     pub ry_origin: Point3,
-    pub rx_direction: Vec3,
-    pub ry_direction: Vec3,
+    pub rx_direction: Direction3,
+    pub ry_direction: Direction3,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Ray {
     pub origin: Point3,
-    /// TODO: refactor to `Direction(Vec3)` newtype when Vec3/Color3/Point3 get
-    /// proper newtypes — this field must never be zero (see debug_assert in constructors).
-    pub direction: Vec3,
+    pub direction: Direction3,
     pub time: f32,
     pub inverse_direction: Vec3,
     pub differentials: Option<RayDifferentials>,
 }
 
 impl Ray {
-    pub fn new(origin: Point3, direction: Vec3) -> Self {
+    pub fn new(origin: Point3, direction: Direction3) -> Self {
         debug_assert!(
             direction.length_squared() >= 1e-8,
             "zero-direction ray — produces inf/nan in inverse_direction and AABB tests"
@@ -37,7 +35,7 @@ impl Ray {
         }
     }
 
-    pub fn new_with_time(origin: Point3, direction: Vec3, time: f32) -> Self {
+    pub fn new_with_time(origin: Point3, direction: Direction3, time: f32) -> Self {
         debug_assert!(
             direction.length_squared() >= 1e-8,
             "zero-direction ray — produces inf/nan in inverse_direction and AABB tests"
@@ -53,7 +51,7 @@ impl Ray {
 
     pub fn new_with_differentials(
         origin: Point3,
-        direction: Vec3,
+        direction: Direction3,
         time: f32,
         differentials: Option<RayDifferentials>,
     ) -> Self {
@@ -73,9 +71,7 @@ impl Ray {
     /// Evaluate the ray at parameter t: returns the point along the ray at distance t from the
     /// origin.
     pub fn at(&self, t: f32) -> Point3 {
-        let origin: Vec3 = self.origin;
-        let direction = self.direction;
-        origin + direction * t
+        self.origin + self.direction * t
     }
 
     /// World-space pixel footprint (dpdx) using tangent-plane projection (Igehy 2000 / pbrt ComputeDifferentials):
@@ -97,10 +93,11 @@ impl Ray {
         if denom.abs() < 1e-4 {
             // Grazing angle: tangent-plane formula is ill-conditioned.
             // Fall back to the bounded t_hit estimate.
-            return (rx_origin - primary_origin) + t_hit * (rx_direction - primary_direction);
+            return (rx_origin.into_inner() - primary_origin.into_inner())
+                + t_hit * (rx_direction - primary_direction);
         }
-        let t = normal.dot(hit_point - rx_origin) / denom;
-        (rx_origin + rx_direction * t) - hit_point
+        let t = normal.dot(hit_point.into_inner() - rx_origin.into_inner()) / denom;
+        (rx_origin.into_inner() + rx_direction * t) - hit_point.into_inner()
     }
 
     /// Propagate ray differentials through a surface scatter event.
@@ -116,30 +113,26 @@ impl Ray {
             // the incoming position derivatives (dpdx / dpdy at the hit).
             let dpdx = Ray::differential_footprint(
                 rd.rx_origin,
-                rd.rx_direction,
+                rd.rx_direction.into_inner(),
                 hit_point,
                 normal,
                 hit_time,
                 self.origin,
-                self.direction,
+                self.direction.into_inner(),
             );
             let dpdy = Ray::differential_footprint(
                 rd.ry_origin,
-                rd.ry_direction,
+                rd.ry_direction.into_inner(),
                 hit_point,
                 normal,
                 hit_time,
                 self.origin,
-                self.direction,
+                self.direction.into_inner(),
             );
 
             // Regenerate the ray differentials for the scattered ray. For reflection, the direction derivatives
             // are reflected. For refraction, the direction derivatives are refracted.
             let (rx_direction, ry_direction) = if let Some(eta) = eta {
-                // (
-                //     refract(&rd.rx_direction.into(), &normal, eta),
-                //     refract(&rd.ry_direction.into(), &normal, eta),
-                // )
                 (
                     rd.rx_direction.refract(normal, eta),
                     rd.ry_direction.refract(normal, eta),
@@ -191,8 +184,8 @@ impl ParametricCurve {
     /// For stationary curves (velocity = 0), returns the original bbox translated
     /// to origin. For moving curves, merges the AABB at both endpoints.
     pub fn sweep_aabb(&self, bbox: &Aabb) -> Aabb {
-        let box0 = bbox.translate(self.origin);
-        let box1 = bbox.translate(self.origin + self.velocity);
+        let box0 = bbox.translate(self.origin.into_inner());
+        let box1 = bbox.translate((self.origin + self.velocity).into_inner());
 
         box0.merge(&box1)
     }
