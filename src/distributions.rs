@@ -68,15 +68,23 @@ impl Dist1D {
     /// Sample the distribution with a unit-random value `u` ∈ [0, 1).
     /// Returns (index, PDF_value) where PDF_value uses the [0, 1] sample-space measure.
     pub fn sample(&self, u: f32) -> (usize, f32) {
-        let u_clamp = &u.clamp(0., 1.0 - 1e-10);
+        if self.funcs.is_empty() {
+            return (0, 1.0);
+        }
+        // NOTE: `1.0 - 1e-10` rounds back to exactly 1.0 in f32 (1e-10 is far below
+        // f32's epsilon near 1.0), so a u >= 1.0 would clamp to 1.0 and push the
+        // binary search past the last valid index. Use a bound strictly below 1.0.
+        let u_clamp = u.clamp(0., 1.0 - f32::EPSILON);
         let offset = self.cdfs.binary_search_by(|&val| {
-            if val <= *u_clamp {
+            if val <= u_clamp {
                 std::cmp::Ordering::Less
             } else {
                 std::cmp::Ordering::Greater
             }
         });
-        let index = offset.unwrap_or_else(|idx| idx - 1);
+        let index = offset
+            .unwrap_or_else(|idx| idx.saturating_sub(1))
+            .min(self.funcs.len() - 1);
         (index, self.pdf(index))
     }
 
@@ -203,5 +211,44 @@ impl Dist2D {
     /// Evaluate the PDF at pixel (i, j) in the [0, 1]² sample-space measure.
     pub fn pdf(&self, i: usize, j: usize) -> f32 {
         self.marginal.pdf(j) * self.conditional[j].pdf(i)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dist1d_sample_u_at_one_does_not_panic() {
+        // Regression: `1.0 - 1e-10` rounds to 1.0 in f32, so a u >= 1.0 clamped to
+        // 1.0 pushed the binary search past the last valid index (index == n).
+        let values: Vec<f32> = (0..2048)
+            .map(|i| (i as f32 + 1.0).sin().abs() + 0.001)
+            .collect();
+        let dist = Dist1D::new(&values);
+        for u in [0.0f32, 0.5, 1.0 - f32::EPSILON, 1.0, 1.5] {
+            let (idx, pdf) = dist.sample(u);
+            assert!(
+                idx < dist.funcs.len(),
+                "index {idx} out of bounds for u={u}"
+            );
+            assert!(pdf.is_finite() && pdf >= 0.0, "bad pdf {pdf} for u={u}");
+        }
+    }
+
+    #[test]
+    fn dist2d_sample_u_at_one_does_not_panic() {
+        let nu = 2048;
+        let nv = 1024;
+        let data: Vec<f32> = (0..nv * nu)
+            .map(|k| ((k % nu) as f32 + 1.0).sin().abs() + 0.001)
+            .collect();
+        let dist = Dist2D::new(&data, nu, nv);
+        for (u, v) in [(0.0f32, 0.0f32), (1.0, 1.0), (1.5, 0.7), (0.3, 1.5)] {
+            let (i, j, pdf) = dist.sample(u, v);
+            assert!(i < nu, "col {i} out of bounds for u={u}");
+            assert!(j < nv, "row {j} out of bounds for v={v}");
+            assert!(pdf.is_finite() && pdf >= 0.0, "bad pdf {pdf}");
+        }
     }
 }
