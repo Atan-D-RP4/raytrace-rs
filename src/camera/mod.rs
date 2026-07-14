@@ -10,15 +10,15 @@ pub struct CameraSampler {
     /// Pixel coordinates for the sample (x, y).
     pub pixel: (u32, u32),
     /// Anti-aliasing jitter within the pixel (0.0 to 1.0).
-    pub jitter: (f64, f64),
+    pub jitter: (f32, f32),
     /// Lens sample for depth of field (0.0 to 1.0).
-    pub lens: (f64, f64),
+    pub lens: (f32, f32),
     /// Time for motion blur (0.0 to 1.0, where 0.0 is the start of the shutter and 1.0 is the end).
-    pub time: f64,
+    pub time: f32,
 }
 
 impl CameraSampler {
-    pub fn new(pixel: (u32, u32), jitter: (f64, f64), lens: (f64, f64), time: f64) -> Self {
+    pub fn new(pixel: (u32, u32), jitter: (f32, f32), lens: (f32, f32), time: f32) -> Self {
         Self {
             pixel,
             jitter,

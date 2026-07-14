@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
 use crate::texture::{TextureCoords, TextureDerivatives};
-use crate::vec3::{Color3, Vec3};
+use crate::vec3::Color3;
 
 /// Represents a ray-object intersection hit, containing geometric information about the
 /// intersection point.
@@ -15,7 +17,7 @@ use crate::vec3::{Color3, Vec3};
 /// accidentally. Typed newtypes would catch that at compile time.
 pub struct Hit {
     /// Ray parameter `t` at the intersection point.
-    pub time: f64,
+    pub time: f32,
     /// World-space intersection position.
     // TODO(mapping-2d3d): move 3D mapping inputs into a dedicated 3D mapping payload.
     pub point: Vec3,
@@ -27,7 +29,7 @@ pub struct Hit {
     pub mapping_point: Vec3,
     /// Optional UV coordinates for the hit point. `None` for Volume or other primitives that may
     /// not have UVs.
-    pub uv: Option<(f64, f64)>,
+    pub uv: Option<(f32, f32)>,
     // Optional UV gradient for texture filtering. `None` if not computed.
     pub uv_gradients: Option<(Vec3, Vec3)>,
 
@@ -38,15 +40,15 @@ pub struct Hit {
 
 impl Hit {
     pub fn new(
-        time: f64,
+        time: f32,
         point: Vec3,
         mapping_point: Vec3,
         geometric_normal: Vec3,
-        uv: Option<(f64, f64)>,
+        uv: Option<(f32, f32)>,
         uv_gradients: Option<(Vec3, Vec3)>,
     ) -> Self {
         debug_assert!(
-            geometric_normal.near_zero() || (geometric_normal.length_squared() - 1.0).abs() < 1e-6,
+            geometric_normal.length_squared() < 1e-8,
             "geometric_normal must be unit length or zero (for volumes)"
         );
         Self {
@@ -62,7 +64,7 @@ impl Hit {
     /// Sets the geometric normal (must be unit length, or zero for volumes).
     pub(crate) fn set_geometric_normal(&mut self, n: Vec3) {
         debug_assert!(
-            n.near_zero() || (n.length_squared() - 1.0).abs() < 1e-6,
+            n.length_squared() < 1e-8,
             "geometric_normal must be unit length or zero (for volumes)"
         );
         self.geometric_normal = n;
@@ -160,7 +162,7 @@ impl<'si> SurfaceInteraction<'si> {
 
     /// Sets the front_face and shading_normal based on the ray direction and geometric normal.
     pub fn set_face_normal(&mut self, ray: &Ray) {
-        self.front_face = ray.direction.dot(&self.hit.geometric_normal) < 0.0;
+        self.front_face = ray.direction.dot(self.hit.geometric_normal) < 0.0;
         self.shading_normal = if self.front_face {
             self.hit.geometric_normal
         } else {
@@ -196,7 +198,7 @@ impl<'si> SurfaceInteraction<'si> {
     }
 
     /// Returns the UV coordinates of the intersection point, if available.
-    pub fn uv(&self) -> Option<(f64, f64)> {
+    pub fn uv(&self) -> Option<(f32, f32)> {
         self.hit.uv
     }
 
@@ -207,7 +209,7 @@ impl<'si> SurfaceInteraction<'si> {
     }
 
     /// Returns the ray parameter `t` at the intersection point.
-    pub fn time(&self) -> f64 {
+    pub fn time(&self) -> f32 {
         self.hit.time
     }
 
@@ -305,9 +307,9 @@ pub struct LightSample {
     /// Light's outward surface normal at the sampled point (unit length).
     pub normal: Vec3,
     /// Distance from the surface point to the sampled point on the light.
-    pub distance: f64,
+    pub distance: f32,
     /// Area PDF of this sample (probability density per unit area on the light surface).
-    pub pdf: f64,
+    pub pdf: f32,
     /// Emission color of the light at the sampled point (radiance).
     pub emission: Vec3,
 }
@@ -315,14 +317,14 @@ pub struct LightSample {
 pub trait Sampleable: Intersectable + Send + Sync {
     /// Returns the PDF value for sampling this hittable from a given origin and direction.
     /// Default returns 0.0 (no contribution to the PDF).
-    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
+    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f32) -> f32 {
         let _ = (origin, direction, time);
         0.0
     }
 
     /// Samples a random direction toward this hittable from a given origin.
     /// Takes `(u, v)` in `[0, 1)` for sampling. Default returns Vec3::ZERO.
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
+    fn random_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
         let _ = (origin, u, v, time);
         Vec3::ZERO
     }
@@ -333,19 +335,19 @@ pub trait Sampleable: Intersectable + Send + Sync {
     /// The returned [`LightSample`] is self-consistent — the direction points from
     /// `origin` to the sampled point, the normal is the outward normal at that point,
     /// and the distance equals `direction.length()`.
-    fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample;
+    fn sample_light(&self, origin: Vec3, u: f32, v: f32, time: f32) -> LightSample;
 }
 
 impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
+    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f32) -> f32 {
         (**self).pdf_value(origin, direction, time)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
+    fn random_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
         (**self).random_direction(origin, u, v, time)
     }
 
-    fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample {
+    fn sample_light(&self, origin: Vec3, u: f32, v: f32, time: f32) -> LightSample {
         (**self).sample_light(origin, u, v, time)
     }
 }

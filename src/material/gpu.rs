@@ -83,10 +83,10 @@ impl GpuMaterialBuffer {
         self.nodes.len() * std::mem::size_of::<GpuMaterialNode>()
     }
 
-    pub fn push_params(&mut self, params: &[f64]) {
-        // GPU uses f32, but the CPU representation keeps f64 precision. Cast here
+    pub fn push_params(&mut self, params: &[f32]) {
+        // GPU uses f32, but the CPU representation keeps f32 precision. Cast here
         // so the rest of the code doesn't have to think about it.
-        let floats: Vec<f32> = params.iter().map(|v| *v as f32).collect();
+        let floats: Vec<f32> = params.to_vec();
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 floats.as_ptr() as *const u8,

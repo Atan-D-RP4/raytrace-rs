@@ -16,24 +16,24 @@
 //! not over a distribution. The integrator must skip MIS weighting and use the
 //! sampled direction directly.
 
+use glam::Vec3;
+
 use crate::hittable::SurfaceInteraction;
-use crate::vec3::{Color3, Vec3, reflect, refract};
-
 use crate::material::fresnel_schlick;
+use crate::material::gpu::{GpuSerializable, GPU_NONE};
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
-use crate::material::{GPU_NONE, PdfKind};
-
-use super::gpu::GpuSerializable;
+use crate::pdf::PdfKind;
+use crate::vec3::Color3;
 
 /// Dielectric transmission/reflection controlled by refractive index.
 #[derive(Clone)]
 pub struct DielectricMaterial {
     /// Index of refraction (1.0 = air, 1.33 = water, 1.5 = glass, 2.42 = diamond).
-    pub ior: f64,
+    pub ior: f32,
     /// Optional tint color for colored glass. Pure white means no tint.
     pub tint: Color3,
     /// Precomputed Fresnel reflectance at normal incidence.
-    pub r0: f64,
+    pub r0: f32,
 }
 
 impl Bsdf for DielectricMaterial {
@@ -43,7 +43,7 @@ impl Bsdf for DielectricMaterial {
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
-        next_dim: &mut dyn FnMut() -> f64,
+        next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         // Determine the ratio of indices of refraction based on whether the ray is entering or exiting the material.
         let ri = if si.front_face() {
@@ -53,16 +53,16 @@ impl Bsdf for DielectricMaterial {
         };
 
         // Compute the cosine of the angle between the outgoing direction and the surface normal.
-        let cos_theta = wo.dot(&si.shading_normal()).min(1.0);
+        let cos_theta = wo.dot(si.shading_normal()).min(1.0);
         // Compute the sine of the angle using the identity sin²(θ) + cos²(θ) = 1.
         let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 
         // Use Fresnel's equations to determine the probability of reflection vs refraction.
         let u = next_dim();
         let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > u {
-            reflect(&-wo, &si.shading_normal())
+            -wo.reflect(si.shading_normal())
         } else {
-            refract(&-wo, &si.shading_normal(), ri)
+            -wo.refract(si.shading_normal(), ri)
         };
 
         // Return the chosen direction with unit attenuation (delta material — all energy goes one way).
@@ -79,7 +79,7 @@ impl Bsdf for DielectricMaterial {
     }
 
     /// Delta material — probability of any specific direction is zero.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
+    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f32 {
         0.0
     }
 
@@ -90,8 +90,8 @@ impl Bsdf for DielectricMaterial {
 
     /// Estimate the reflectance fraction for the coating layer. This is used in
     /// the integrator to determine how much light is reflected vs transmitted.
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
-        let cos_theta = wo.dot(&si.shading_normal()).abs();
+    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
+        let cos_theta = wo.dot(si.shading_normal()).abs();
         // Only the reflective fraction of the dielectric is returned to the
         // coating; transmitted light goes into the substrate and doesn't
         // contribute to the inter-reflection series.

@@ -1,11 +1,12 @@
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use tracing::{info, trace};
+
 use crate::aabb::Aabb;
 use crate::hittable::{Bounded, Intersectable, MaterialHit};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use tracing::{info, trace};
 
 /// The number of bins to use for binned SAH BVH construction. More bins gives a more accurate SAH
 /// estimate, but increases the build cost.
@@ -94,14 +95,14 @@ impl BvhNode {
             }
             _ => {
                 // Binned Surface Area Heuristic (SAH) for optimal BVH construction.
-                let mut best_cost = f64::INFINITY;
+                let mut best_cost = f32::INFINITY;
                 let mut best_axis = 0;
                 let mut best_split = 0;
 
                 for axis in 0..3 {
                     // Find Centroid range along the axis
                     let (min_c, max_c) = centroids.iter().fold(
-                        (f64::INFINITY, f64::NEG_INFINITY),
+                        (f32::INFINITY, f32::NEG_INFINITY),
                         |(min, max), (_, _, centroid)| {
                             (min.min(centroid[axis]), max.max(centroid[axis]))
                         },
@@ -119,9 +120,9 @@ impl BvhNode {
                     // Bin the objects
                     for (_, bbox, centroid) in centroids.iter() {
                         let t = (centroid[axis] - min_c) / range;
-                        let b = (t * BVH_BIN_SIZE as f64)
+                        let b = (t * BVH_BIN_SIZE as f32)
                             .floor()
-                            .clamp(0., BVH_BIN_SIZE as f64 - 1.)
+                            .clamp(0., BVH_BIN_SIZE as f32 - 1.)
                             as usize;
                         bin_count[b] += 1;
                         bin_bbox[b] = bin_bbox[b].merge(bbox);
@@ -154,8 +155,8 @@ impl BvhNode {
                             continue; // Skip empty splits
                         }
 
-                        let cost = left_count as f64 * left_bbox.surface_area()
-                            + right_count as f64 * right_bbox.surface_area();
+                        let cost = left_count as f32 * left_bbox.surface_area()
+                            + right_count as f32 * right_bbox.surface_area();
 
                         if cost < best_cost {
                             best_cost = cost;
@@ -167,17 +168,23 @@ impl BvhNode {
 
                 let root_sa = root_bbox.surface_area();
                 let trav_cost = root_sa * 0.5;
-                let leaf_cost = root_sa * obj_span as f64;
+                let leaf_cost = root_sa * obj_span as f32;
 
                 if best_cost.is_finite() && best_cost + trav_cost < leaf_cost {
                     trace!(
                         object_count = obj_span,
-                        best_cost, best_axis, best_split, "splitting bvh node with SAH"
+                        best_cost,
+                        best_axis,
+                        best_split,
+                        "splitting bvh node with SAH"
                     );
                 } else {
                     trace!(
                         object_count = obj_span,
-                        best_cost, best_axis, best_split, "not splitting bvh node with SAH"
+                        best_cost,
+                        best_axis,
+                        best_split,
+                        "not splitting bvh node with SAH"
                     );
                     // Not worth splitting — pack into a multi-object leaf.
                     // Only pack if we can fit all objects; otherwise force split below.
@@ -198,7 +205,9 @@ impl BvhNode {
 
                 trace!(
                     object_count = obj_span,
-                    best_axis, best_split, "splitting bvh node with SAH"
+                    best_axis,
+                    best_split,
+                    "splitting bvh node with SAH"
                 );
 
                 // Sort objects by centroid along the best axis, then split at the best point.

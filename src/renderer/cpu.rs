@@ -21,11 +21,11 @@ where
     /// Absolute variance floor. Pixels with variance below this threshold are
     /// considered converged regardless of their brightness. Prevents wasting
     /// samples on near-black pixels that are genuinely dark.
-    threshold_abs: f64,
+    threshold_abs: f32,
     /// Relative variance threshold: variance / luminance². Pixels whose relative
     /// noise drops below this ratio are considered converged. Typical values:
     /// 0.01 (stddev = 10% of mean) to 0.05 (stddev = 22%).
-    threshold_rel: f64,
+    threshold_rel: f32,
     /// Minimum number of samples to take before considering adaptive sampling.
     /// Ensures we have enough data to make a reliable variance estimate.
     min_samples_before_adapt: u32,
@@ -51,11 +51,11 @@ where
         }
     }
 
-    pub fn set_threshold_abs(&mut self, threshold: f64) {
+    pub fn set_threshold_abs(&mut self, threshold: f32) {
         self.threshold_abs = threshold;
     }
 
-    pub fn set_threshold_rel(&mut self, threshold: f64) {
+    pub fn set_threshold_rel(&mut self, threshold: f32) {
         self.threshold_rel = threshold;
     }
 
@@ -126,7 +126,7 @@ where
         let mut converged = vec![false; (width * height) as usize];
 
         // Ring buffer for rolling average of last 8 pass durations.
-        let mut pass_times = [0.0f64; 8];
+        let mut pass_times = [0.0f32; 8];
         let mut pass_count: usize = 0;
 
         for sample_idx in 0..self.samples_per_pixel {
@@ -286,12 +286,12 @@ where
 
             // Log pass timing every 8 passes and on the final pass.
             if (sample_idx + 1) % 8 == 0 || sample_idx + 1 == self.samples_per_pixel {
-                let elapsed = pass_start.elapsed().as_secs_f64();
+                let elapsed = pass_start.elapsed().as_secs_f32();
                 let slot = pass_count % 8;
                 pass_times[slot] = elapsed;
                 pass_count += 1;
                 let window = pass_count.min(8);
-                let avg_sec: f64 = pass_times[..window].iter().sum::<f64>() / window as f64;
+                let avg_sec: f32 = pass_times[..window].iter().sum::<f32>() / window as f32;
                 info!(
                     sample = sample_idx + 1,
                     total = self.samples_per_pixel,
@@ -299,7 +299,7 @@ where
                     avg_sec = format!("{:.4}", avg_sec),
                     eta_sec = format!(
                         "{:.4}",
-                        avg_sec * (self.samples_per_pixel - sample_idx - 1) as f64
+                        avg_sec * (self.samples_per_pixel - sample_idx - 1) as f32
                     ),
                     "sample pass complete"
                 );
@@ -307,10 +307,10 @@ where
         }
 
         info!(
-            elapsed = format!("{:.4}", render_start.elapsed().as_secs_f64()),
+            elapsed = format!("{:.4}", render_start.elapsed().as_secs_f32()),
             samples_per_sec = format!(
                 "{:.2}",
-                self.samples_per_pixel as f64 / render_start.elapsed().as_secs_f64()
+                self.samples_per_pixel as f32 / render_start.elapsed().as_secs_f32()
             ),
             "camera render finished"
         );

@@ -1,9 +1,9 @@
-use crate::film::SharedFramebuffer;
-
 use futures_lite::AsyncWriteExt;
 use futures_lite::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use smol::net::TcpListener;
 use tracing::info;
+
+use crate::film::SharedFramebuffer;
 
 pub struct Prepend<S: AsyncRead + AsyncWrite + Unpin> {
     inner: S,

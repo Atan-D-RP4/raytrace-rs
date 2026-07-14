@@ -219,7 +219,7 @@ impl ApplicationHandler for App {
             .create_window(
                 Window::default_attributes()
                     .with_title("CPU Raytracer Preview")
-                    .with_inner_size(LogicalSize::new(self.width as f64, self.height as f64)),
+                    .with_inner_size(LogicalSize::new(self.width as f32, self.height as f32)),
             )
             .unwrap();
 
@@ -571,7 +571,7 @@ fn headless_render(scene: Scene, scene_name: &str) {
     profiling::scope!("render_cpu");
     renderer.render(&camera, &mut film, (&world, &light_objects), None);
     info!(
-        elapsed = format!("{:.4}", start.elapsed().as_secs_f64()),
+        elapsed = format!("{:.4}", start.elapsed().as_secs_f32()),
         width, height, "render complete"
     );
 

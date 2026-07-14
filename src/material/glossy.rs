@@ -17,18 +17,19 @@
 
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::hittable::SurfaceInteraction;
+use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
-    MAX_BSDF_STRATS, PdfKind, fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h,
+    fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h, Bsdf, BsdfScatter,
+    GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE, MAX_BSDF_STRATS,
 };
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3, reflect};
+use crate::vec3::Color3;
 
-use super::gpu::GpuSerializable;
-
-const MIRROR_THRESHOLD: f64 = 0.01;
+const MIRROR_THRESHOLD: f32 = 0.01;
 
 /// Glossy microfacet BSDF (GGX).
 #[derive(Clone)]
@@ -39,11 +40,11 @@ pub struct GlossyMaterial {
     /// falls back to `albedo`.
     pub tex: Option<Arc<dyn Texture>>,
     /// Surface smoothness: 0 = mirror, 1 = fully rough. GGX alpha = `roughness²`.
-    pub roughness: f64,
+    pub roughness: f32,
     /// Index of refraction for the Fresnel term (1.5 = glass, 1.45 = typical plastic).
-    pub ior: f64,
+    pub ior: f32,
     /// Precomputed Fresnel reflectance at normal incidence.
-    pub r0: f64,
+    pub r0: f32,
 }
 
 impl Bsdf for GlossyMaterial {
@@ -57,15 +58,15 @@ impl Bsdf for GlossyMaterial {
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
-        next_dim: &mut dyn FnMut() -> f64,
+        next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         // Near-mirror: delta path bypasses the mixture PDF entirely.
         if self.is_delta() {
-            let wi = reflect(&-wo, &si.shading_normal());
-            if wi.dot(&si.shading_normal()) <= 0.0 {
+            let wi = -wo.reflect(si.shading_normal());
+            if wi.dot(si.shading_normal()) <= 0.0 {
                 return None;
             }
-            let cos_o = wo.dot(&si.shading_normal()).max(0.0);
+            let cos_o = wo.dot(si.shading_normal()).max(0.0);
             let f = fresnel_schlick(cos_o, self.r0);
             let albedo_ = self
                 .tex
@@ -87,9 +88,9 @@ impl Bsdf for GlossyMaterial {
         let onb = Onb::build_from_normal(si.shading_normal());
         let h_world = onb.local_to_world(h_local);
 
-        let wi = reflect(&-wo, &h_world);
+        let wi = -wo.reflect(h_world);
 
-        if wi.dot(&si.shading_normal()) <= 0.0 {
+        if wi.dot(si.shading_normal()) <= 0.0 {
             return None;
         }
 
@@ -114,12 +115,12 @@ impl Bsdf for GlossyMaterial {
             .unwrap_or(self.albedo);
         let alpha = self.ggx_alpha().unwrap_or(0.001);
 
-        let h = (wo + wi).unit_vector();
-        let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
-        let cos_h_o = wo.dot(&h).max(0.0);
+        let h = (wo + wi).normalize();
+        let cos_h_n = h.dot(si.shading_normal()).max(0.0);
+        let cos_h_o = wo.dot(h).max(0.0);
 
-        let cos_o = wo.dot(&si.shading_normal()).max(0.0);
-        let cos_i = wi.dot(&si.shading_normal()).max(0.0);
+        let cos_o = wo.dot(si.shading_normal()).max(0.0);
+        let cos_i = wi.dot(si.shading_normal()).max(0.0);
 
         if cos_h_o <= 0.0 || cos_o <= 0.0 || cos_i <= 0.0 {
             return Color3::new(0., 0., 0.);
@@ -134,16 +135,16 @@ impl Bsdf for GlossyMaterial {
     }
 
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
+    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
         if self.is_delta() {
             return 0.0;
         }
 
         let alpha = self.ggx_alpha().unwrap_or(0.001);
 
-        let h = (wo + wi).unit_vector();
-        let cos_h_n = h.dot(&si.shading_normal()).max(0.0);
-        let cos_h_o = wo.dot(&h).max(0.0);
+        let h = (wo + wi).normalize();
+        let cos_h_n = h.dot(si.shading_normal()).max(0.0);
+        let cos_h_o = wo.dot(h).max(0.0);
 
         if cos_h_o <= 0.0 {
             return 0.0;
@@ -167,14 +168,14 @@ impl Bsdf for GlossyMaterial {
         }
     }
 
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
+    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
         let albedo = self
             .tex
             .as_ref()
             .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
         let albedo_avg = (albedo.x + albedo.y + albedo.z) / 3.0;
-        let cos_theta = wo.dot(&si.shading_normal()).abs();
+        let cos_theta = wo.dot(si.shading_normal()).abs();
         let f = fresnel_schlick(cos_theta, self.r0);
         // Base color × Fresnel gives the specular reflectance; roughness adds
         // a small boost from multiple scattering making the surface appear brighter.
@@ -186,7 +187,7 @@ impl Bsdf for GlossyMaterial {
         self.roughness < MIRROR_THRESHOLD
     }
 
-    fn ggx_alpha(&self) -> Option<f64> {
+    fn ggx_alpha(&self) -> Option<f32> {
         if self.is_delta() {
             None
         } else {

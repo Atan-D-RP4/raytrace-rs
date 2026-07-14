@@ -11,19 +11,20 @@
 //! PDF, so `sample()` returns `Vec3::ZERO` as a placeholder — the actual
 //! direction comes from the PDF, not the material.
 
-use std::f64::consts::PI;
+use std::f32::consts::PI;
 use std::sync::Arc;
 
-use crate::hittable::SurfaceInteraction;
-use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3};
+use glam::Vec3;
 
-use super::GPU_NONE;
-use super::gpu::GpuSerializable;
-use super::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
-    PdfKind,
+use crate::hittable::SurfaceInteraction;
+use crate::material::gpu::GpuSerializable;
+use crate::material::GPU_NONE;
+use crate::material::{
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    MAX_BSDF_STRATS,
 };
+use crate::texture::Texture;
+use crate::vec3::Color3;
 
 /// Diffuse (Lambertian) surface.
 #[derive(Clone)]
@@ -44,7 +45,7 @@ impl Bsdf for LambertianMaterial {
         &self,
         _wo: Vec3,
         si: &SurfaceInteraction,
-        _next_dim: &mut dyn FnMut() -> f64,
+        _next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         let mut pk = [None; MAX_BSDF_STRATS];
         pk[0] = Some(PdfKind::Cosine {
@@ -60,7 +61,7 @@ impl Bsdf for LambertianMaterial {
             .as_ref()
             .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
-        let cos_theta = si.shading_normal().dot(&wi);
+        let cos_theta = si.shading_normal().dot(wi);
         if cos_theta < 0.0 {
             Color3::new(0., 0., 0.)
         } else {
@@ -69,9 +70,13 @@ impl Bsdf for LambertianMaterial {
     }
 
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
-    fn pdf(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
-        let cos_theta = si.shading_normal().dot(&wi);
-        if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
+    fn pdf(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
+        let cos_theta = si.shading_normal().dot(wi);
+        if cos_theta < 0.0 {
+            0.0
+        } else {
+            cos_theta / PI
+        }
     }
 
     /// Returns `PdfKind::Cosine` for the cosine-weighted hemisphere PDF.
@@ -81,7 +86,7 @@ impl Bsdf for LambertianMaterial {
         })
     }
 
-    fn reflectance_estimate(&self, _wo: Vec3, si: &SurfaceInteraction) -> f64 {
+    fn reflectance_estimate(&self, _wo: Vec3, si: &SurfaceInteraction) -> f32 {
         let albedo = self
             .tex
             .as_ref()

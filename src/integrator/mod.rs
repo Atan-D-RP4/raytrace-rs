@@ -1,16 +1,15 @@
-pub mod path_tracer;
-
-use crate::environment::EnvironmentMap;
-use crate::vec3::Vec3;
-pub use path_tracer::PathTracingIntegrator;
-
 use std::sync::Arc;
 
+use glam::Vec3;
+
+use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::ray::Ray;
 pub use crate::sampler::Sampler;
-
 use crate::vec3::Color3;
+
+pub mod path_tracer;
+pub use path_tracer::PathTracingIntegrator;
 
 pub trait Integrator<S: Sampler>: Send + Sync {
     /// Default background radiance for a ray that missed all geometry.
@@ -48,7 +47,9 @@ mod tests {
     use crate::material::Material;
     use crate::planar::quad;
     use crate::sampler::{NaiveRandomSampler, Point2i, Sampler, StreamRngPair};
-    use crate::vec3::{Point3, Vec3};
+
+    use crate::vec3::{Color3, Point3};
+    use glam::Vec3;
 
     /// Type shortcut for the concrete sampler used in tests.
     type TestSampler = StreamRngPair<NaiveRandomSampler, NaiveRandomSampler>;
@@ -85,7 +86,7 @@ mod tests {
         let world = FlatBvh::from(BvhNode::new(&mut objects));
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
-        let integrator = PathTracingIntegrator::new(8, Color3::new(0.0, 0.0, 0.0), None);
+        let integrator = PathTracingIntegrator::new(8, Color3::ZERO, None);
         let mut sampler = StreamRngPair::new(
             NaiveRandomSampler::with_seed(42),
             NaiveRandomSampler::with_seed(43),
@@ -97,9 +98,9 @@ mod tests {
         for y in 0..4u32 {
             for x in 0..4u32 {
                 // Simple camera: origin at (0, 0, 4), rays toward -z.
-                let u = (x as f64 + 0.5) / 4.0;
-                let v = (y as f64 + 0.5) / 4.0;
-                let direction = Vec3::new(u - 0.5, v - 0.5, -1.0).unit_vector();
+                let u = (x as f32 + 0.5) / 4.0;
+                let v = (y as f32 + 0.5) / 4.0;
+                let direction = Vec3::new(u - 0.5, v - 0.5, -1.0).normalize();
                 let mut ray = Ray::new_with_time(Vec3::new(0., 0., 4.), direction, 0.0);
 
                 let mut session = sampler.begin_pixel(
@@ -172,7 +173,7 @@ mod tests {
             1,
         );
 
-        let dir = Vec3::new(0.0, -1.0, -1.0).unit_vector();
+        let dir = Vec3::new(0.0, -1.0, -1.0).normalize();
         let mut ray = Ray::new_with_time(Vec3::new(0., 1.5, 4.), dir, 0.0);
         let mut session = sampler.begin_pixel(Point2i { x: 0, y: 0 }, 0);
         let color = <PathTracingIntegrator as Integrator<TestSampler>>::li(

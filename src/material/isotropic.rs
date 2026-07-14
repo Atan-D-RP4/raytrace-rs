@@ -10,19 +10,19 @@
 //! attenuation color. The integrator itself generates the new scattered
 //! direction — `sample()` returns `Vec3::ZERO` as a placeholder.
 
-use std::f64::consts::PI;
+use std::f32::consts::PI;
 use std::sync::Arc;
 
-use crate::hittable::SurfaceInteraction;
-use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3};
+use glam::Vec3;
 
-use super::GPU_NONE;
-use super::gpu::GpuSerializable;
-use super::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
-    PdfKind,
+use crate::hittable::SurfaceInteraction;
+use crate::material::gpu::{GpuSerializable, GPU_NONE};
+use crate::material::{
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    MAX_BSDF_STRATS,
 };
+use crate::texture::Texture;
+use crate::vec3::Color3;
 
 /// Isotropic scattering medium (volumes).
 #[derive(Clone)]
@@ -41,7 +41,7 @@ impl Bsdf for IsotropicMaterial {
         &self,
         _wo: Vec3,
         _si: &SurfaceInteraction,
-        _next_dim: &mut dyn FnMut() -> f64,
+        _next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         let mut pk = [None; MAX_BSDF_STRATS];
         pk[0] = Some(PdfKind::UniformSphere);
@@ -60,12 +60,12 @@ impl Bsdf for IsotropicMaterial {
     }
 
     /// Uniform sphere PDF: `1 / (4π)`.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
+    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f32 {
         1.0 / (4.0 * PI)
     }
 
     /// Isotropic scattering is non-directional, so the reflectance estimate is simply `1.0`.
-    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f64 {
+    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f32 {
         1.0
     }
 }

@@ -1,8 +1,10 @@
+use glam::Vec3;
+
 use crate::aabb::Aabb;
 use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::{Point3, Vec3};
+use crate::vec3::Point3;
 
 /// A geometric transform that can map rays, hit records, and bounds.
 ///
@@ -92,7 +94,7 @@ where
     T: Transform,
     O: Sampleable,
 {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
+    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f32) -> f32 {
         // Transform the ray into object space and delegate to the inner object.
         // For rigid transforms (rotation + translation), the Jacobian of the
         // area mapping is 1, so the solid-angle PDF is preserved.
@@ -102,7 +104,7 @@ where
             .pdf_value(transformed.origin, transformed.direction, time)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
+    fn random_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
         let to_obj_origin = self.transform.world_to_object_point(origin);
 
         // Sample a direction in object space.
@@ -114,9 +116,9 @@ where
     fn sample_light(
         &self,
         origin: Vec3,
-        u: f64,
-        v: f64,
-        time: f64,
+        u: f32,
+        v: f32,
+        time: f32,
     ) -> crate::hittable::LightSample {
         let to_obj_origin = self.transform.world_to_object_point(origin);
         let sample = self.object.sample_light(to_obj_origin, u, v, time);
@@ -163,12 +165,12 @@ impl Transform for Translate {
 }
 
 pub struct RotateY {
-    sin_theta: f64,
-    cos_theta: f64,
+    sin_theta: f32,
+    cos_theta: f32,
 }
 
 impl RotateY {
-    pub fn new(angle: f64) -> Self {
+    pub fn new(angle: f32) -> Self {
         let radians = angle.to_radians();
         let (sin_theta, cos_theta) = radians.sin_cos();
         Self {
@@ -214,15 +216,15 @@ impl Transform for RotateY {
     }
 
     fn bbox(&self, bbox: Aabb) -> Aabb {
-        let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
-        let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let mut min = Point3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+        let mut max = Point3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
 
         (0..2)
             .flat_map(|i| (0..2).flat_map(move |j| (0..2).map(move |k| (i, j, k))))
             .for_each(|(i, j, k)| {
-                let i = i as f64;
-                let j = j as f64;
-                let k = k as f64;
+                let i = i as f32;
+                let j = j as f32;
+                let k = k as f32;
 
                 let x = i * bbox.x.max + (1. - i) * bbox.x.min;
                 let y = j * bbox.y.max + (1. - j) * bbox.y.min;

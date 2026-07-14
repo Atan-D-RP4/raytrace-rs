@@ -8,59 +8,75 @@ const MAX_DIMS: usize = 21200;
 include!(concat!(env!("OUT_DIR"), "/sobol_dirs.rs"));
 
 /// Conversion from u32 to [0,1).
-const INV_U32: f64 = 1.0 / (1u64 << 32) as f64;
+const INV_U32: f32 = 1.0 / (1u64 << 32) as f32;
 
-/// Conversion from u64 upper bits to [0,1).
-const INV_53: f64 = 1.0 / (1u64 << 53) as f64;
+/// Conversion from the top 24 bits of a hash to [0, 1).
+/// Matches f32 mantissa precision — extracting more bits is wasted.
+const INV_HASH: f32 = 1.0 / (1u64 << 24) as f32;
+
+/// Fractional bits of the golden ratio φ, used as a hash spacing / scrambling constant.
+/// Computed as ⌊(φ − 1) × 2^64⌋.
+/// Golden ratio spacing constant for integer hashing: ⌊(φ − 1) × 2^64⌋.
+pub(crate) const GOLDEN_RATIO_HASH: u64 = 0x9E3779B97F4A7C15;
+
+/// SplitMix64 LCG multiplier (Vigna 2015).
+const SPLITMIX_MULT_1: u64 = 0xBF58476D1CE4E5B9;
+
+/// SplitMix64 finalizer multiplier (Vigna 2015).
+const SPLITMIX_MULT_2: u64 = 0x94D049BB133111EB;
+
+/// Pixel-coordinate scrambling salt — decorrelates X and Y in the seed hash.
+const PIXEL_COORD_SALT: u64 = 0xE5B9A97F4A7C15F0;
 
 /// Deterministic per-pixel seed used by the camera.
 /// Same hash as `SobolQmcSampler::for_pixel`.
 #[inline]
 pub fn pixel_seed(pixel_x: i32, pixel_y: i32) -> u64 {
-    splitmix64(pixel_x as u64 ^ 0x9E3779B97F4A7C15)
-        .wrapping_mul(0xBF58476D1CE4E5B9)
-        .wrapping_add(pixel_y as u64 ^ 0xE5B9A97F4A7C15F0)
+    splitmix64(pixel_x as u64 ^ GOLDEN_RATIO_HASH)
+        .wrapping_mul(SPLITMIX_MULT_1)
+        .wrapping_add(pixel_y as u64 ^ PIXEL_COORD_SALT)
 }
 
-/// SplitMix64 — fast deterministic hash.
+/// SplitMix64 — fast deterministic hash (Vigna 2015).
 pub(crate) fn splitmix64(mut x: u64) -> u64 {
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    x = (x ^ (x >> 30)).wrapping_mul(SPLITMIX_MULT_1);
+    x = (x ^ (x >> 27)).wrapping_mul(SPLITMIX_MULT_2);
     x ^ (x >> 31)
 }
 
 /// Per-dimension digital shift from `(seed, d)`.
 fn splitmix_shift(seed: u64, d: u32) -> u32 {
-    splitmix64(seed.wrapping_add(d as u64).wrapping_mul(0x9E3779B97F4A7C15)) as u32
+    splitmix64(seed.wrapping_add(d as u64).wrapping_mul(GOLDEN_RATIO_HASH)) as u32
 }
 
 /// Hash `(n, d, seed)` into [0, 1).
-pub(crate) fn hash_sample(n: u32, d: u32, seed: u64) -> f64 {
+pub(crate) fn hash_sample(n: u32, d: u32, seed: u64) -> f32 {
     let h = splitmix64(
         seed ^ (n as u64)
-            .wrapping_mul(0x9E3779B97F4A7C15)
+            .wrapping_mul(GOLDEN_RATIO_HASH)
             .wrapping_add(d as u64),
     );
-    ((h >> 11) as f64) * INV_53
+    // f32 has 24 bits of mantissa; extract exactly 24 bits from the hash.
+    (h >> 40) as f32 * INV_HASH
 }
 
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
 ///
 /// Same `(n, d)` always returns the same value — deterministic across threads.
 pub(crate) trait QmcSampler: Send + Sync {
-    fn sample(&self, n: u32, d: u32) -> f64;
+    fn sample(&self, n: u32, d: u32) -> f32;
 }
 
 /// Stateful stream of correlated 2D sample points.
 /// Each call advances by one 2D point, without waste.
 pub trait SampleStream: Send + Sync {
     /// Returns the next 2D sample point as (u, v) in [0, 1)^2.
-    fn next_2d(&mut self) -> (f64, f64);
+    fn next_2d(&mut self) -> (f32, f32);
 }
 
 /// Stateful source of independent random numbers in [0, 1).
 pub trait SamplerRng: Send + Sync {
-    fn next(&mut self) -> f64;
+    fn next(&mut self) -> f32;
 }
 
 /// Sobol' quasi-random sampler — stateless, uses direct Gray-code
@@ -80,9 +96,9 @@ impl SobolQmcSampler {
 
     /// Deterministic seed from pixel coordinates.
     pub fn for_pixel(pixel_x: i32, pixel_y: i32) -> Self {
-        let seed = splitmix64(pixel_x as u64 ^ 0x9E3779B97F4A7C15)
-            .wrapping_mul(0xBF58476D1CE4E5B9)
-            .wrapping_add(pixel_y as u64 ^ 0xE5B9A97F4A7C15F0);
+        let seed = splitmix64(pixel_x as u64 ^ GOLDEN_RATIO_HASH)
+            .wrapping_mul(SPLITMIX_MULT_1)
+            .wrapping_add(pixel_y as u64 ^ PIXEL_COORD_SALT);
         Self { seed }
     }
 }
@@ -95,7 +111,7 @@ impl Default for SobolQmcSampler {
 
 impl QmcSampler for SobolQmcSampler {
     #[inline(always)]
-    fn sample(&self, n: u32, d: u32) -> f64 {
+    fn sample(&self, n: u32, d: u32) -> f32 {
         if d < MAX_DIMS as u32 {
             let d_idx = d as usize;
             // Gray code g(n) = n ^ (n >> 1).
@@ -108,11 +124,11 @@ impl QmcSampler for SobolQmcSampler {
                 v ^= DIRS[d_idx][c];
                 g &= g - 1; // clear lowest set bit
             }
-            v as f64 * INV_U32
+            v as f32 * INV_U32
         } else {
             // Hash-based fallback for dims >= MAX_DIMS to avoid structured
             // correlation from clamping all overflow dims to the last direction numbers.
-            splitmix_shift(self.seed.wrapping_add(n as u64), d) as f64 * INV_U32
+            splitmix_shift(self.seed.wrapping_add(n as u64), d) as f32 * INV_U32
         }
     }
 }
@@ -144,14 +160,14 @@ impl Default for NaiveRandomSampler {
 
 impl QmcSampler for NaiveRandomSampler {
     #[inline(always)]
-    fn sample(&self, n: u32, d: u32) -> f64 {
+    fn sample(&self, n: u32, d: u32) -> f32 {
         hash_sample(n, d, self.seed)
     }
 }
 
 impl SampleStream for NaiveRandomSampler {
     #[inline(always)]
-    fn next_2d(&mut self) -> (f64, f64) {
+    fn next_2d(&mut self) -> (f32, f32) {
         let u = self.next();
         let v = self.next();
         (u, v)
@@ -160,7 +176,7 @@ impl SampleStream for NaiveRandomSampler {
 
 impl SamplerRng for NaiveRandomSampler {
     #[inline(always)]
-    fn next(&mut self) -> f64 {
+    fn next(&mut self) -> f32 {
         let n = self.seed as u32;
         let d = (self.seed >> 32) as u32;
         let v = hash_sample(n, d, self.seed);
@@ -187,14 +203,14 @@ impl StratifiedRandomSampler {
 
 impl QmcSampler for StratifiedRandomSampler {
     #[inline(always)]
-    fn sample(&self, n: u32, d: u32) -> f64 {
+    fn sample(&self, n: u32, d: u32) -> f32 {
         if d < 2 {
             let cell = n % (self.sqrt_spp * self.sqrt_spp);
             let si = cell / self.sqrt_spp;
             let sj = cell % self.sqrt_spp;
             let jitter = hash_sample(n, d, self.seed);
             let cell_offset = if d == 0 { si } else { sj };
-            ((cell_offset as f64) + jitter) * (1.0 / self.sqrt_spp as f64)
+            ((cell_offset as f32) + jitter) * (1.0 / self.sqrt_spp as f32)
         } else {
             hash_sample(n, d, self.seed)
         }
@@ -203,7 +219,7 @@ impl QmcSampler for StratifiedRandomSampler {
 
 impl SampleStream for StratifiedRandomSampler {
     #[inline(always)]
-    fn next_2d(&mut self) -> (f64, f64) {
+    fn next_2d(&mut self) -> (f32, f32) {
         let n = self.seed as u32;
         self.seed = self.seed.wrapping_add(1);
         (self.sample(n, 0), self.sample(n, 1))
@@ -212,7 +228,7 @@ impl SampleStream for StratifiedRandomSampler {
 
 impl SamplerRng for StratifiedRandomSampler {
     #[inline(always)]
-    fn next(&mut self) -> f64 {
+    fn next(&mut self) -> f32 {
         let n = self.seed as u32;
         self.seed = self.seed.wrapping_add(1);
         self.sample(n, 0)
@@ -277,7 +293,7 @@ impl SampleStreamWriter {
 
 impl SampleStream for SampleStreamWriter {
     #[inline(always)]
-    fn next_2d(&mut self) -> (f64, f64) {
+    fn next_2d(&mut self) -> (f32, f32) {
         let d = self.next_pair * 2;
         let u = self.sampler.sample(self.sample_idx, d);
         let v = self.sampler.sample(self.sample_idx, d + 1);
@@ -300,15 +316,14 @@ impl HashRng {
     }
 
     pub fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
-        let seed =
-            pixel_seed(pixel_x, pixel_y).wrapping_add(sample_idx as u64 * 0x9E3779B97F4A7C15);
+        let seed = pixel_seed(pixel_x, pixel_y).wrapping_add(sample_idx as u64 * GOLDEN_RATIO_HASH);
         Self { seed, counter: 0 }
     }
 }
 
 impl SamplerRng for HashRng {
     #[inline(always)]
-    fn next(&mut self) -> f64 {
+    fn next(&mut self) -> f32 {
         let v = hash_sample(self.counter, 0, self.seed);
         self.counter += 1;
         v
@@ -359,9 +374,9 @@ pub trait Sampler: Clone + Send + 'static {
 /// - [`next_pixel_2d()`](Self::next_pixel_2d) → pixel-filter jitter (may be same as
 ///   `next_2d` for QMC samplers, separate for stratified samplers).
 pub trait SamplingSession {
-    fn next_2d(&mut self) -> (f64, f64);
-    fn next_1d(&mut self) -> f64;
-    fn next_pixel_2d(&mut self) -> (f64, f64);
+    fn next_2d(&mut self) -> (f32, f32);
+    fn next_1d(&mut self) -> f32;
+    fn next_pixel_2d(&mut self) -> (f32, f32);
 }
 
 /// Thread-local storage for samplers — one clone per Rayon worker thread.
@@ -446,17 +461,17 @@ pub struct SobolSession<'s> {
 
 impl SamplingSession for SobolSession<'_> {
     #[inline(always)]
-    fn next_2d(&mut self) -> (f64, f64) {
+    fn next_2d(&mut self) -> (f32, f32) {
         self.stream.next_2d()
     }
 
     #[inline(always)]
-    fn next_1d(&mut self) -> f64 {
+    fn next_1d(&mut self) -> f32 {
         self.rng.next()
     }
 
     #[inline(always)]
-    fn next_pixel_2d(&mut self) -> (f64, f64) {
+    fn next_pixel_2d(&mut self) -> (f32, f32) {
         self.stream.next_2d()
     }
 }
@@ -526,17 +541,17 @@ pub struct StreamRngSession<'s, S: SampleStream, R: SamplerRng> {
 
 impl<S: SampleStream, R: SamplerRng> SamplingSession for StreamRngSession<'_, S, R> {
     #[inline(always)]
-    fn next_2d(&mut self) -> (f64, f64) {
+    fn next_2d(&mut self) -> (f32, f32) {
         self.stream.next_2d()
     }
 
     #[inline(always)]
-    fn next_1d(&mut self) -> f64 {
+    fn next_1d(&mut self) -> f32 {
         self.rng.next()
     }
 
     #[inline(always)]
-    fn next_pixel_2d(&mut self) -> (f64, f64) {
+    fn next_pixel_2d(&mut self) -> (f32, f32) {
         self.stream.next_2d()
     }
 }
@@ -578,7 +593,7 @@ mod tests {
     #[test]
     fn sobol_van_der_corput_first_few() {
         let s = SobolQmcSampler { seed: 0 };
-        let tol = 1.0 / (1u64 << 32) as f64;
+        let tol = INV_U32;
         assert!((s.sample(0, 0) - 0.0).abs() < tol);
         assert!((s.sample(1, 0) - 0.5).abs() < tol);
         assert!((s.sample(2, 0) - 0.75).abs() < tol);
@@ -661,7 +676,7 @@ mod tests {
         let mut same = 0u32;
         for n in 0..64 {
             for d in 0..8 {
-                if (s1.sample(n, d) - s2.sample(n, d)).abs() < f64::EPSILON {
+                if (s1.sample(n, d) - s2.sample(n, d)).abs() < f32::EPSILON {
                     same += 1;
                 }
             }
@@ -679,7 +694,7 @@ mod tests {
         let mut same = 0u32;
         for n in 0..64 {
             for d in 0..8 {
-                if (s1.sample(n, d) - s2.sample(n, d)).abs() < f64::EPSILON {
+                if (s1.sample(n, d) - s2.sample(n, d)).abs() < f32::EPSILON {
                     same += 1;
                 }
             }

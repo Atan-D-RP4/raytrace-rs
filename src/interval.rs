@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, Copy)]
 pub struct Interval {
-    pub min: f64,
-    pub max: f64,
+    pub min: f32,
+    pub max: f32,
 }
 
 impl Default for Interval {
@@ -12,13 +12,13 @@ impl Default for Interval {
 
 impl Interval {
     pub const EMPTY: Interval = Interval {
-        min: f64::INFINITY,
-        max: f64::NEG_INFINITY,
+        min: f32::INFINITY,
+        max: f32::NEG_INFINITY,
     };
 
     pub const UNIVERSE: Interval = Interval {
-        min: f64::NEG_INFINITY,
-        max: f64::INFINITY,
+        min: f32::NEG_INFINITY,
+        max: f32::INFINITY,
     };
 
     pub fn new() -> Self {
@@ -31,11 +31,11 @@ impl Interval {
         Self { min, max }
     }
 
-    pub const fn from(min: f64, max: f64) -> Self {
+    pub const fn from(min: f32, max: f32) -> Self {
         Self { min, max }
     }
 
-    pub fn size(&self) -> f64 {
+    pub fn size(&self) -> f32 {
         if self.max > self.min {
             self.max - self.min
         } else {
@@ -43,15 +43,15 @@ impl Interval {
         }
     }
 
-    pub fn contains(&self, value: f64) -> bool {
+    pub fn contains(&self, value: f32) -> bool {
         self.min <= value && value <= self.max
     }
 
-    pub fn surrounds(&self, value: f64) -> bool {
+    pub fn surrounds(&self, value: f32) -> bool {
         self.min < value && value < self.max
     }
 
-    pub fn clamp(&self, value: f64) -> f64 {
+    pub fn clamp(&self, value: f32) -> f32 {
         if value < self.min {
             self.min
         } else if value > self.max {
@@ -61,7 +61,7 @@ impl Interval {
         }
     }
 
-    pub fn expand(&mut self, delta: f64) {
+    pub fn expand(&mut self, delta: f32) {
         let padding = delta / 2.0;
         self.min -= padding;
         self.max += padding;

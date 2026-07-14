@@ -16,10 +16,12 @@ mod gpu;
 mod impls;
 pub mod mapping;
 
-pub use gpu::{GPU_TEX_NONE, GpuTextureBuffer, GpuTextureNode, GpuTextureType};
+pub use gpu::{GpuTextureBuffer, GpuTextureNode, GpuTextureType, GPU_TEX_NONE};
 pub use impls::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor};
 
-use crate::vec3::{Color3, Point3, Vec3};
+use glam::Vec3;
+
+use crate::vec3::{Color3, Point3};
 
 pub trait UVDifferentiable {
     /// Returns the UV coordinates and their screen-space derivatives.
@@ -73,18 +75,18 @@ pub struct TextureDerivatives {
     /// Screen-space derivative of the hit position with respect to screen y.
     pub dpdy: Vec3,
     /// Screen-space derivative of U with respect to screen x.
-    pub dudx: f64,
+    pub dudx: f32,
     /// Screen-space derivative of U with respect to screen y.
-    pub dudy: f64,
+    pub dudy: f32,
     /// Screen-space derivative of V with respect to screen x.
-    pub dvdx: f64,
+    pub dvdx: f32,
     /// Screen-space derivative of V with respect to screen y.
-    pub dvdy: f64,
+    pub dvdy: f32,
 }
 
 impl TextureDerivatives {
     /// Creates a new derivative bundle.
-    pub fn new(dpdx: Vec3, dpdy: Vec3, dudx: f64, dudy: f64, dvdx: f64, dvdy: f64) -> Self {
+    pub fn new(dpdx: Vec3, dpdy: Vec3, dudx: f32, dudy: f32, dvdx: f32, dvdy: f32) -> Self {
         Self {
             dpdx,
             dpdy,
@@ -101,16 +103,16 @@ impl TextureDerivatives {
         Self {
             dpdx,
             dpdy,
-            dudx: dpdx.dot(&dudp),
-            dudy: dpdy.dot(&dudp),
-            dvdx: dpdx.dot(&dvdp),
-            dvdy: dpdy.dot(&dvdp),
+            dudx: dpdx.dot(dudp),
+            dudy: dpdy.dot(dudp),
+            dvdx: dpdx.dot(dvdp),
+            dvdy: dpdy.dot(dvdp),
         }
     }
 
     /// Returns true if all derivatives are zero.
     pub fn is_zero(&self) -> bool {
-        const EPS: f64 = 1e-12;
+        const EPS: f32 = 1e-12;
         self.dpdx.length() < EPS
             && self.dpdy.length() < EPS
             && self.dudx.abs() < EPS
@@ -128,9 +130,9 @@ impl TextureDerivatives {
 #[derive(Debug, Clone, Copy)]
 pub struct TextureCoords {
     /// Surface U coordinate in [0, 1] from primitive parameterization.
-    pub u: f64,
+    pub u: f32,
     /// Surface V coordinate in [0, 1] from primitive parameterization.
-    pub v: f64,
+    pub v: f32,
     /// Coordinate spaces (world, mapping, texture) carried through the pipeline.
     pub tex_points: TexturePoints,
     /// Outward geometric normal at the hit point (before shading adjustments).
@@ -142,8 +144,8 @@ pub struct TextureCoords {
 impl TextureCoords {
     /// Constructs a texture context from geometry-provided hit data.
     pub fn new(
-        u: f64,
-        v: f64,
+        u: f32,
+        v: f32,
         world_point: Point3,
         mapping_point: Point3,
         geometry_normal: Vec3,
@@ -165,7 +167,7 @@ impl TextureCoords {
     }
 
     /// Returns a copy with remapped UV coordinates.
-    pub fn with_uv(mut self, u: f64, v: f64) -> Self {
+    pub fn with_uv(mut self, u: f32, v: f32) -> Self {
         self.u = u;
         self.v = v;
         self

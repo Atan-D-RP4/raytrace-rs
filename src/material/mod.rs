@@ -53,22 +53,24 @@ pub use lambertian::LambertianMaterial;
 pub use metal::MetalMaterial;
 pub use mix::MixMaterial;
 
-pub use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
+pub use crate::pdf::{ggx_d, ggx_sample_h, PdfKind};
 
-use gpu::GPU_NONE;
 use std::sync::Arc;
+
+use glam::Vec3;
 
 use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3};
+use crate::vec3::Color3;
 
 use self::gpu::GpuSerializable;
+use gpu::GPU_NONE;
 
 /// Smith's geometry function (Schlick-GGX approximation).
 ///
 /// Models microfacet self-shadowing at grazing angles. Returns a multiplier
 /// in [0, 1]. `roughness` is RMS surface slope (not squared).
-pub(super) fn geometry_schlick_ggx(cos_theta: f64, roughness: f64) -> f64 {
+pub(super) fn geometry_schlick_ggx(cos_theta: f32, roughness: f32) -> f32 {
     if cos_theta <= 0.0 {
         return 0.0;
     }
@@ -78,7 +80,7 @@ pub(super) fn geometry_schlick_ggx(cos_theta: f64, roughness: f64) -> f64 {
 
 /// Precomputed Fresnel reflectance at normal incidence for a given IOR.
 #[inline(always)]
-pub(super) fn fresnel_r0(ior: f64) -> f64 {
+pub(super) fn fresnel_r0(ior: f32) -> f32 {
     ((1.0 - ior) / (1.0 + ior)).powi(2)
 }
 
@@ -86,11 +88,11 @@ pub(super) fn fresnel_r0(ior: f64) -> f64 {
 ///
 /// Approximates the fraction of light reflected at a dielectric interface.
 /// Approaches 1 at grazing angles. `r0` is reflectance at normal incidence.
-pub(super) fn fresnel_schlick(cos_theta: f64, r0: f64) -> f64 {
+pub(super) fn fresnel_schlick(cos_theta: f32, r0: f32) -> f32 {
     r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
 }
 
-fn blackbody(temp: f64) -> Color3 {
+fn blackbody(temp: f32) -> Color3 {
     // Planck's law: spectral radiance of a blackbody at temperature T.
     // This is a simplified approximation for RGB color. For more accurate
     // rendering, use spectral rendering or a proper color matching function.
@@ -116,7 +118,7 @@ pub enum BsdfScatter {
         /// BSDF × cosine. Tint for dielectrics, white for lossless coatings.
         f_cos: Color3,
         /// GGX alpha for microfacet materials, or `None` for non-GGX materials.
-        eta: Option<f64>,
+        eta: Option<f32>,
     },
     /// Non-specular — integrator evaluates the BSDF and uses MIS weighting.
     /// Each slot is `Some(PdfKind)` for valid entries, `None` for unused slots.
@@ -129,7 +131,7 @@ pub enum BsdfScatter {
     Split {
         delta_wi: Vec3,
         delta_f_cos: Color3,
-        delta_eta: Option<f64>,
+        delta_eta: Option<f32>,
         non_delta_pdf_kinds: [Option<PdfKind>; MAX_BSDF_STRATS],
     },
 }
@@ -147,7 +149,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
-        next_dim: &mut dyn FnMut() -> f64,
+        next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter>;
 
     /// Evaluate the BSDF for an externally-sampled direction pair.
@@ -160,7 +162,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// wo: Outgoing direction (surface → camera), world space.
     /// wi: Incoming direction (surface → light), world space.
     /// Should be zero for delta materials, which cannot be evaluated over a distribution.
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64;
+    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32;
 
     /// Returns the sampling PDF kind for MIS strategy selection.
     ///  wo: Outgoing direction (surface → camera), world space.
@@ -192,7 +194,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// of 1.0 is a safe upper bound.
     /// wo: Outgoing direction (surface → camera), world space.
     /// Should be zero for delta materials, which cannot be evaluated over a distribution.
-    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f64 {
+    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f32 {
         1.0
     }
 
@@ -206,7 +208,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// materials. Used by layered materials (Coated) to include the coating's
     /// distribution in MIS strategies, preventing eval/PDF mismatches that cause
     /// fireflies.
-    fn ggx_alpha(&self) -> Option<f64> {
+    fn ggx_alpha(&self) -> Option<f32> {
         None
     }
 }
@@ -246,7 +248,7 @@ impl Material {
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
-        next_dim: &mut dyn FnMut() -> f64,
+        next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         match self {
             Material::Void => None,
@@ -282,7 +284,7 @@ impl Material {
     }
 
     /// Evaluate the material's sampling PDF for a given direction pair.
-    pub fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
+    pub fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
         match self {
             Material::Void => 0.0,
             Material::Lambertian(inner) => inner.pdf(wo, wi, si),
@@ -345,7 +347,7 @@ impl Material {
     /// Rough estimate of the directional-hemispherical reflectance, averaged
     /// across color channels. Bounded in [0, 1]. Used by layered materials
     /// for the multi-bounce inter-reflection series approximation.
-    pub fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
+    pub fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
         match self {
             Material::Void => 0.0,
             Material::Lambertian(inner) => inner.reflectance_estimate(wo, si),
@@ -380,7 +382,7 @@ impl Bsdf for Material {
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
-        next_dim: &mut dyn FnMut() -> f64,
+        next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         self.scatter(wo, si, next_dim)
     }
@@ -389,7 +391,7 @@ impl Bsdf for Material {
         self.eval(wo, wi, si)
     }
 
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
+    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
         self.pdf(wo, wi, si)
     }
 
@@ -405,7 +407,7 @@ impl Bsdf for Material {
         Material::is_emissive(self)
     }
 
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
+    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
         Material::reflectance_estimate(self, wo, si)
     }
 
@@ -456,7 +458,7 @@ impl Material {
     }
 
     /// Lambertian diffuse material from a solid color.
-    pub fn lambertian_color(r: f64, g: f64, b: f64) -> Self {
+    pub fn lambertian_color(r: f32, g: f32, b: f32) -> Self {
         Material::Lambertian(LambertianMaterial {
             albedo: Color3::new(r, g, b),
             tex: None,
@@ -472,7 +474,7 @@ impl Material {
     }
 
     /// Microfacet conductor (GGX). `fuzz` ∈ [0, 1] controls roughness.
-    pub fn metal(albedo: Color3, fuzz: f64) -> Self {
+    pub fn metal(albedo: Color3, fuzz: f32) -> Self {
         Material::Metal(MetalMaterial {
             albedo,
             tex: None,
@@ -483,7 +485,7 @@ impl Material {
     }
 
     /// Microfacet conductor with an explicit IOR for the Fresnel term.
-    pub fn metal_with_ior(albedo: Color3, fuzz: f64, ior: f64) -> Self {
+    pub fn metal_with_ior(albedo: Color3, fuzz: f32, ior: f32) -> Self {
         Material::Metal(MetalMaterial {
             albedo,
             tex: None,
@@ -494,7 +496,7 @@ impl Material {
     }
 
     /// Glass / dielectric material with refractive index.
-    pub fn dielectric(ior: f64) -> Self {
+    pub fn dielectric(ior: f32) -> Self {
         Material::Dielectric(DielectricMaterial {
             ior,
             tint: Color3::new(1., 1., 1.),
@@ -503,7 +505,7 @@ impl Material {
     }
 
     /// Dielectric with a colored tint (absorption per channel).
-    pub fn dielectric_tinted(ior: f64, tint: Color3) -> Self {
+    pub fn dielectric_tinted(ior: f32, tint: Color3) -> Self {
         Material::Dielectric(DielectricMaterial {
             ior,
             tint,
@@ -538,7 +540,7 @@ impl Material {
     }
 
     /// Glossy microfacet BSDF (GGX).
-    pub fn glossy(albedo: Color3, roughness: f64, ior: f64) -> Self {
+    pub fn glossy(albedo: Color3, roughness: f32, ior: f32) -> Self {
         Material::Glossy(GlossyMaterial {
             albedo,
             tex: None,
@@ -549,7 +551,7 @@ impl Material {
     }
 
     /// Microfacet conductor with a textured albedo.
-    pub fn metal_textured(tex: Arc<dyn Texture>, fuzz: f64) -> Self {
+    pub fn metal_textured(tex: Arc<dyn Texture>, fuzz: f32) -> Self {
         Material::Metal(MetalMaterial {
             albedo: Color3::ZERO,
             tex: Some(tex),
@@ -560,7 +562,7 @@ impl Material {
     }
 
     /// Microfacet conductor with a textured albedo and explicit IOR.
-    pub fn metal_textured_with_ior(tex: Arc<dyn Texture>, fuzz: f64, ior: f64) -> Self {
+    pub fn metal_textured_with_ior(tex: Arc<dyn Texture>, fuzz: f32, ior: f32) -> Self {
         Material::Metal(MetalMaterial {
             albedo: Color3::ZERO,
             tex: Some(tex),
@@ -571,7 +573,7 @@ impl Material {
     }
 
     /// Glossy microfacet BSDF with a textured albedo.
-    pub fn glossy_textured(tex: Arc<dyn Texture>, roughness: f64, ior: f64) -> Self {
+    pub fn glossy_textured(tex: Arc<dyn Texture>, roughness: f32, ior: f32) -> Self {
         Material::Glossy(GlossyMaterial {
             albedo: Color3::ZERO,
             tex: Some(tex),
@@ -583,7 +585,7 @@ impl Material {
 
     /// Stochastic mix of two materials. `weight` ∈ [0, 1] is the probability
     /// of choosing `b`.
-    pub fn mix(self, other: Material, weight: f64) -> Self {
+    pub fn mix(self, other: Material, weight: f32) -> Self {
         let weight = weight.clamp(0.0, 1.0);
         Material::Mix(MixMaterial {
             a: Arc::new(self) as Arc<dyn Bsdf>,
@@ -751,14 +753,14 @@ mod tests {
                 &self,
                 _wo: Vec3,
                 _si: &SurfaceInteraction,
-                _next_dim: &mut dyn FnMut() -> f64,
+                _next_dim: &mut dyn FnMut() -> f32,
             ) -> Option<BsdfScatter> {
                 None
             }
             fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
                 Color3::ZERO
             }
-            fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
+            fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f32 {
                 0.0
             }
         }

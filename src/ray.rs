@@ -1,5 +1,7 @@
+use glam::Vec3;
+
 use crate::aabb::Aabb;
-use crate::vec3::{Point3, Vec3, reflect, refract};
+use crate::vec3::Point3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RayDifferentials {
@@ -15,7 +17,7 @@ pub struct Ray {
     /// TODO: refactor to `Direction(Vec3)` newtype when Vec3/Color3/Point3 get
     /// proper newtypes — this field must never be zero (see debug_assert in constructors).
     pub direction: Vec3,
-    pub time: f64,
+    pub time: f32,
     pub inverse_direction: Vec3,
     pub differentials: Option<RayDifferentials>,
 }
@@ -23,7 +25,7 @@ pub struct Ray {
 impl Ray {
     pub fn new(origin: Point3, direction: Vec3) -> Self {
         debug_assert!(
-            !direction.near_zero(),
+            direction.length_squared() >= 1e-8,
             "zero-direction ray — produces inf/nan in inverse_direction and AABB tests"
         );
         Self {
@@ -35,9 +37,9 @@ impl Ray {
         }
     }
 
-    pub fn new_with_time(origin: Point3, direction: Vec3, time: f64) -> Self {
+    pub fn new_with_time(origin: Point3, direction: Vec3, time: f32) -> Self {
         debug_assert!(
-            !direction.near_zero(),
+            direction.length_squared() >= 1e-8,
             "zero-direction ray — produces inf/nan in inverse_direction and AABB tests"
         );
         Self {
@@ -52,11 +54,11 @@ impl Ray {
     pub fn new_with_differentials(
         origin: Point3,
         direction: Vec3,
-        time: f64,
+        time: f32,
         differentials: Option<RayDifferentials>,
     ) -> Self {
         debug_assert!(
-            !direction.near_zero(),
+            direction.length_squared() >= 1e-8,
             "zero-direction ray — produces inf/nan in inverse_direction and AABB tests"
         );
         Self {
@@ -70,7 +72,7 @@ impl Ray {
 
     /// Evaluate the ray at parameter t: returns the point along the ray at distance t from the
     /// origin.
-    pub fn at(&self, t: f64) -> Point3 {
+    pub fn at(&self, t: f32) -> Point3 {
         let origin: Vec3 = self.origin;
         let direction = self.direction;
         origin + direction * t
@@ -87,17 +89,17 @@ impl Ray {
         rx_direction: Vec3,
         hit_point: Point3,
         normal: Vec3,
-        t_hit: f64,
+        t_hit: f32,
         primary_origin: Point3,
         primary_direction: Vec3,
     ) -> Vec3 {
-        let denom = normal.dot(&rx_direction);
+        let denom = normal.dot(rx_direction);
         if denom.abs() < 1e-4 {
             // Grazing angle: tangent-plane formula is ill-conditioned.
             // Fall back to the bounded t_hit estimate.
             return (rx_origin - primary_origin) + t_hit * (rx_direction - primary_direction);
         }
-        let t = normal.dot(&(hit_point - rx_origin)) / denom;
+        let t = normal.dot(hit_point - rx_origin) / denom;
         (rx_origin + rx_direction * t) - hit_point
     }
 
@@ -105,8 +107,8 @@ impl Ray {
     pub fn propagate_differentials(
         &self,
         normal: Vec3,
-        hit_time: f64,
-        eta: Option<f64>,
+        hit_time: f32,
+        eta: Option<f32>,
         hit_point: Point3,
     ) -> Option<RayDifferentials> {
         if let Some(rd) = self.differentials {
@@ -134,14 +136,18 @@ impl Ray {
             // Regenerate the ray differentials for the scattered ray. For reflection, the direction derivatives
             // are reflected. For refraction, the direction derivatives are refracted.
             let (rx_direction, ry_direction) = if let Some(eta) = eta {
+                // (
+                //     refract(&rd.rx_direction.into(), &normal, eta),
+                //     refract(&rd.ry_direction.into(), &normal, eta),
+                // )
                 (
-                    refract(&rd.rx_direction, &normal, eta),
-                    refract(&rd.ry_direction, &normal, eta),
+                    rd.rx_direction.refract(normal, eta),
+                    rd.ry_direction.refract(normal, eta),
                 )
             } else {
                 (
-                    reflect(&rd.rx_direction, &normal),
-                    reflect(&rd.ry_direction, &normal),
+                    rd.rx_direction.reflect(normal),
+                    rd.ry_direction.reflect(normal),
                 )
             };
 
@@ -176,7 +182,7 @@ impl ParametricCurve {
     }
 
     /// Evaluate the curve at time t ∈ [0, 1]
-    pub fn at(&self, t: f64) -> Point3 {
+    pub fn at(&self, t: f32) -> Point3 {
         self.origin + self.velocity * t
     }
 

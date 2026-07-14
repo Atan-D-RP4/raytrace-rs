@@ -1,20 +1,22 @@
+use glam::Vec3;
 use rand::RngExt;
 
-use crate::vec3::{Point3, Vec3, random_unit_vector_with_rng};
+use crate::vec3::random_unit_vector_with_rng;
+use crate::vec3::Point3;
 
 #[allow(dead_code)]
-fn trilinear_interp(c: [[[f64; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
+fn trilinear_interp(c: [[[f32; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {
     (0..2)
         .flat_map(|i| (0..2).flat_map(move |j| (0..2).map(move |k| (i, j, k))))
         .fold(0.0, |acc, (i, j, k)| {
-            acc + (i as f64 * u + (1 - i) as f64 * (1.0 - u))
-                * (j as f64 * v + (1 - j) as f64 * (1.0 - v))
-                * (k as f64 * w + (1 - k) as f64 * (1.0 - w))
+            acc + (i as f32 * u + (1 - i) as f32 * (1.0 - u))
+                * (j as f32 * v + (1 - j) as f32 * (1.0 - v))
+                * (k as f32 * w + (1 - k) as f32 * (1.0 - w))
                 * c[i][j][k]
         })
 }
 
-pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
+pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {
     // Hermite smoothing
     let u = u * u * (3.0 - 2.0 * u);
     let v = v * v * (3.0 - 2.0 * v);
@@ -28,8 +30,8 @@ pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f64, v: f64, w: f64) -> f64 {
             let fv = if j == 1 { v } else { 1.0 - v };
             for (k, c_ijk) in c_ij.iter().enumerate() {
                 let fw = if k == 1 { w } else { 1.0 - w };
-                let weight = Vec3::new(u - i as f64, v - j as f64, w - k as f64);
-                accum += fu * fv * fw * c_ijk.dot(&weight);
+                let weight = Vec3::new(u - i as f32, v - j as f32, w - k as f32);
+                accum += fu * fv * fw * c_ijk.dot(weight);
             }
         }
     }
@@ -55,21 +57,21 @@ impl Perlin {
     pub fn new() -> Self {
         let mut rng = rand::rng();
         Self {
-            randvec: std::array::from_fn(|_| random_unit_vector_with_rng(&mut rng)),
+            randvec: std::array::from_fn(|_| random_unit_vector_with_rng(&mut rng).into()),
             perm_x: Self::generate_perm(),
             perm_y: Self::generate_perm(),
             perm_z: Self::generate_perm(),
         }
     }
 
-    pub fn noise(&self, p: &Point3) -> f64 {
+    pub fn noise(&self, p: &Point3) -> f32 {
         let i = p.x.floor() as i32;
         let j = p.y.floor() as i32;
         let k = p.z.floor() as i32;
 
-        let u = p.x - i as f64;
-        let v = p.y - j as f64;
-        let w = p.z - k as f64;
+        let u = p.x - i as f32;
+        let v = p.y - j as f32;
+        let w = p.z - k as f32;
 
         let mut c = [[[Vec3::ZERO; 2]; 2]; 2];
 
@@ -88,7 +90,7 @@ impl Perlin {
         perlin_interp(c, u, v, w)
     }
 
-    pub fn turbulence(&self, point: Point3, depth: i32) -> f64 {
+    pub fn turbulence(&self, point: Point3, depth: i32) -> f32 {
         let mut tmp_point = point;
         let mut weight = 1.;
         let mut accum = 0.0;

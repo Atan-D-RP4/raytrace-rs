@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::f64::consts::PI;
+use std::f32::consts::PI;
 
 use crate::aabb::Aabb;
 use crate::hittable::{Hit, LightSample};
@@ -7,10 +7,11 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::onb::Onb;
 use crate::ray::{ParametricCurve, Ray};
-use crate::texture::UVDifferentiable;
-use crate::vec3::{Point3, Vec3};
+use crate::shape::{Shape3D, ShapeObject};
+use glam::Vec3;
 
-use super::{Shape3D, ShapeObject};
+use crate::texture::UVDifferentiable;
+use crate::vec3::Point3;
 
 /// Sphere geometry defined by a linearly-moving center and radius.
 ///
@@ -22,12 +23,12 @@ pub struct SphereShape {
     /// Center position at t=0; `velocity` is the delta from t=0 to t=1
     /// (zero for stationary spheres).
     pub center: ParametricCurve,
-    pub radius: f64,
+    pub radius: f32,
 }
 
 impl SphereShape {
     /// Creates a stationary sphere at `center` with given `radius`.
-    pub fn new(center: Point3, radius: f64) -> Self {
+    pub fn new(center: Point3, radius: f32) -> Self {
         Self {
             center: ParametricCurve::new(center, Vec3::ZERO),
             radius,
@@ -35,7 +36,7 @@ impl SphereShape {
     }
 
     /// Creates a moving sphere that interpolates its center over ray time [0, 1].
-    pub fn new_moving(center_start: Point3, center_end: Point3, radius: f64) -> Self {
+    pub fn new_moving(center_start: Point3, center_end: Point3, radius: f32) -> Self {
         Self {
             center: ParametricCurve::new(center_start, center_end - center_start),
             radius,
@@ -45,7 +46,7 @@ impl SphereShape {
     /// Converts a unit-sphere direction into UV coordinates.
     ///
     /// Convention follows RTIOW: u ∈ [0,1) (longitude), v ∈ [0,1] (latitude).
-    pub fn get_sphere_uv(p: &Point3) -> (f64, f64) {
+    pub fn get_sphere_uv(p: &Point3) -> (f32, f32) {
         let theta = (-p.y).acos();
         let phi = -p.z.atan2(p.x) + PI;
         let u = phi / (2.0 * PI);
@@ -58,7 +59,7 @@ impl SphereShape {
     ///
     /// Returns a local-space unit vector where +z is toward the sphere center.
     /// Uses the RTIOW cone-sampling derivation for uniform solid-angle PDF.
-    fn random_to_sphere(&self, distance_squared: f64, r1: f64, r2: f64) -> Vec3 {
+    fn random_to_sphere(&self, distance_squared: f32, r1: f32, r2: f32) -> Vec3 {
         let radius = self.radius;
         let phi = 2.0 * PI * r1;
         let (sin_phi, cos_phi) = phi.sin_cos();
@@ -104,7 +105,7 @@ impl Shape3D for SphereShape {
         let current_center = self.center.at(ray.time);
         let oc = current_center - ray.origin;
         let a = ray.direction.length_squared();
-        let h = ray.direction.dot(&oc);
+        let h = ray.direction.dot(oc);
         let c = oc.length_squared() - (self.radius * self.radius);
         let discriminant = h * h - a * c;
 
@@ -142,11 +143,11 @@ impl Shape3D for SphereShape {
         self.center.sweep_aabb(&local)
     }
 
-    fn area(&self) -> f64 {
+    fn area(&self) -> f32 {
         4.0 * PI * self.radius * self.radius
     }
 
-    fn sample(&self, u: f64, v: f64, time: f64) -> (Point3, Vec3) {
+    fn sample(&self, u: f32, v: f32, time: f32) -> (Point3, Vec3) {
         // Uniform area sampling on the sphere surface at t=0 center.
         // Standard z = 1 - 2v, θ = 2πu parameterization.
         let center = self.center.at(time);
@@ -158,7 +159,7 @@ impl Shape3D for SphereShape {
         (center + normal * self.radius, normal)
     }
 
-    fn sample_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
+    fn sample_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
         // Sphere-specific solid-angle-uniform sampling via cone projection.
         // Less noisy for small spheres than the default area-based sampling.
         let center = self.center.at(time);
@@ -168,7 +169,7 @@ impl Shape3D for SphereShape {
         uvw.local_to_world(self.random_to_sphere(distance_squared, u, v))
     }
 
-    fn sample_light(&self, origin: Vec3, u: f64, v: f64, time: f64) -> LightSample {
+    fn sample_light(&self, origin: Vec3, u: f32, v: f32, time: f32) -> LightSample {
         // sample_direction returns a unit vector via cone projection.
         let direction = self.sample_direction(origin, u, v, time);
         let center = self.center.at(time);
@@ -176,7 +177,7 @@ impl Shape3D for SphereShape {
         // Compute actual ray-sphere intersection along the sampled direction.
         // The unit direction tells us WHERE to look; the quadratic tells us HOW FAR.
         let oc = center - origin;
-        let h = direction.dot(&oc);
+        let h = direction.dot(oc);
         let c = oc.length_squared() - self.radius * self.radius;
         let discriminant = (h * h - c).max(0.0);
         let sqrtd = discriminant.sqrt();
@@ -187,7 +188,7 @@ impl Shape3D for SphereShape {
 
         // Area PDF: convert from solid-angle PDF (1/Ω) to area measure.
         // p_A(q) = p_ω(ω) · |cos θ_l| / d²
-        let cos_theta = normal.dot(&(-direction)).abs();
+        let cos_theta = normal.dot(-direction).abs();
         let distance_squared = (center - origin).length_squared();
         let cos_theta_max = (1.0 - (self.radius * self.radius) / distance_squared)
             .sqrt()
@@ -208,13 +209,13 @@ impl Shape3D for SphereShape {
         }
     }
 
-    fn pdf_direction(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
+    fn pdf_direction(&self, origin: Vec3, direction: Vec3, time: f32) -> f32 {
         // Sphere-specific: uniform solid-angle PDF = 1 / Ω where
         // Ω = 2π(1 - cos θ_max) is the solid angle subtended by the sphere.
         let current_center = self.center.at(time);
         let oc = current_center - origin;
         let a = direction.length_squared();
-        let h = direction.dot(&oc);
+        let h = direction.dot(oc);
         let c = oc.length_squared() - (self.radius * self.radius);
         let discriminant = h * h - a * c;
 
@@ -243,7 +244,7 @@ impl Shape3D for SphereShape {
 pub type Sphere<M> = ShapeObject<SphereShape, M>;
 
 /// Creates a stationary sphere at `center` with `radius` and `material`.
-pub fn sphere<M: Borrow<Material>>(center: Point3, radius: f64, material: M) -> Sphere<M> {
+pub fn sphere<M: Borrow<Material>>(center: Point3, radius: f32, material: M) -> Sphere<M> {
     ShapeObject::new(SphereShape::new(center, radius), material)
 }
 
@@ -251,7 +252,7 @@ pub fn sphere<M: Borrow<Material>>(center: Point3, radius: f64, material: M) -> 
 pub fn moving_sphere<M: Borrow<Material>>(
     center_start: Point3,
     center_end: Point3,
-    radius: f64,
+    radius: f32,
     material: M,
 ) -> Sphere<M> {
     ShapeObject::new(

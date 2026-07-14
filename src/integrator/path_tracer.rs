@@ -6,18 +6,21 @@
 /// TODO(gpu): mirror this boundary in a separate path-trace kernel / WGSL entrypoint.
 /// The `li()` method is the natural split point: it takes a ray and returns radiance.
 ///
-use std::f64::consts::PI;
+use std::f32::consts::PI;
 use std::sync::Arc;
 
 use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
-use crate::pdf::{EmitterPDF, EnvPdf, PDF, PdfKind, power_heuristic};
+use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
+use crate::pdf::{power_heuristic, EmitterPDF, EnvPdf, PdfKind, PDF};
 use crate::ray::Ray;
 use crate::sampler::{Sampler, SamplingSession};
-use crate::vec3::{Color3, Vec3};
+
+use glam::Vec3;
+
+use crate::vec3::Color3;
 
 /// Maximum depth for the split delta path (mirror direction from Mix one-delta).
 /// Prevents exponential cascade when `max_depth` is large (e.g. 50) and the
@@ -45,22 +48,22 @@ const SPLIT_MAX_DEPTH: u32 = 5;
 fn mis_sample<const N: usize>(
     pdfs: [&dyn PDF; N],
     count: usize,
-    eval_fn: impl FnOnce(Vec3) -> crate::vec3::Color3,
+    eval_fn: impl FnOnce(Vec3) -> Color3,
     sel_idx: usize,
-    pdf_u: f64,
-    pdf_v: f64,
-) -> (Vec3, Color3, f64) {
+    pdf_u: f32,
+    pdf_v: f32,
+) -> (Vec3, Color3, f32) {
     debug_assert!(count > 0, "mis_sample requires at least one PDF strategy");
     debug_assert!(count <= N, "mis_sample count exceeds array capacity");
 
     // 1. Generate direction from selected strategy
-    let direction = pdfs[sel_idx].generate(pdf_u, pdf_v).unit_vector();
+    let direction = pdfs[sel_idx].generate(pdf_u, pdf_v).normalize();
 
     // 2. Evaluate ALL PDFs at the sampled direction, compute sum of squares.
     //    Only count entries are populated — remaining N-count are stale.
     let mut pdf_sum_sq = 0.0;
     let mut pdf_sum = 0.0;
-    let mut pdf_vals = [0.0f64; N];
+    let mut pdf_vals = [0.0f32; N];
     for (i, pdf) in pdfs.iter().enumerate().take(count) {
         let v = pdf.value(direction);
         pdf_vals[i] = v;
@@ -75,11 +78,11 @@ fn mis_sample<const N: usize>(
     // 4. Compute contribution: N * w_sel * f / p_sel
     let f = eval_fn(direction);
     let contribution = if p_sel > 1e-10 {
-        f * (count as f64 * mis_weight / p_sel)
+        f * (count as f32 * mis_weight / p_sel)
     } else {
-        crate::vec3::Color3::ZERO
+        Color3::ZERO
     };
-    (direction, contribution, pdf_sum / count as f64)
+    (direction, contribution, pdf_sum / count as f32)
 }
 
 /// Compute the BSDF mixture PDF value for a direction.
@@ -94,7 +97,7 @@ fn bsdf_mixture_pdf(
     material: &Material,
     env_map: Option<&Arc<EnvironmentMap>>,
     is_volume: bool,
-) -> f64 {
+) -> f32 {
     // env_pdf value: UniformHemisphere (surfaces) or UniformSphere (volumes)
     let env_value = match env_map {
         Some(env_map) => env_map.to_solid_angle_pdf(wi),
@@ -102,7 +105,7 @@ fn bsdf_mixture_pdf(
             if is_volume {
                 1.0 / (4.0 * PI)
             } else {
-                let cos_theta = wi.dot(&si.shading_normal());
+                let cos_theta = wi.dot(si.shading_normal());
                 if cos_theta > 0.0 {
                     1.0 / (2.0 * PI)
                 } else {
@@ -130,7 +133,7 @@ fn bsdf_mixture_pdf(
     };
 
     let n = 1 + n_mat; // env + material strategies
-    (env_value + mat_sum) / n as f64
+    (env_value + mat_sum) / n as f32
 }
 
 pub struct PathTracingIntegrator {
@@ -181,11 +184,11 @@ impl PathTracingIntegrator {
         let mut accumulated_attenuation = Color3::ONE;
         let mut accumulated_color = Color3::ZERO;
         let mut ray = *initial_ray;
-        let mut prev_bsdf_pdf: f64 = 0.0;
+        let mut prev_bsdf_pdf: f32 = 0.0;
         let mut prev_was_delta: bool = true;
 
         for bounce in 0..remaining_depth {
-            if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f64::INFINITY)) {
+            if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f32::INFINITY)) {
                 let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
                 let material = si.material();
                 let normal = si.shading_normal();
@@ -195,14 +198,14 @@ impl PathTracingIntegrator {
                 let light_pdf = if lights.is_empty() {
                     0.0
                 } else {
-                    EmitterPDF::new(lights, si.point(), ray.time).value(ray.direction.unit_vector())
+                    EmitterPDF::new(lights, si.point(), ray.time).value(ray.direction.normalize())
                 };
 
                 // Accumulate emission with MIS weight to avoid double-counting with NEE.
                 // At bounce 0 or after a delta bounce, no previous scatter exists that could
                 // overlap with NEE, so emission is added at full weight (PBRT convention).
                 // Outgoing direction (away from the surface) is the negative of the ray direction.
-                let wo = -ray.direction.unit_vector();
+                let wo = -ray.direction.normalize();
                 // NEE uses wo-aware emission (e.g., Beer's law for coated)
                 let emission = material.emitted(wo, &si);
                 if bounce == 0 || prev_was_delta {
@@ -226,20 +229,20 @@ impl PathTracingIntegrator {
                     return accumulated_color;
                 }
 
-                let is_volume = normal.near_zero();
+                let is_volume = normal.length_squared() < 1e-10;
 
                 // Shadow ray based Next Event Estimation (NEE) for direct lighting.
                 // Skip for delta materials (mirrors, glass) — BSDF is zero for any
                 // direction that doesn't match the single specular direction.
                 if !lights.is_empty() && !material.is_delta() {
                     // Pick a random light source to sample from the list
-                    let light_idx = (session.next_1d() * lights.len() as f64) as usize;
+                    let light_idx = (session.next_1d() * lights.len() as f32) as usize;
                     let light = &lights[light_idx % lights.len()];
 
                     // Sample a point on the light source — returns direction, normal, distance, and area PDF
                     let (u, v) = session.next_2d();
                     let sample = light.sample_light(si.point(), u, v, ray.time);
-                    let light_unit = sample.direction.unit_vector();
+                    let light_unit = sample.direction.normalize();
                     let light_emission = sample.emission;
 
                     // Shadow ray: test visibility/occlusion between the surface point and the light source
@@ -273,12 +276,12 @@ impl PathTracingIntegrator {
                         let w_nee = power_heuristic(light_pdf_at_nee, sum_sq_nee);
 
                         let f = material.eval(wo, light_unit, &si);
-                        let cos_light = sample.normal.dot(&(-light_unit)).abs();
+                        let cos_light = sample.normal.dot(-light_unit).abs();
 
                         // N factor: uniform selection over N lights, estimator = N * contribution.
                         // material.eval() already includes the surface cosine factor (|cos θ_s|)
                         // as required by the rendering equation — no additional cos_surface here.
-                        let n_lights = lights.len() as f64;
+                        let n_lights = lights.len() as f32;
                         let direct = w_nee
                             * n_lights
                             * accumulated_attenuation
@@ -305,7 +308,7 @@ impl PathTracingIntegrator {
 
                 // Scope-limited next_dim to release session borrow before Split recursion.
                 let scatter_result = {
-                    let mut next_mat_dim = || -> f64 { session.next_1d() };
+                    let mut next_mat_dim = || -> f32 { session.next_1d() };
                     material.scatter(wo, &si, &mut next_mat_dim)
                 };
 
@@ -366,7 +369,7 @@ impl PathTracingIntegrator {
 
                     prev_was_delta = new_prev_was_delta;
                     prev_bsdf_pdf = new_prev_bsdf_pdf;
-                    accumulated_attenuation = accumulated_attenuation * bias;
+                    accumulated_attenuation *= bias;
 
                     // Update the ray for the next bounce, preserving and regenerating
                     // ray differentials so texture filtering survives indirect bounces.
@@ -383,7 +386,7 @@ impl PathTracingIntegrator {
                     return accumulated_color;
                 }
             } else {
-                let direction = ray.direction.unit_vector();
+                let direction = ray.direction.normalize();
                 let background_color = if let Some(env_map) = &self.env_map {
                     env_map.le(direction)
                 } else {
@@ -437,13 +440,13 @@ impl PathTracingIntegrator {
         material: &Material,
         normal: Vec3,
         session: &mut S::Session<'_>,
-    ) -> (Vec3, Color3, f64) {
+    ) -> (Vec3, Color3, f32) {
         let eval = |d: Vec3| material.eval(wo, d, si);
 
         // Environment strategies
         let env_fallback = PdfKind::UniformHemisphere { normal };
         let vol_fallback = PdfKind::UniformSphere;
-        let is_volume = normal.near_zero();
+        let is_volume = normal.length_squared() < 1e-10;
         let env_holder = self.env_map.as_ref().map(EnvPdf::new);
 
         // Material strategies — PdfKind is Copy, so we can store copies directly.
@@ -475,7 +478,7 @@ impl PathTracingIntegrator {
 
         // Selection: independent random from RNG
         let sel_idx_raw = session.next_1d();
-        let sel_idx = (sel_idx_raw * n as f64).min(n as f64 - 1e-15) as usize;
+        let sel_idx = (sel_idx_raw * n as f32).min(n as f32 - 1e-15) as usize;
         // Direction: correlated 2D from session
         let (pdf_u, pdf_v) = session.next_2d();
 

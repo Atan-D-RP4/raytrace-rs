@@ -12,12 +12,11 @@ use image::Rgba32FImage;
 use crate::interval::Interval;
 use crate::perlin::Perlin;
 use crate::texture::mapping::{TextureMapping2D, TextureMapping3D, UvGen};
+use crate::texture::TextureDerivatives;
 use crate::texture::{Texture, TextureCoords};
 use crate::vec3::Color3;
 
-use crate::texture::TextureDerivatives;
-
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a * (1.0 - t) + b * t
 }
 
@@ -96,7 +95,7 @@ impl SolidColor {
     }
 
     /// Construct RGB components.
-    pub fn from_rgb(r: f64, g: f64, b: f64) -> Self {
+    pub fn from_rgb(r: f32, g: f32, b: f32) -> Self {
         Self {
             albedo: Color3::new(r, g, b),
         }
@@ -185,11 +184,11 @@ impl ImageTexture {
         let px = x.rem_euclid(w);
         let py = y.clamp(0, h - 1);
         let p = img.get_pixel(px as u32, py as u32);
-        Color3::new(p[0] as f64, p[1] as f64, p[2] as f64)
+        Color3::new(p[0], p[1], p[2])
     }
 
-    fn compute_lod(&self, derivatives: &TextureDerivatives) -> f64 {
-        let (w, h) = (self.image().width() as f64, self.image().height() as f64);
+    fn compute_lod(&self, derivatives: &TextureDerivatives) -> f32 {
+        let (w, h) = (self.image().width() as f32, self.image().height() as f32);
 
         let du_v_dx = (derivatives.dudx * w, derivatives.dvdx * h);
         let du_v_dy = (derivatives.dudy * w, derivatives.dvdy * h);
@@ -201,16 +200,16 @@ impl ImageTexture {
     }
 
     /// Bilinear at one mip level (matches your v-flip: v = 1 − v).
-    fn bilinear(&self, level: usize, u: f64, v: f64) -> Color3 {
+    fn bilinear(&self, level: usize, u: f32, v: f32) -> Color3 {
         let img = &self.image_mips[level];
-        let (w, h) = (img.width() as f64, img.height() as f64);
+        let (w, h) = (img.width() as f32, img.height() as f32);
         let u = u.clamp(0.0, 1.0);
         let v = 1.0 - v.clamp(0.0, 1.0);
         let x = u * w - 0.5;
         let y = v * h - 0.5;
         let x0 = x.floor() as i32;
         let y0 = y.floor() as i32;
-        let (dx, dy) = (x - x0 as f64, y - y0 as f64);
+        let (dx, dy) = (x - x0 as f32, y - y0 as f32);
         let c00 = self.texel(level, x0, y0);
         let c10 = self.texel(level, x0 + 1, y0);
         let c01 = self.texel(level, x0, y0 + 1);
@@ -221,10 +220,10 @@ impl ImageTexture {
     }
 
     /// Tri-linear: bilinear at floor(lod) and floor(lod)+1, lerp between.
-    fn trilinear(&self, u: f64, v: f64, lod: f64) -> Color3 {
-        let max_level = (self.image_mips.len() - 1) as f64;
+    fn trilinear(&self, u: f32, v: f32, lod: f32) -> Color3 {
+        let max_level = (self.image_mips.len() - 1) as f32;
         let level = lod.floor().clamp(0.0, max_level) as usize;
-        let frac = (lod - level as f64).clamp(0.0, 1.0);
+        let frac = (lod - level as f32).clamp(0.0, 1.0);
         let c0 = self.bilinear(level, u, v);
         if frac <= 0.0 {
             return c0;
@@ -235,8 +234,8 @@ impl ImageTexture {
 
     /// Anisotropy ratio of the texture-space footprint (major/minor axis lengths).
     /// 1.0 = square footprint (isotropic); > 1 = elliptical (needs AF).
-    fn anisotropy_ratio(&self, d: &TextureDerivatives) -> f64 {
-        let (w, h) = (self.image().width() as f64, self.image().height() as f64);
+    fn anisotropy_ratio(&self, d: &TextureDerivatives) -> f32 {
+        let (w, h) = (self.image().width() as f32, self.image().height() as f32);
         let duv_dx = (d.dudx * w, d.dvdx * h);
         let duv_dy = (d.dudy * w, d.dvdy * h);
         let major = lerp(duv_dx.0, duv_dy.0, 0.5).hypot(lerp(duv_dx.1, duv_dy.1, 0.5));
@@ -251,7 +250,7 @@ impl ImageTexture {
     /// using the minor-axis LOD. Trilinear is the isotropic baseline; AF only matters
     /// on grazing/angled surfaces where the footprint is elliptical.
     fn anisotropic(&self, coords: &TextureCoords) -> Color3 {
-        let (w, h) = (self.image().width() as f64, self.image().height() as f64);
+        let (w, h) = (self.image().width() as f32, self.image().height() as f32);
         let duv_dx = (coords.derivatives.dudx * w, coords.derivatives.dvdx * h);
         let duv_dy = (coords.derivatives.dudy * w, coords.derivatives.dvdy * h);
 
@@ -301,13 +300,13 @@ impl ImageTexture {
         // the offset to UV [0,1] space before adding to coords.u/coords.v.
         let mut color_sum = Color3::ZERO;
         for i in 0..num_samples {
-            let t = i as f64 / (num_samples - 1) as f64;
+            let t = i as f32 / (num_samples - 1) as f32;
             let u_sample = coords.u + (t - 0.5) * dir_x * major_len / w;
             let v_sample = coords.v + (t - 0.5) * dir_y * major_len / h;
             color_sum += self.trilinear(u_sample, v_sample, lod);
         }
 
-        color_sum / num_samples as f64
+        color_sum / num_samples as f32
     }
 }
 
@@ -321,10 +320,10 @@ impl Texture for ImageTexture {
             let u = Interval::from(0., 1.).clamp(coords.u);
             let v = 1.0 - Interval::from(0., 1.).clamp(coords.v);
 
-            let i = (u * self.image().width() as f64).min((self.image().width() - 1) as f64);
-            let j = (v * self.image().height() as f64).min((self.image().height() - 1) as f64);
+            let i = (u * self.image().width() as f32).min((self.image().width() - 1) as f32);
+            let j = (v * self.image().height() as f32).min((self.image().height() - 1) as f32);
             let pixel = self.image().get_pixel(i as u32, j as u32);
-            Color3::new(pixel[0] as f64, pixel[1] as f64, pixel[2] as f64)
+            Color3::new(pixel[0], pixel[1], pixel[2])
         } else {
             let lod = self.compute_lod(&coords.derivatives);
             // Use anisotropic filtering when the footprint is meaningfully

@@ -4,7 +4,7 @@
 //! array of [`FlatBvhNode`]s. The layout is optimised for traversal:
 //!
 //! - Each node is exactly 64 bytes (one cache line on x86-64/ARM64).
-//! - f64 AABB fields avoid precision loss at the BVH/primitive boundary.
+//! - f32 AABB fields avoid precision loss at the BVH/primitive boundary.
 //! - Interior nodes store child indices (not pointers) so the array is
 //!   serialisable and trivially convertible from the tree [`BvhNode`].
 //! - Leaf nodes store a range into a separate primitive index array.
@@ -31,13 +31,13 @@ References for optimizing BVH traversal and flat layouts on the CPU:
 
 use std::sync::Arc;
 
+use tracing;
+
 use crate::aabb::Aabb;
 use crate::bvh::BvhNode;
 use crate::hittable::{Bounded, Intersectable, MaterialHit};
 use crate::interval::Interval;
 use crate::ray::Ray;
-
-use tracing;
 
 /// Maximum traversal stack depth. 64 handles BVHs with up to 2^64 primitives.
 const MAX_STACK: usize = 64;
@@ -50,10 +50,10 @@ const MAX_STACK: usize = 64;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FlatBvhNode {
-    /// [0..3] min AABB: 3 x f64 = 24 bytes
-    pub min: [f64; 3], // min_x, min_y, min_z
-    /// [4..6] max AABB: 3 x f64 = 24 bytes
-    pub max: [f64; 3], // max_x, max_y, max_z
+    /// [0..3] min AABB: 3 x f32 = 24 bytes
+    pub min: [f32; 3], // min_x, min_y, min_z
+    /// [4..6] max AABB: 3 x f32 = 24 bytes
+    pub max: [f32; 3], // max_x, max_y, max_z
     /// [48] child_or_count: u32  (interior: left child index; leaf: prim count)
     pub child_or_count: u32,
     /// [52] right_or_unused: u32 (interior: right child index; leaf: 0)
@@ -70,7 +70,7 @@ impl FlatBvhNode {
     const INTERIOR: u8 = 0;
     const LEAF: u8 = 1;
 
-    fn interior(min: [f64; 3], max: [f64; 3], left: u32, right: u32) -> Self {
+    fn interior(min: [f32; 3], max: [f32; 3], left: u32, right: u32) -> Self {
         Self {
             min,
             max,
@@ -82,7 +82,7 @@ impl FlatBvhNode {
         }
     }
 
-    fn leaf(min: [f64; 3], max: [f64; 3], prim_offset: u32, prim_count: u32) -> Self {
+    fn leaf(min: [f32; 3], max: [f32; 3], prim_offset: u32, prim_count: u32) -> Self {
         Self {
             min,
             max,
@@ -464,7 +464,7 @@ mod tests {
     use crate::hittable::{Bounded, Intersectable};
     use crate::material::Material;
     use crate::shape::sphere;
-    use crate::vec3::Vec3;
+    use glam::Vec3;
 
     /// Number of bytes per flat BVH node. Chosen to fit one cache line (64B).
     const NODE_SIZE: usize = 64;
@@ -480,7 +480,7 @@ mod tests {
         let flat = FlatBvh::from(bvh);
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(0., 0., -1.), 0.0);
         assert!(
-            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
                 .is_none()
         );
     }
@@ -504,14 +504,14 @@ mod tests {
         // Ray toward the sphere.
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(0., 0., -1.), 0.0);
         assert!(
-            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
                 .is_some()
         );
 
         // Ray missing the sphere.
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(10., 0., -1.), 0.0);
         assert!(
-            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
                 .is_none()
         );
     }
@@ -550,23 +550,23 @@ mod tests {
         assert_eq!(flat.node_count(), 3); // 1 interior + 2 leaves
 
         // Hit left sphere (at -1, 0, -2).
-        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(-1., 0., -2.).unit_vector(), 0.0);
+        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(-1., 0., -2.).normalize(), 0.0);
         assert!(
-            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
                 .is_some()
         );
 
         // Hit right sphere (at 1, 0, -2).
-        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(1., 0., -2.).unit_vector(), 0.0);
+        let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(1., 0., -2.).normalize(), 0.0);
         assert!(
-            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
                 .is_some()
         );
 
         // Hit neither.
         let ray = Ray::new_with_time(Vec3::ZERO, Vec3::new(0., 10., -1.), 0.0);
         assert!(
-            flat.intersect(&ray, Interval::from(0.001, f64::INFINITY))
+            flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
                 .is_none()
         );
     }
@@ -607,11 +607,11 @@ mod tests {
         // Test several rays: some hit, some miss.
         let test_rays = vec![
             // Hit sphere at (-2, 0, -3)
-            (Vec3::ZERO, Vec3::new(-2., 0., -3.).unit_vector(), true),
+            (Vec3::ZERO, Vec3::new(-2., 0., -3.).normalize(), true),
             // Hit sphere at (0, 0, -3)
-            (Vec3::ZERO, Vec3::new(0., 0., -3.).unit_vector(), true),
+            (Vec3::ZERO, Vec3::new(0., 0., -3.).normalize(), true),
             // Hit sphere at (2, 0, -3)
-            (Vec3::ZERO, Vec3::new(2., 0., -3.).unit_vector(), true),
+            (Vec3::ZERO, Vec3::new(2., 0., -3.).normalize(), true),
             // Hit quad at z=-5
             (Vec3::ZERO, Vec3::new(0., 0., -1.), true),
             // Miss everything (shoot upward)
@@ -622,7 +622,7 @@ mod tests {
 
         for (origin, direction, should_hit) in test_rays {
             let ray = Ray::new_with_time(origin, direction, 0.0);
-            let bvh_result = flat.intersect(&ray, Interval::from(0.001, f64::INFINITY));
+            let bvh_result = flat.intersect(&ray, Interval::from(0.001, f32::INFINITY));
             assert_eq!(
                 bvh_result.is_some(),
                 should_hit,

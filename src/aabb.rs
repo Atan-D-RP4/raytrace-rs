@@ -1,6 +1,8 @@
+use glam::Vec3;
+
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::{Point3, Vec3};
+use crate::vec3::Point3;
 
 /// Axis-aligned bounding box used for broad-phase ray culling and BVH traversal.
 #[derive(Default, Debug, Clone, Copy)]
@@ -11,7 +13,7 @@ pub struct Aabb {
 }
 
 impl Aabb {
-    const DELTA: f64 = 0.0001;
+    const DELTA: f32 = 0.0001;
     /// Creates an empty bounding box.
     pub fn new() -> Self {
         Self {
@@ -94,7 +96,7 @@ impl Aabb {
         }
     }
 
-    pub fn surface_area(&self) -> f64 {
+    pub fn surface_area(&self) -> f32 {
         let dx = self.x.size();
         let dy = self.y.size();
         let dz = self.z.size();

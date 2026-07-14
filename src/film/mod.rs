@@ -7,12 +7,13 @@ pub use tile::FilmTile;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
+use glam::Vec3;
 use image::{ImageResult, RgbImage};
 
-use crate::vec3::{Color3, Vec3};
+use crate::vec3::Color3;
 
 #[inline(always)]
-fn post_process(color: Color3, exposure: f64, tone_map: bool) -> [u8; 3] {
+fn post_process(color: Color3, exposure: f32, tone_map: bool) -> [u8; 3] {
     // Scale by sample count, exposure, and apply gamma correction.
     // Apply tone mapping operator before gamma if enabled, otherwise clamp to [0,1].
     let scaled = if tone_map {
@@ -30,7 +31,7 @@ fn post_process(color: Color3, exposure: f64, tone_map: bool) -> [u8; 3] {
 }
 
 #[inline(always)]
-const fn reinhard_tone_map(exposure: f64, color: Color3) -> Color3 {
+const fn reinhard_tone_map(exposure: f32, color: Color3) -> Color3 {
     let mapped = Vec3::new(color.x * exposure, color.y * exposure, color.z * exposure);
     Color3::new(
         mapped.x / (1.0 + mapped.x),
@@ -41,7 +42,7 @@ const fn reinhard_tone_map(exposure: f64, color: Color3) -> Color3 {
 
 #[inline(always)]
 /// Converts a linear color channel to gamma-corrected (gamma=2) space.
-fn linear_to_gamma(linear_component: f64) -> f64 {
+fn linear_to_gamma(linear_component: f32) -> f32 {
     if linear_component > 0. {
         linear_component.sqrt()
     } else {
@@ -74,15 +75,15 @@ pub trait Film: Send + Sync {
     fn progressive(&self) -> impl Iterator<Item = u8> + '_;
 
     /// Returns the estimated per-pixel variance (max over RGB channels).
-    /// Returns `f64::INFINITY` if fewer than 2 samples for this pixel.
-    fn pixel_variance(&self, idx: usize) -> f64;
+    /// Returns `f32::INFINITY` if fewer than 2 samples for this pixel.
+    fn pixel_variance(&self, idx: usize) -> f32;
 
     /// Returns a fresh convergence mask: `true` = pixel variance is below threshold
     /// with at least `min_samples` accumulated. Allocates a new `Vec<bool>`.
     fn convergence_mask(
         &self,
-        threshold_rel: f64,
-        threshold_abs: f64,
+        threshold_rel: f32,
+        threshold_abs: f32,
         min_samples: u32,
     ) -> Vec<bool>;
 
@@ -92,8 +93,8 @@ pub trait Film: Send + Sync {
     /// separate `all()` scan over the mask).
     fn reset_convergence_mask(
         &self,
-        threshold_rel: f64,
-        threshold_abs: f64,
+        threshold_rel: f32,
+        threshold_abs: f32,
         min_samples: u32,
         out: &mut [bool],
     ) -> bool;

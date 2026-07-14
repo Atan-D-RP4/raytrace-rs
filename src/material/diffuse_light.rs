@@ -11,14 +11,14 @@
 
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::hittable::SurfaceInteraction;
-use crate::texture::Texture;
-use crate::vec3::{Color3, Vec3};
-
+use crate::material::gpu::{GpuSerializable, GPU_NONE};
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
-use crate::material::{GPU_NONE, PdfKind};
-
-use super::gpu::GpuSerializable;
+use crate::pdf::PdfKind;
+use crate::texture::Texture;
+use crate::vec3::Color3;
 
 /// Light emitting surface.
 #[derive(Clone)]
@@ -35,7 +35,7 @@ impl Bsdf for DiffuseLightMaterial {
         &self,
         _wo: Vec3,
         _si: &SurfaceInteraction,
-        _next_dim: &mut dyn FnMut() -> f64,
+        _next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         None
     }
@@ -46,7 +46,7 @@ impl Bsdf for DiffuseLightMaterial {
     }
 
     /// No scattering PDF — always zero.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f64 {
+    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f32 {
         0.0
     }
 
@@ -68,7 +68,7 @@ impl Bsdf for DiffuseLightMaterial {
     }
 
     /// No reflection — always zero.
-    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f64 {
+    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f32 {
         0.0
     }
 }

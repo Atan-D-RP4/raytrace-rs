@@ -11,14 +11,14 @@
 #[derive(Clone, Copy, Debug)]
 pub enum Sample1D {
     /// Continuous sample at position `x` ∈ [0, 1), its PDF, and the bucket index.
-    Continuous { x: f64, pdf: f64, offset: usize },
+    Continuous { x: f32, pdf: f32, offset: usize },
     /// Discrete bucket at `index`, its PDF, and fractional remainder within the bucket.
-    Discrete { index: usize, pdf: f64, du: f64 },
+    Discrete { index: usize, pdf: f32, du: f32 },
 }
 
 impl Sample1D {
     /// Extract the PDF value regardless of variant.
-    pub fn pdf(&self) -> f64 {
+    pub fn pdf(&self) -> f32 {
         match self {
             Sample1D::Continuous { pdf, .. } | Sample1D::Discrete { pdf, .. } => *pdf,
         }
@@ -29,17 +29,17 @@ impl Sample1D {
 /// Used internally by Dist2D for the marginal and conditional distributions.
 pub struct Dist1D {
     /// Cumulative distribution function (CDF) values, length n+1.
-    cdfs: Vec<f64>,
+    cdfs: Vec<f32>,
     /// Normalized function values (weights ≥ 0).
-    funcs: Vec<f64>,
+    funcs: Vec<f32>,
     /// Sum of all function values. Zero if all weights are zero (uniform fallback).
-    total: f64,
+    total: f32,
 }
 
 impl Dist1D {
     /// Build a 1D distribution from raw weight values.
     /// Non-positive values are clamped to zero; a zero-total distribution samples uniformly.
-    pub fn new(values: &[f64]) -> Self {
+    pub fn new(values: &[f32]) -> Self {
         let n = values.len();
         let mut funcs = values.to_vec();
 
@@ -53,7 +53,7 @@ impl Dist1D {
         let mut cdfs = vec![0.; n + 1];
         if total == 0. {
             (0..=n).for_each(|i| {
-                cdfs[i] = i as f64 / n as f64;
+                cdfs[i] = i as f32 / n as f32;
             })
         } else {
             for i in 1..=n {
@@ -67,7 +67,7 @@ impl Dist1D {
 
     /// Sample the distribution with a unit-random value `u` ∈ [0, 1).
     /// Returns (index, PDF_value) where PDF_value uses the [0, 1] sample-space measure.
-    pub fn sample(&self, u: f64) -> (usize, f64) {
+    pub fn sample(&self, u: f32) -> (usize, f32) {
         let u_clamp = &u.clamp(0., 1.0 - 1e-10);
         let offset = self.cdfs.binary_search_by(|&val| {
             if val <= *u_clamp {
@@ -81,12 +81,12 @@ impl Dist1D {
     }
 
     /// Evaluate the PDF at a given index. Returns 1.0 for the uniform fallback (zero total).
-    pub fn pdf(&self, index: usize) -> f64 {
+    pub fn pdf(&self, index: usize) -> f32 {
         if self.total == 0. {
             return 1.0;
         }
 
-        (self.funcs[index] * self.count() as f64) / self.total
+        (self.funcs[index] * self.count() as f32) / self.total
     }
 
     /// Number of bins in the distribution.
@@ -95,7 +95,7 @@ impl Dist1D {
     }
 
     /// Sample a discrete bucket, returning a `Sample1D::Discrete`.
-    pub fn sample_discrete(&self, u: f64) -> Sample1D {
+    pub fn sample_discrete(&self, u: f32) -> Sample1D {
         let (index, pdf) = self.sample(u);
         Sample1D::Discrete {
             index,
@@ -108,7 +108,7 @@ impl Dist1D {
     ///
     /// Uses the same CDF as [`sample()`](Self::sample) but returns the
     /// interpolated continuous position within the bucket.
-    pub fn sample_continuous(&self, u: f64) -> Sample1D {
+    pub fn sample_continuous(&self, u: f32) -> Sample1D {
         let n = self.count();
         if u <= 0.0 {
             return Sample1D::Continuous {
@@ -140,11 +140,11 @@ impl Dist1D {
         } else {
             0.0
         };
-        let x = ((pos as f64 + du) / n as f64).min(1.0 - 1e-15);
+        let x = ((pos as f32 + du) / n as f32).min(1.0 - 1e-15);
         let pdf = if self.total == 0.0 {
             1.0
         } else {
-            (self.funcs[pos] * n as f64) / self.total
+            (self.funcs[pos] * n as f32) / self.total
         };
         Sample1D::Continuous {
             x,
@@ -165,7 +165,7 @@ pub struct Dist2D {
 impl Dist2D {
     /// Build a 2D distribution from a flat array of shape (nv, nu) in row-major order.
     /// `nu` = columns (u-axis), `nv` = rows (v-axis).
-    pub fn new(values: &[f64], nu: usize, nv: usize) -> Self {
+    pub fn new(values: &[f32], nu: usize, nv: usize) -> Self {
         let mut row_sums = vec![0.; nv];
         for j in 0..nv {
             (0..nu).for_each(|i| {
@@ -190,7 +190,7 @@ impl Dist2D {
     /// Sample the 2D distribution with two unit-random values (u, v).
     /// Returns (column, row, PDF_value). `u` selects the column within the row,
     /// `v` selects the row from the marginal distribution.
-    pub fn sample(&self, u: f64, v: f64) -> (usize, usize, f64) {
+    pub fn sample(&self, u: f32, v: f32) -> (usize, usize, f32) {
         let (row, marginal_pdf) = self.marginal.sample(v);
 
         let (col, conditional_pdf) = self.conditional[row].sample(u);
@@ -201,7 +201,7 @@ impl Dist2D {
     }
 
     /// Evaluate the PDF at pixel (i, j) in the [0, 1]² sample-space measure.
-    pub fn pdf(&self, i: usize, j: usize) -> f64 {
+    pub fn pdf(&self, i: usize, j: usize) -> f32 {
         self.marginal.pdf(j) * self.conditional[j].pdf(i)
     }
 }

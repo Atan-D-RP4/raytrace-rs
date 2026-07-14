@@ -1,7 +1,8 @@
-use crate::ray::{Ray, RayDifferentials};
-use crate::vec3::{Color3, Point3, Vec3};
+use glam::Vec3;
 
 use crate::camera::{Camera, CameraRay, CameraSampler};
+use crate::ray::{Ray, RayDifferentials};
+use crate::vec3::{Color3, Point3};
 
 const WIDTH: i32 = 800;
 
@@ -11,17 +12,17 @@ const WIDTH: i32 = 800;
 #[derive(Default, Clone, Copy)]
 pub struct CameraConfig {
     pub image_width: i32,       // Rendered image width in pixels
-    pub aspect_ratio: f64,      // Image width / height
+    pub aspect_ratio: f32,      // Image width / height
     pub samples_per_pixel: i32, // Rays per pixel for anti-aliasing
     pub max_depth: u32,         // Maximum ray bounce depth
-    pub vfov: f64,              // Vertical field of view (degrees)
+    pub vfov: f32,              // Vertical field of view (degrees)
     pub look_from: Point3,      // Camera position
     pub look_at: Point3,        // Look target
     pub vup: Vec3,              // Up direction
-    pub defocus_angle: f64,     // Depth of field angle
-    pub focus_distance: f64,    // Focal plane distance
+    pub defocus_angle: f32,     // Depth of field angle
+    pub focus_distance: f32,    // Focal plane distance
     pub background: Color3,     // Background color
-    pub exposure: f64,          // Exposure
+    pub exposure: f32,          // Exposure
     pub tone_map: bool,         // Whether to apply tone mapping to final colors
 }
 
@@ -47,11 +48,11 @@ pub struct PerspectiveCamera {
     image_height: i32,
 
     /// Image width / height
-    aspect_ratio: f64,
+    aspect_ratio: f32,
     /// Rays per pixel for anti-aliasing
     samples_per_pixel: i32,
     /// Vertical field of view (degrees)
-    vfov: f64,
+    vfov: f32,
     /// Camera position
     look_from: Point3,
     /// Look target
@@ -59,9 +60,9 @@ pub struct PerspectiveCamera {
     /// Up direction Vector
     vup: Vec3,
     /// Depth of field angle
-    defocus_angle: f64,
+    defocus_angle: f32,
     /// Focal plane distance
-    focus_distance: f64,
+    focus_distance: f32,
 
     /// Defocus disk vector for u-axis (depth of field sampling)
     defocus_disk_u: Vec3,
@@ -74,7 +75,7 @@ pub struct PerspectiveCamera {
     /// Vector from one pixel to the next in vertical direction
     pixel_delta_v: Point3,
     /// Scale factor for averaging samples (1/samples_per_pixel)
-    pixel_samples_scale: f64,
+    pixel_samples_scale: f32,
 }
 
 impl PerspectiveCamera {
@@ -97,7 +98,7 @@ impl PerspectiveCamera {
             pixel00_loc: Point3::default(),
             pixel_delta_u: Point3::default(),
             pixel_delta_v: Point3::default(),
-            pixel_samples_scale: 1.0 / (config.samples_per_pixel as f64),
+            pixel_samples_scale: 1.0 / (config.samples_per_pixel as f32),
         };
         cam.initialize();
         cam
@@ -108,9 +109,9 @@ impl PerspectiveCamera {
     /// This derives image dimensions, viewport basis vectors, per-pixel deltas,
     /// and depth-of-field sampling vectors from the current camera parameters.
     fn initialize(&mut self) {
-        self.image_height = ((self.image_width as f64 / self.aspect_ratio) as i32).max(1);
+        self.image_height = ((self.image_width as f32 / self.aspect_ratio) as i32).max(1);
 
-        self.pixel_samples_scale = 1.0 / self.samples_per_pixel as f64;
+        self.pixel_samples_scale = 1.0 / self.samples_per_pixel as f32;
 
         let center = self.look_from;
 
@@ -121,22 +122,22 @@ impl PerspectiveCamera {
         // Derive viewport dimensions from vertical FOV and aspect ratio. The viewport is a plane
         // centered at the focal plane, with size determined by the FOV and aspect ratio.
         let viewport_height = 2.0 * h * self.focus_distance;
-        let viewport_width = viewport_height * (self.image_width as f64 / self.image_height as f64);
+        let viewport_width = viewport_height * (self.image_width as f32 / self.image_height as f32);
 
         // Compute camera basis vectors. The camera looks from `look_from` towards `look_at`, with
         // `vup` as the up direction. The viewport is oriented according to these vectors
-        let w = (self.look_from - self.look_at).unit_vector();
-        let u = self.vup.cross(&w).unit_vector();
-        let v = w.cross(&u);
+        let w = (self.look_from - self.look_at).normalize();
+        let u = self.vup.cross(w).normalize();
+        let v = w.cross(u);
 
         // Compute pixel deltas by scaling viewport basis vectors by the number of pixels, which
         // represent the world-space vector from pixel to pixel.
         let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
         let viewport_v = viewport_height * -v; // Vector across viewport vertical edge
-        // Negated because the v vector points up but the image coordinates increase downwards.
+                                               // Negated because the v vector points up but the image coordinates increase downwards.
 
-        self.pixel_delta_u = viewport_u / self.image_width as f64;
-        self.pixel_delta_v = viewport_v / self.image_height as f64;
+        self.pixel_delta_u = viewport_u / self.image_width as f32;
+        self.pixel_delta_v = viewport_v / self.image_height as f32;
 
         // Compute the world-space location of the upper-left pixel (0,0).
         let viewport_upper_left =
@@ -158,8 +159,8 @@ impl Camera for PerspectiveCamera {
         // Anti-Aliasing Jitter: Randomize the ray direction within the pixel by adding a random
         // offset in [0,1) to the pixel coordinates.
         let pixel_sampler = self.pixel00_loc
-            + (i as f64 + sample.jitter.0) * self.pixel_delta_u
-            + (j as f64 + sample.jitter.1) * self.pixel_delta_v;
+            + (i as f32 + sample.jitter.0) * self.pixel_delta_u
+            + (j as f32 + sample.jitter.1) * self.pixel_delta_v;
 
         let ray_origin = if self.defocus_angle <= 0. {
             self.look_from
@@ -167,7 +168,7 @@ impl Camera for PerspectiveCamera {
             // Depth of field: Randomize ray origin within a disk on the lens.
             // Sampling a point on the defocus disk for it.
             let r = sample.lens.0.sqrt(); // Square root for uniform disk sampling
-            let theta = sample.lens.1 * 2.0 * std::f64::consts::PI;
+            let theta = sample.lens.1 * 2.0 * std::f32::consts::PI;
             let (sin_theta, cos_theta) = theta.sin_cos();
             let px = r * cos_theta;
             let py = r * sin_theta;
@@ -187,13 +188,13 @@ impl Camera for PerspectiveCamera {
 
         // X differential: sample a ray at pixel (i+1, j) with the same jitter
         let pixel_sampler_x = self.pixel00_loc
-            + (i as f64 + sample.jitter.0 + 1.0) * self.pixel_delta_u
-            + (j as f64 + sample.jitter.1) * self.pixel_delta_v;
+            + (i as f32 + sample.jitter.0 + 1.0) * self.pixel_delta_u
+            + (j as f32 + sample.jitter.1) * self.pixel_delta_v;
 
         // Y differential: sample a ray at pixel (i, j+1) with the same jitter
         let pixel_sampler_y = self.pixel00_loc
-            + (i as f64 + sample.jitter.0) * self.pixel_delta_u
-            + (j as f64 + sample.jitter.1 + 1.0) * self.pixel_delta_v;
+            + (i as f32 + sample.jitter.0) * self.pixel_delta_u
+            + (j as f32 + sample.jitter.1 + 1.0) * self.pixel_delta_v;
 
         Some(CameraRay {
             ray: Ray::new_with_differentials(
@@ -203,8 +204,8 @@ impl Camera for PerspectiveCamera {
                 Some(RayDifferentials {
                     rx_origin: primary_ray.ray.origin,
                     ry_origin: primary_ray.ray.origin,
-                    rx_direction: pixel_sampler_x - primary_ray.ray.origin,
-                    ry_direction: pixel_sampler_y - primary_ray.ray.origin,
+                    rx_direction: (pixel_sampler_x - primary_ray.ray.origin),
+                    ry_direction: (pixel_sampler_y - primary_ray.ray.origin),
                 }),
             ),
             weight: Color3::new(1.0, 1.0, 1.0),

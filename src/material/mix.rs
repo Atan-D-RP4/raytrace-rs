@@ -7,15 +7,15 @@
 
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::hittable::SurfaceInteraction;
-use crate::vec3::{Color3, Vec3};
-
+use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
-    MAX_BSDF_STRATS, PdfKind,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE,
+    MAX_BSDF_STRATS,
 };
-
-use super::gpu::GpuSerializable;
+use crate::vec3::Color3;
 
 /// Stochastic mix of two materials. `weight` is the probability of choosing `b`.
 #[derive(Clone)]
@@ -25,7 +25,7 @@ pub struct MixMaterial {
     /// Material chosen with probability `weight`.
     pub b: Arc<dyn Bsdf>,
     /// Selection probability for `b`. ∈ [0, 1].
-    pub weight: f64,
+    pub weight: f32,
 }
 
 impl Bsdf for MixMaterial {
@@ -33,7 +33,7 @@ impl Bsdf for MixMaterial {
         &self,
         wo: Vec3,
         si: &SurfaceInteraction,
-        next_dim: &mut dyn FnMut() -> f64,
+        next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         let a_delta = self.a.is_delta();
         let b_delta = self.b.is_delta();
@@ -75,7 +75,7 @@ impl Bsdf for MixMaterial {
 
         // Pass a fresh `next_dim` wrapper to the child so it can consume as many
         // dimensions as it needs (replaces the old fixed-field SampleDims).
-        let mut child_next_dim = || -> f64 { next_dim() };
+        let mut child_next_dim = || -> f32 { next_dim() };
         let mut result = chosen.scatter(wo, si, &mut child_next_dim)?;
         // The child was selected with probability `selection_prob`. For Delta
         // paths the direction comes directly from the child (no MIS mixture),
@@ -145,7 +145,7 @@ impl Bsdf for MixMaterial {
         (1.0 - w) * eval_a + w * eval_b
     }
 
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f64 {
+    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
         let w = self.weight;
         // Delta children have zero pdf (handled by their own pdf() guard),
         // so only accumulate non-delta contributions.
@@ -186,7 +186,7 @@ impl Bsdf for MixMaterial {
         self.a.is_emissive() || self.b.is_emissive()
     }
 
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f64 {
+    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
         let w = self.weight;
         // Delta children have negligible albedo at non-mirror directions,
         // so only accumulate non-delta contributions.

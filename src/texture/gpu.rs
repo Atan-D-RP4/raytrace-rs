@@ -77,9 +77,9 @@ impl GpuTextureBuffer {
         self.nodes.len() * std::mem::size_of::<GpuTextureNode>()
     }
 
-    /// Push f64 parameters as f32-packed bytes into the params buffer.
+    /// Push f32 parameters as f32-packed bytes into the params buffer.
     ///
-    /// GPU uses f32, but the CPU representation keeps f64 precision. Cast
+    /// GPU uses f32, but the CPU representation keeps f32 precision. Cast
     /// here so the rest of the code doesn't have to think about it.
     ///
     /// # Safety
@@ -87,8 +87,8 @@ impl GpuTextureBuffer {
     /// Uses `slice::from_raw_parts` to reinterpret `[f32]` as `[u8]`.
     /// This is safe because `f32` is `#[repr(transparent)]` over `u32`
     /// and has no padding bytes — the bit pattern is valid as raw bytes.
-    pub fn push_params(&mut self, params: &[f64]) {
-        let floats: Vec<f32> = params.iter().map(|v| *v as f32).collect();
+    pub fn push_params(&mut self, params: &[f32]) {
+        let floats: Vec<f32> = params.to_vec();
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 floats.as_ptr() as *const u8,

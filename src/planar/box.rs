@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use crate::hittable::Intersectable;
 use crate::material::Material;
-use crate::vec3::{Point3, Vec3};
-
 use crate::planar::quad;
+
+use glam::Vec3;
+
+use crate::vec3::Point3;
 
 pub fn box3d(a: Point3, b: Point3, material: Material) -> Vec<Arc<dyn Intersectable>> {
     let mut sides: Vec<Arc<dyn Intersectable>> = Vec::with_capacity(6);

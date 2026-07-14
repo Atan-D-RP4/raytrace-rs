@@ -5,15 +5,15 @@ use crate::planar::Region2D;
 pub struct TriRegion;
 
 impl Region2D for TriRegion {
-    fn contains(&self, a: f64, b: f64) -> bool {
+    fn contains(&self, a: f32, b: f32) -> bool {
         a >= 0.0 && b >= 0.0 && (a + b) <= 1.0
     }
 
-    fn area(&self) -> f64 {
+    fn area(&self) -> f32 {
         0.5
     }
 
-    fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+    fn sample(&self, u: f32, v: f32) -> (f32, f32) {
         let sqrt_u = u.sqrt();
         let a = 1.0 - sqrt_u;
         let b = v * sqrt_u;

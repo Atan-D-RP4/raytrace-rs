@@ -1,5 +1,6 @@
-use std::f64::consts::GOLDEN_RATIO;
 use std::sync::Arc;
+
+use glam::Vec3;
 
 use crate::aabb::Aabb;
 use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit};
@@ -8,10 +9,38 @@ use crate::material::Material;
 use crate::ray::Ray;
 use crate::sampler;
 use crate::texture::Texture;
-use crate::vec3::Vec3;
 
 /// Dedicated dimension for volume scattering distance.
 const VOLUME_DIM: u32 = 4096;
+
+/// Seed salt for the textured-volume constructor — arbitrary non-zero constant.
+const TEXTURED_VOLUME_SEED: u64 = 0x7E57A35E5EED;
+
+/// Returns a deterministic tag byte for the material variant, used as
+/// a reproducible seed component (not affected by ASLR / allocator state).
+fn phase_tag(m: &Material) -> u8 {
+    match m {
+        Material::Void => 0x00,
+        Material::Lambertian(_) => 0x01,
+        Material::Metal(_) => 0x02,
+        Material::Dielectric(_) => 0x03,
+        Material::DiffuseLight(_) => 0x04,
+        Material::Isotropic(_) => 0x05,
+        Material::Glossy(_) => 0x06,
+        Material::Mix { .. } => 0x07,
+        Material::Coated { .. } => 0x08,
+        Material::Custom(_) => 0x09,
+    }
+}
+
+/// Derive a deterministic seed from density and phase-function identity.
+fn volume_seed(density: f32, tag: u8) -> u64 {
+    sampler::splitmix64(
+        (density.to_bits() as u64)
+            .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
+            .wrapping_add(tag as u64),
+    )
+}
 
 pub struct ConstantMedium<T: Intersectable, const SURFACE: bool = true> {
     /// The boundary defines the shape of the volume (e.g., a sphere or box).
@@ -19,7 +48,7 @@ pub struct ConstantMedium<T: Intersectable, const SURFACE: bool = true> {
     /// The phase function determines how light scatters within the volume.
     phase_fn: Material,
     /// The negative inverse of the density is precomputed for efficient sampling of scattering events.
-    neg_inv_density: f64,
+    neg_inv_density: f32,
     /// Deterministic seed for volume QMC sampling.
     vol_seed: u64,
 }
@@ -30,25 +59,8 @@ impl<T: Intersectable, const SURFACE: bool> ConstantMedium<T, SURFACE> {
     /// When `SURFACE = false`, the boundary surface is invisible and only
     /// volume scattering is active — useful for testing volume behavior in
     /// isolation.
-    pub fn with_surface(boundary: T, density: f64, phase_fn: Material) -> Self {
-        let phase_tag = match &phase_fn {
-            Material::Void => 0x00,
-            Material::Lambertian(_) => 0x01,
-            Material::Metal(_) => 0x02,
-            Material::Dielectric(_) => 0x03,
-            Material::DiffuseLight(_) => 0x04,
-            Material::Isotropic(_) => 0x05,
-            Material::Glossy(_) => 0x06,
-            Material::Mix { .. } => 0x07,
-            Material::Coated { .. } => 0x08,
-            Material::Custom(_) => 0x09,
-        };
-        let seed = sampler::splitmix64(
-            density
-                .to_bits()
-                .wrapping_mul(GOLDEN_RATIO.to_bits())
-                .wrapping_add(phase_tag),
-        );
+    pub fn with_surface(boundary: T, density: f32, phase_fn: Material) -> Self {
+        let seed = volume_seed(density, phase_tag(&phase_fn));
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
@@ -59,28 +71,8 @@ impl<T: Intersectable, const SURFACE: bool> ConstantMedium<T, SURFACE> {
 }
 
 impl<T: Intersectable> ConstantMedium<T> {
-    pub fn new(boundary: T, density: f64, phase_fn: Material) -> Self {
-        // Derive deterministic seed from density and the phase function's identity.
-        // Uses the material's type tag bits rather than a heap pointer, so the seed
-        // is reproducible across runs (not affected by ASLR / allocator state).
-        let phase_tag = match &phase_fn {
-            Material::Void => 0x00,
-            Material::Lambertian(_) => 0x01,
-            Material::Metal(_) => 0x02,
-            Material::Dielectric(_) => 0x03,
-            Material::DiffuseLight(_) => 0x04,
-            Material::Isotropic(_) => 0x05,
-            Material::Glossy(_) => 0x06,
-            Material::Mix { .. } => 0x07,
-            Material::Coated { .. } => 0x08,
-            Material::Custom(_) => 0x09,
-        };
-        let seed = sampler::splitmix64(
-            density
-                .to_bits()
-                .wrapping_mul(GOLDEN_RATIO.to_bits())
-                .wrapping_add(phase_tag),
-        );
+    pub fn new(boundary: T, density: f32, phase_fn: Material) -> Self {
+        let seed = volume_seed(density, phase_tag(&phase_fn));
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
@@ -91,8 +83,8 @@ impl<T: Intersectable> ConstantMedium<T> {
 
     /// Construct a constant medium with a textured phase function (isotropic
     /// scattering — correct for volumes).
-    pub fn new_texture(boundary: T, density: f64, tex: Arc<dyn Texture>) -> Self {
-        let seed = sampler::splitmix64(density.to_bits() ^ 0x7E57A35E5EED);
+    pub fn new_texture(boundary: T, density: f32, tex: Arc<dyn Texture>) -> Self {
+        let seed = sampler::splitmix64((density.to_bits() as u64) ^ TEXTURED_VOLUME_SEED);
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
@@ -102,12 +94,11 @@ impl<T: Intersectable> ConstantMedium<T> {
     }
 
     /// Construct a constant medium with a uniform albedo (isotropic scattering) for pure uniform-sphere phase.
-    pub fn new_albedo(boundary: T, density: f64, albedo: Vec3) -> Self {
+    pub fn new_albedo(boundary: T, density: f32, albedo: Vec3) -> Self {
         let seed = sampler::splitmix64(
-            density
-                .to_bits()
-                .wrapping_mul(0x9E3779B97F4A7C15)
-                .wrapping_add(albedo.x.to_bits()),
+            (density.to_bits() as u64)
+                .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
+                .wrapping_add(albedo.x.to_bits() as u64),
         );
         Self {
             boundary,
@@ -131,7 +122,7 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         // Inside the boundary → sample volume scattering distance and check if it occurs before exiting.
         let rec2 = self
             .boundary
-            .intersect(ray, Interval::from(rec1.hit.time + 0.0001, f64::INFINITY))?;
+            .intersect(ray, Interval::from(rec1.hit.time + 0.0001, f32::INFINITY))?;
 
         // Compute the valid interval of ray parameter inside the boundary.
         let t_min = rec1.hit.time.max(ray_t.min);
@@ -152,18 +143,12 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         // Deterministic QMC sample for volume scattering distance.
         // Derive a unique seed from the ray's origin and direction so the same ray always gets the
         // same scattering distance (reproducible), while different rays vary.
-        let o = ray
-            .origin
-            .x
-            .to_bits()
-            .wrapping_mul(0x9E3779B97F4A7C15)
-            .wrapping_add(ray.origin.y.to_bits());
-        let d = ray
-            .direction
-            .x
-            .to_bits()
-            .wrapping_mul(0x9E3779B97F4A7C15)
-            .wrapping_add(ray.direction.y.to_bits());
+        let o = (ray.origin.x.to_bits() as u64)
+            .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
+            .wrapping_add(ray.origin.y.to_bits() as u64);
+        let d = (ray.direction.x.to_bits() as u64)
+            .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
+            .wrapping_add(ray.direction.y.to_bits() as u64);
         let seed = sampler::splitmix64(o.wrapping_add(d)) as u32;
         let qmc_sample = sampler::hash_sample(seed, VOLUME_DIM, self.vol_seed);
 
@@ -204,11 +189,14 @@ mod tests {
     use crate::material::Material;
     use crate::ray::Ray;
     use crate::shape::{ShapeObject, SphereShape};
-    use crate::vec3::{Color3, Vec3};
+
+    use glam::Vec3;
+
+    type Color3 = Vec3;
 
     type TestSphere = ShapeObject<SphereShape, Material>;
 
-    fn make_sphere(center: Vec3, radius: f64) -> TestSphere {
+    fn make_sphere(center: Vec3, radius: f32) -> TestSphere {
         crate::shape::sphere(center, radius, Material::dielectric(1.5))
     }
 
@@ -216,7 +204,7 @@ mod tests {
     /// boundary surface is invisible and only volume scattering is tested.
     fn volume_only(
         boundary: TestSphere,
-        density: f64,
+        density: f32,
         albedo: Vec3,
     ) -> ConstantMedium<TestSphere, false> {
         ConstantMedium::with_surface(boundary, density, Material::isotropic(albedo))
@@ -230,7 +218,7 @@ mod tests {
         let vol = volume_only(boundary, 100.0, Color3::new(0.5, 0.5, 0.5));
 
         let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
-        let hit = vol.intersect(&ray, Interval::from(0.001, f64::INFINITY));
+        let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         assert!(
             hit.is_some(),
@@ -253,7 +241,7 @@ mod tests {
         let vol = volume_only(boundary, 0.0001, Color3::new(0.5, 0.5, 0.5));
 
         let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
-        let hit = vol.intersect(&ray, Interval::from(0.001, f64::INFINITY));
+        let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         assert!(
             hit.is_none(),
@@ -268,11 +256,11 @@ mod tests {
         let vol = volume_only(boundary, 100.0, Color3::new(0.5, 0.5, 0.5));
 
         let ray = Ray::new_with_time(Vec3::new(0., 0., 5.), Vec3::new(0., 0., -1.), 0.0);
-        let hit = vol.intersect(&ray, Interval::from(0.001, f64::INFINITY));
+        let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         if let Some(h) = hit {
             assert!(
-                h.hit.geometric_normal().near_zero(),
+                h.hit.geometric_normal().length_squared() < 1e-6,
                 "volume hit geometric_normal should be zero, got {:?}",
                 h.hit.geometric_normal()
             );

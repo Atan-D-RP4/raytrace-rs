@@ -11,17 +11,17 @@ use crate::planar::Region2D;
 /// per-frame paths don't have to do numerical integration or sweep a closure.
 #[derive(Clone)]
 pub struct FunctionRegion {
-    contains_fn: Arc<dyn Fn(f64, f64) -> bool + Send + Sync>,
-    area: f64,
-    bbox: (f64, f64, f64, f64), // (a_min, a_max, b_min, b_max)
+    contains_fn: Arc<dyn Fn(f32, f32) -> bool + Send + Sync>,
+    area: f32,
+    bbox: (f32, f32, f32, f32), // (a_min, a_max, b_min, b_max)
 }
 
 impl FunctionRegion {
     /// Build a function region with a precomputed area and bounding box.
     pub fn new(
-        contains_fn: Arc<dyn Fn(f64, f64) -> bool + Send + Sync>,
-        area: f64,
-        bbox: (f64, f64, f64, f64),
+        contains_fn: Arc<dyn Fn(f32, f32) -> bool + Send + Sync>,
+        area: f32,
+        bbox: (f32, f32, f32, f32),
     ) -> Self {
         Self {
             contains_fn,
@@ -36,8 +36,8 @@ impl FunctionRegion {
     /// The estimator has error ~ `O(1/√samples)`. 10_000 samples gives ~1%
     /// relative error for shapes that fill a reasonable fraction of `bbox`.
     pub fn with_monte_carlo_area(
-        contains_fn: Arc<dyn Fn(f64, f64) -> bool + Send + Sync>,
-        bbox: (f64, f64, f64, f64),
+        contains_fn: Arc<dyn Fn(f32, f32) -> bool + Send + Sync>,
+        bbox: (f32, f32, f32, f32),
         samples: usize,
     ) -> Self {
         let (a_min, a_max, b_min, b_max) = bbox;
@@ -51,7 +51,7 @@ impl FunctionRegion {
                 count += 1;
             }
         }
-        let area = bbox_area * (count as f64 / samples as f64);
+        let area = bbox_area * (count as f32 / samples as f32);
         Self {
             contains_fn,
             area,
@@ -61,20 +61,20 @@ impl FunctionRegion {
 }
 
 impl Region2D for FunctionRegion {
-    fn contains(&self, a: f64, b: f64) -> bool {
+    fn contains(&self, a: f32, b: f32) -> bool {
         (self.contains_fn)(a, b)
     }
 
-    fn area(&self) -> f64 {
+    fn area(&self) -> f32 {
         self.area
     }
 
-    fn bounding_box_area(&self) -> f64 {
+    fn bounding_box_area(&self) -> f32 {
         let (a_min, a_max, b_min, b_max) = self.bbox;
         (a_max - a_min) * (b_max - b_min)
     }
 
-    fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+    fn sample(&self, u: f32, v: f32) -> (f32, f32) {
         let (a_min, a_max, b_min, b_max) = self.bbox;
         let mut u = u;
         let mut v = v;
@@ -84,8 +84,8 @@ impl Region2D for FunctionRegion {
             if self.contains(a, b) {
                 return (a, b);
             }
-            u = (u + 0.618033988749895).fract();
-            v = (v + 0.618033988749895).fract();
+            u = (u + 0.618_034).fract();
+            v = (v + 0.618_034).fract();
         }
         // Fallback: centroid of bounding box. For convex regions this is
         // always inside; for concave or disconnected regions it may fall

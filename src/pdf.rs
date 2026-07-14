@@ -1,10 +1,14 @@
-use std::f64::consts::{FRAC_1_PI, PI};
+use std::f32::consts::{FRAC_1_PI, PI};
 use std::sync::Arc;
 
+use glam::Vec3;
+
+use crate::distributions::Sample1D;
 use crate::environment::EnvironmentMap;
 use crate::hittable::Sampleable;
 use crate::onb::Onb;
-use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
+use crate::vec3::concentric_disk;
+use crate::vec3::Point3;
 
 // ================================================================
 // § PDF domain newtypes
@@ -19,20 +23,20 @@ use crate::vec3::{Point3, Vec3, concentric_disk, reflect};
 
 /// Probability density w.r.t. solid angle (sr⁻¹).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SolidAnglePdf(pub f64);
+pub struct SolidAnglePdf(pub f32);
 
 /// Probability density w.r.t. surface area (m⁻²).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AreaPdf(pub f64);
+pub struct AreaPdf(pub f32);
 
 /// Geometry context required for solid-angle ↔ area PDF conversion.
 #[derive(Clone, Copy, Debug)]
 pub struct PdfConvCtx {
     /// Distance between the two points.
-    pub dist: f64,
+    pub dist: f32,
     /// Absolute cosine of the angle between the surface normal at the
     /// receiving point and the connecting direction.
-    pub cos_there: f64,
+    pub cos_there: f32,
 }
 
 impl From<(SolidAnglePdf, PdfConvCtx)> for AreaPdf {
@@ -75,11 +79,15 @@ impl MisHeuristic {
     /// `f_pdf` is the PDF of the strategy that generated the sample;
     /// `g_pdf` is the PDF of the other strategy.
     #[inline]
-    pub fn weight(self, f_pdf: f64, g_pdf: f64) -> f64 {
+    pub fn weight(self, f_pdf: f32, g_pdf: f32) -> f32 {
         match self {
             MisHeuristic::Balance => {
                 let denom = f_pdf + g_pdf;
-                if denom <= 0.0 { 0.0 } else { f_pdf / denom }
+                if denom <= 0.0 {
+                    0.0
+                } else {
+                    f_pdf / denom
+                }
             }
             MisHeuristic::Power => {
                 let denom = f_pdf * f_pdf + g_pdf * g_pdf;
@@ -94,13 +102,13 @@ impl MisHeuristic {
 
     /// Weighted variant with strategy counts: `w(nf·f, ng·g)`.
     #[inline]
-    pub fn weight_n(self, nf: u32, f_pdf: f64, ng: u32, g_pdf: f64) -> f64 {
-        self.weight(nf as f64 * f_pdf, ng as f64 * g_pdf)
+    pub fn weight_n(self, nf: u32, f_pdf: f32, ng: u32, g_pdf: f32) -> f32 {
+        self.weight(nf as f32 * f_pdf, ng as f32 * g_pdf)
     }
 
     /// Scalar squaring helper used in VCM-style MIS accumulators.
     #[inline(always)]
-    pub fn vcm_term(a: f64) -> f64 {
+    pub fn vcm_term(a: f32) -> f32 {
         a * a
     }
 }
@@ -114,7 +122,7 @@ impl MisHeuristic {
 /// `pdf_sum_sq` must be the sum of squared PDF values (Σ p_j²).
 /// Returns 0 when the denominator is near-zero (degenerate PDF).
 #[inline(always)]
-pub fn power_heuristic(pdf_i: f64, pdf_sum_sq: f64) -> f64 {
+pub fn power_heuristic(pdf_i: f32, pdf_sum_sq: f32) -> f32 {
     if pdf_sum_sq <= 1e-20 {
         return 0.0;
     }
@@ -128,7 +136,7 @@ pub fn power_heuristic(pdf_i: f64, pdf_sum_sq: f64) -> f64 {
 ///
 /// This is the N-strategy form: `w_i = p_i / Σ(p_j)`.
 #[inline(always)]
-pub fn balance_heuristic(pdf_i: f64, pdf_sum: f64) -> f64 {
+pub fn balance_heuristic(pdf_i: f32, pdf_sum: f32) -> f32 {
     if pdf_sum <= 1e-20 {
         return 0.0;
     }
@@ -137,13 +145,13 @@ pub fn balance_heuristic(pdf_i: f64, pdf_sum: f64) -> f64 {
 
 /// Two-strategy power heuristic (pbrt-v4 style).
 #[inline]
-pub fn power_heuristic_2(nf: u32, f_pdf: f64, ng: u32, g_pdf: f64) -> f64 {
+pub fn power_heuristic_2(nf: u32, f_pdf: f32, ng: u32, g_pdf: f32) -> f32 {
     MisHeuristic::Power.weight_n(nf, f_pdf, ng, g_pdf)
 }
 
 /// Two-strategy balance heuristic (pbrt-v4 style).
 #[inline]
-pub fn balance_heuristic_2(nf: u32, f_pdf: f64, ng: u32, g_pdf: f64) -> f64 {
+pub fn balance_heuristic_2(nf: u32, f_pdf: f32, ng: u32, g_pdf: f32) -> f32 {
     MisHeuristic::Balance.weight_n(nf, f_pdf, ng, g_pdf)
 }
 
@@ -155,19 +163,19 @@ pub fn balance_heuristic_2(nf: u32, f_pdf: f64, ng: u32, g_pdf: f64) -> f64 {
 
 /// Uniform hemisphere PDF: 1 / (2π)
 #[inline(always)]
-pub fn uniform_hemisphere_pdf() -> f64 {
+pub fn uniform_hemisphere_pdf() -> f32 {
     0.5 * FRAC_1_PI
 }
 
 /// Uniform sphere PDF: 1 / (4π)
 #[inline(always)]
-pub fn uniform_sphere_pdf() -> f64 {
+pub fn uniform_sphere_pdf() -> f32 {
     0.25 * FRAC_1_PI
 }
 
 /// Uniform cone PDF: 1 / (2π(1 − cosθmax))
 #[inline]
-pub fn uniform_cone_pdf(cos_theta_max: f64) -> f64 {
+pub fn uniform_cone_pdf(cos_theta_max: f32) -> f32 {
     if cos_theta_max >= 1.0 {
         return 0.0;
     }
@@ -176,11 +184,9 @@ pub fn uniform_cone_pdf(cos_theta_max: f64) -> f64 {
 
 /// Cosine-weighted hemisphere PDF: cosθ / π
 #[inline(always)]
-pub fn cosine_hemisphere_pdf(cos_theta: f64) -> f64 {
+pub fn cosine_hemisphere_pdf(cos_theta: f32) -> f32 {
     cos_theta * FRAC_1_PI
 }
-
-use crate::distributions::Sample1D;
 
 // ================================================================
 // § sample_discrete — weighted discrete selection
@@ -194,16 +200,16 @@ use crate::distributions::Sample1D;
 /// of the selected bin and `u_remapped` ∈ [0, 1) is the variate
 /// re-mapped within the selected bin.  Returns `None` when the weight
 /// array is empty.
-pub fn sample_discrete(weights: &[f64], u: f64) -> Option<(usize, f64, f64)> {
+pub fn sample_discrete(weights: &[f32], u: f32) -> Option<(usize, f32, f32)> {
     if weights.is_empty() {
         return None;
     }
-    let sum: f64 = weights.iter().sum();
+    let sum: f32 = weights.iter().sum();
     if sum <= 0.0 {
         // Uniform fallback: treat all weights as equal.
-        let n = weights.len() as f64;
+        let n = weights.len() as f32;
         let idx = (u * n).min(n - 1.0) as usize;
-        let u_remapped = (u * n - idx as f64).min(1.0 - 1e-15);
+        let u_remapped = (u * n - idx as f32).min(1.0 - 1e-15);
         return Some((idx, 1.0 / n, u_remapped));
     }
     let mut up = u * sum;
@@ -212,7 +218,7 @@ pub fn sample_discrete(weights: &[f64], u: f64) -> Option<(usize, f64, f64)> {
     }
 
     let mut offset = 0usize;
-    let mut running = 0.0f64;
+    let mut running = 0.0f32;
     while running + weights[offset] <= up {
         running += weights[offset];
         offset += 1;
@@ -240,32 +246,32 @@ pub fn sample_discrete(weights: &[f64], u: f64) -> Option<(usize, f64, f64)> {
 #[derive(Clone, Debug)]
 pub struct Distribution1DFixed<const N: usize> {
     /// Normalized function values: `func[i] = w_i / total`.
-    func: [f64; N],
+    func: [f32; N],
     /// Cumulative distribution: `cdf[i]` = sum of func[0..=i].
-    cdf: [f64; N],
+    cdf: [f32; N],
     /// Total sum of raw input weights.
-    func_int: f64,
+    func_int: f32,
     /// 1 / N — precomputed for speed.
-    inv_count: f64,
+    inv_count: f32,
 }
 
 impl<const N: usize> Distribution1DFixed<N> {
     /// Build from raw weight values. Non-positive weights are clamped to zero.
     /// A zero-total distribution falls back to uniform sampling.
-    pub fn new(f: &[f64; N]) -> Self {
-        let inv_count = 1.0 / N as f64;
-        let mut func = [0.0f64; N];
-        let mut total = 0.0f64;
+    pub fn new(f: &[f32; N]) -> Self {
+        let inv_count = 1.0 / N as f32;
+        let mut func = [0.0f32; N];
+        let mut total = 0.0f32;
         for (i, &v) in f.iter().enumerate() {
             let w = v.max(0.0);
             func[i] = w;
             total += w;
         }
 
-        let mut cdf = [0.0f64; N];
+        let mut cdf = [0.0f32; N];
         if total > 0.0 {
             let inv_total = 1.0 / total;
-            let mut running = 0.0f64;
+            let mut running = 0.0f32;
             for i in 0..N {
                 running += func[i] * inv_total;
                 cdf[i] = running;
@@ -274,7 +280,7 @@ impl<const N: usize> Distribution1DFixed<N> {
             // Uniform fallback
             for i in 0..N {
                 func[i] = 1.0;
-                cdf[i] = (i + 1) as f64 * inv_count;
+                cdf[i] = (i + 1) as f32 * inv_count;
             }
         }
 
@@ -287,30 +293,30 @@ impl<const N: usize> Distribution1DFixed<N> {
     }
 
     /// Integral of the original function over [0, 1).
-    pub fn integral(&self) -> f64 {
+    pub fn integral(&self) -> f32 {
         self.func_int
     }
 
     /// Bucket index for `u ∈ [0, 1)`.
     #[inline]
-    pub fn offset(&self, u: f64) -> usize {
-        ((u * N as f64) as usize).min(N - 1)
+    pub fn offset(&self, u: f32) -> usize {
+        ((u * N as f32) as usize).min(N - 1)
     }
 
     /// Continuous PDF at `u`.
     #[inline]
-    pub fn pdf_continuous(&self, u: f64) -> f64 {
+    pub fn pdf_continuous(&self, u: f32) -> f32 {
         self.func[self.offset(u)]
     }
 
     /// Discrete PDF for bucket at `offset`.
     #[inline]
-    pub fn pdf_discrete(&self, offset: usize) -> f64 {
+    pub fn pdf_discrete(&self, offset: usize) -> f32 {
         self.func[offset] * self.inv_count
     }
 
     /// Sample a continuous position.
-    pub fn sample_continuous(&self, u: f64) -> Sample1D {
+    pub fn sample_continuous(&self, u: f32) -> Sample1D {
         let n = N;
         if u <= 0.0 {
             return Sample1D::Continuous {
@@ -338,7 +344,7 @@ impl<const N: usize> Distribution1DFixed<N> {
         } else {
             0.0
         };
-        let x = ((pos as f64 + du) * self.inv_count).min(1.0 - 1e-15);
+        let x = ((pos as f32 + du) * self.inv_count).min(1.0 - 1e-15);
         Sample1D::Continuous {
             x,
             pdf: self.func[pos],
@@ -347,7 +353,7 @@ impl<const N: usize> Distribution1DFixed<N> {
     }
 
     /// Sample a discrete bucket.
-    pub fn sample_discrete(&self, u: f64) -> Sample1D {
+    pub fn sample_discrete(&self, u: f32) -> Sample1D {
         let n = N;
         if u <= 0.0 {
             return Sample1D::Discrete {
@@ -391,7 +397,7 @@ impl<const N: usize> Distribution1DFixed<N> {
 ///
 /// Reference: Shirley & Chiu, "A Low Distortion Map Between Disk and Square", 1997.
 #[inline(always)]
-pub fn cosine_hemisphere_direction(u: f64, v: f64) -> Vec3 {
+pub fn cosine_hemisphere_direction(u: f32, v: f32) -> Vec3 {
     // Concentric disk mapping: map (u,v) in [0,1)^2 to (x,y) on the unit disk.
     let (x, y) = concentric_disk(u, v);
     Vec3::new(x, y, (1.0 - x * x - y * y).max(0.0).sqrt())
@@ -402,7 +408,7 @@ pub fn cosine_hemisphere_direction(u: f64, v: f64) -> Vec3 {
 /// Takes two uniform random values `(u, v)` in `[0, 1)` and
 /// returns a direction on the unit hemisphere with PDF `1 / (2π)`.
 #[inline(always)]
-pub fn uniform_hemisphere_direction(u: f64, v: f64) -> Vec3 {
+pub fn uniform_hemisphere_direction(u: f32, v: f32) -> Vec3 {
     let phi = 2.0 * PI * u;
     let (sin_phi, cos_phi) = phi.sin_cos();
     let z = v;
@@ -416,10 +422,10 @@ pub fn uniform_hemisphere_direction(u: f64, v: f64) -> Vec3 {
 /// The caller provides the random numbers; the PDF just maps them to directions.
 pub trait PDF {
     /// Evaluates the PDF value for a given direction.
-    fn value(&self, direction: Vec3) -> f64;
+    fn value(&self, direction: Vec3) -> f32;
 
     /// Generates a random direction according to the PDF from `(u, v)` in [0, 1)².
-    fn generate(&self, u: f64, v: f64) -> Vec3;
+    fn generate(&self, u: f32, v: f32) -> Vec3;
 }
 
 /// PDF for sampling directions from a set of light emitters
@@ -429,11 +435,11 @@ pub struct EmitterPDF<'a> {
     /// The origin point from which to sample direction.
     origin: Point3,
     /// The time at which to sample the emitter.
-    time: f64,
+    time: f32,
 }
 
 impl<'a> EmitterPDF<'a> {
-    pub fn new(objects: &'a [Arc<dyn Sampleable>], origin: Point3, time: f64) -> Self {
+    pub fn new(objects: &'a [Arc<dyn Sampleable>], origin: Point3, time: f32) -> Self {
         EmitterPDF {
             objects,
             origin,
@@ -443,11 +449,11 @@ impl<'a> EmitterPDF<'a> {
 }
 
 impl<'a> PDF for EmitterPDF<'a> {
-    fn value(&self, direction: Vec3) -> f64 {
+    fn value(&self, direction: Vec3) -> f32 {
         if self.objects.is_empty() {
             return 0.0;
         }
-        let inv_len = 1.0 / self.objects.len() as f64;
+        let inv_len = 1.0 / self.objects.len() as f32;
         self.objects
             .iter()
             .map(|o| o.pdf_value(self.origin, direction, self.time) * inv_len)
@@ -461,11 +467,11 @@ impl<'a> PDF for EmitterPDF<'a> {
     /// `v` is passed through to the selected light's `random_direction()` method
     /// which uses it for the secondary random dimension (e.g., surface position
     /// within the light or directional PDF sampling).
-    fn generate(&self, u: f64, v: f64) -> Vec3 {
+    fn generate(&self, u: f32, v: f32) -> Vec3 {
         if self.objects.is_empty() {
             return Vec3::ZERO;
         }
-        let index = (u * self.objects.len() as f64).min(self.objects.len() as f64 - 1e-15) as usize;
+        let index = (u * self.objects.len() as f32).min(self.objects.len() as f32 - 1e-15) as usize;
         self.objects[index].random_direction(self.origin, u, v, self.time)
     }
 }
@@ -477,11 +483,11 @@ impl<'a> PDF for EmitterPDF<'a> {
 pub struct LightPDF<'a> {
     object: &'a Arc<dyn Sampleable>,
     origin: Point3,
-    time: f64,
+    time: f32,
 }
 
 impl<'a> LightPDF<'a> {
-    pub fn new(object: &'a Arc<dyn Sampleable>, origin: Point3, time: f64) -> Self {
+    pub fn new(object: &'a Arc<dyn Sampleable>, origin: Point3, time: f32) -> Self {
         Self {
             object,
             origin,
@@ -491,11 +497,11 @@ impl<'a> LightPDF<'a> {
 }
 
 impl<'a> PDF for LightPDF<'a> {
-    fn value(&self, direction: Vec3) -> f64 {
+    fn value(&self, direction: Vec3) -> f32 {
         self.object.pdf_value(self.origin, direction, self.time)
     }
 
-    fn generate(&self, u: f64, v: f64) -> Vec3 {
+    fn generate(&self, u: f32, v: f32) -> Vec3 {
         self.object.random_direction(self.origin, u, v, self.time)
     }
 }
@@ -513,13 +519,13 @@ impl EnvPdf<'_> {
 }
 
 impl<'a> PDF for EnvPdf<'a> {
-    fn value(&self, direction: Vec3) -> f64 {
+    fn value(&self, direction: Vec3) -> f32 {
         self.0.to_solid_angle_pdf(direction)
     }
-    fn generate(&self, u: f64, v: f64) -> Vec3 {
+    fn generate(&self, u: f32, v: f32) -> Vec3 {
         let (col, row, _) = self.0.sample(u, v);
-        let theta = (row as f64 + 0.5) / self.0.height() as f64 * PI;
-        let phi = (col as f64 + 0.5) / self.0.width() as f64 * 2.0 * PI;
+        let theta = (row as f32 + 0.5) / self.0.height() as f32 * PI;
+        let phi = (col as f32 + 0.5) / self.0.width() as f32 * 2.0 * PI;
         let sin_theta = theta.sin();
         Vec3::new(sin_theta * phi.cos(), theta.cos(), sin_theta * phi.sin())
     }
@@ -529,7 +535,7 @@ impl<'a> PDF for EnvPdf<'a> {
 ///
 /// Samples a half-vector H from the GGX NDF given roughness² `alpha` and uniform
 /// random variables `u`, `v` in [0, 1). Returns H in tangent space (Z = normal).
-pub fn ggx_sample_h(alpha: f64, u: f64, v: f64) -> Vec3 {
+pub fn ggx_sample_h(alpha: f32, u: f32, v: f32) -> Vec3 {
     let cos_theta = ((1.0 - v) / (1.0 + (alpha * alpha - 1.0) * v))
         .clamp(0.0, 1.0)
         .sqrt();
@@ -543,7 +549,7 @@ pub fn ggx_sample_h(alpha: f64, u: f64, v: f64) -> Vec3 {
 ///
 /// Returns the probability density that a microfacet has half-vector H aligned
 /// with the surface normal. `alpha` is roughness²; controls specular lobe width.
-pub fn ggx_d(cos_theta_h: f64, alpha: f64) -> f64 {
+pub fn ggx_d(cos_theta_h: f32, alpha: f32) -> f32 {
     if cos_theta_h <= 0.0 {
         return 0.0;
     }
@@ -568,7 +574,7 @@ pub enum PdfKind {
         /// Surface normal.
         normal: Vec3,
         /// GGX alpha (roughness² clamped to [0.001, 1]).
-        alpha: f64,
+        alpha: f32,
     },
     /// Uniform over the full sphere (isotropic volumes).
     UniformSphere,
@@ -578,7 +584,7 @@ pub enum PdfKind {
 
 impl PdfKind {
     /// Generate a direction from this PDF distribution.
-    pub fn generate(&self, u: f64, v: f64) -> Vec3 {
+    pub fn generate(&self, u: f32, v: f32) -> Vec3 {
         match self {
             PdfKind::Cosine { normal } => {
                 let uvw = Onb::build_from_normal(*normal);
@@ -586,10 +592,10 @@ impl PdfKind {
             }
             PdfKind::Ggx { wo, normal, alpha } => {
                 let onb = Onb::build_from_normal(*normal);
-                let wo_unit = wo.unit_vector();
+                let wo_unit = wo.normalize();
                 let h_local = ggx_sample_h(*alpha, u, v);
                 let h_world = onb.local_to_world(h_local);
-                reflect(&-wo_unit, &h_world)
+                -wo_unit.reflect(h_world)
             }
             PdfKind::UniformSphere => {
                 let phi = 2.0 * PI * u;
@@ -611,18 +617,18 @@ impl PdfKind {
     }
 
     /// Evaluate the PDF value for a given direction.
-    pub fn value(&self, direction: Vec3) -> f64 {
+    pub fn value(&self, direction: Vec3) -> f32 {
         match self {
             PdfKind::Cosine { normal } => {
                 let uvw = Onb::build_from_normal(*normal);
-                let cos_theta = direction.dot(&uvw.w);
+                let cos_theta = direction.dot(uvw.w);
                 (cos_theta / PI).max(0.0)
             }
             PdfKind::Ggx { wo, normal, alpha } => {
                 let onb = Onb::build_from_normal(*normal);
-                let wo_unit = wo.unit_vector();
-                let h = (wo_unit + direction).unit_vector();
-                let cos_h = wo_unit.dot(&h).abs();
+                let wo_unit = wo.normalize();
+                let h = (wo_unit + direction).normalize();
+                let cos_h = wo_unit.dot(h).abs();
                 if cos_h <= 0.0 {
                     return 0.0;
                 }
@@ -634,7 +640,7 @@ impl PdfKind {
             PdfKind::UniformSphere => 1.0 / (4.0 * PI),
             PdfKind::UniformHemisphere { normal } => {
                 let uvw = Onb::build_from_normal(*normal);
-                let cos_theta = direction.dot(&uvw.w);
+                let cos_theta = direction.dot(uvw.w);
                 if cos_theta > 0.0 {
                     1.0 / (2.0 * PI)
                 } else {
@@ -646,11 +652,11 @@ impl PdfKind {
 }
 
 impl PDF for PdfKind {
-    fn value(&self, direction: Vec3) -> f64 {
+    fn value(&self, direction: Vec3) -> f32 {
         PdfKind::value(self, direction)
     }
 
-    fn generate(&self, u: f64, v: f64) -> Vec3 {
+    fn generate(&self, u: f32, v: f32) -> Vec3 {
         PdfKind::generate(self, u, v)
     }
 }

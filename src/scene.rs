@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
+use glam::Vec3;
 use rand::RngExt;
+use tracing::{info, trace};
 
 use crate::bvh::BvhNode;
 use crate::camera::perspective::CameraConfig;
@@ -17,10 +19,9 @@ use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture,
 };
 use crate::transform::{RotateY, TransformObject, Translate};
-use crate::vec3::{Color3, Point3, Vec3};
-use tracing::{info, trace};
+use crate::vec3::{Color3, Point3};
 
-fn checker_texture(scale: f64, even: Color3, odd: Color3) -> Arc<dyn Texture> {
+fn checker_texture(scale: f32, even: Color3, odd: Color3) -> Arc<dyn Texture> {
     let mapped_tex = MappedTexture::new(CheckerTexture::from_color(even, odd));
     let mapped_tex = mapped_tex.with_mapping3d(TextureMapping3D::point_scale_uniform(scale));
     Arc::new(mapped_tex)
@@ -79,7 +80,7 @@ impl Scene {
         (self.objects, self.important_objects)
     }
 
-    pub fn aspect_ratio(mut self, ratio: f64) -> Self {
+    pub fn aspect_ratio(mut self, ratio: f32) -> Self {
         self.config.aspect_ratio = ratio;
         self
     }
@@ -94,7 +95,7 @@ impl Scene {
         self
     }
 
-    pub fn vfov(mut self, vfov: f64) -> Self {
+    pub fn vfov(mut self, vfov: f32) -> Self {
         self.config.vfov = vfov;
         self
     }
@@ -114,12 +115,12 @@ impl Scene {
         self
     }
 
-    pub fn defocus_angle(mut self, angle: f64) -> Self {
+    pub fn defocus_angle(mut self, angle: f32) -> Self {
         self.config.defocus_angle = angle;
         self
     }
 
-    pub fn focus_distance(mut self, distance: f64) -> Self {
+    pub fn focus_distance(mut self, distance: f32) -> Self {
         self.config.focus_distance = distance;
         self
     }
@@ -152,7 +153,7 @@ impl Scene {
         self.objects.push(object);
     }
 
-    pub fn add_sphere(&mut self, center: Point3, radius: f64, material: Material) {
+    pub fn add_sphere(&mut self, center: Point3, radius: f32, material: Material) {
         trace!(?center, radius, "add sphere");
         if material.is_emissive() {
             let material = Arc::new(material);
@@ -183,7 +184,7 @@ impl Scene {
         &mut self,
         center_start: Point3,
         center_end: Point3,
-        radius: f64,
+        radius: f32,
         material: Material,
     ) {
         trace!(?center_start, ?center_end, radius, "add moving sphere");
@@ -230,8 +231,8 @@ impl Scene {
         for i in 0..boxes_per_side {
             for j in 0..boxes_per_side {
                 let w = 100.0;
-                let x0 = -1000.0 + (i as f64 * w);
-                let z0 = -1000.0 + (j as f64 * w);
+                let x0 = -1000.0 + (i as f32 * w);
+                let z0 = -1000.0 + (j as f32 * w);
                 let y0 = 0.0;
                 let x1 = x0 + w;
                 let y1 = rand::rng().random_range(1.0..101.0);
@@ -326,7 +327,11 @@ impl Scene {
         let mut boxes2: Vec<Arc<dyn Intersectable>> = Vec::with_capacity(1000);
         for _ in 0..1000 {
             boxes2.push(Arc::new(sphere(
-                Point3::random_range(0., 165.),
+                Point3::new(
+                    rand::rng().random_range(0.0..165.),
+                    rand::rng().random_range(0.0..165.),
+                    rand::rng().random_range(0.0..165.),
+                ),
                 10.,
                 white.clone(),
             )));
@@ -742,13 +747,16 @@ impl Scene {
             for b in -21..21 {
                 let world_seed = rand::random::<u8>();
                 let mut center = Point3::new(
-                    a as f64 + 1.4 * rand::random::<f64>(),
+                    a as f32 + 1.4 * rand::random::<f32>(),
                     0.2,
-                    b as f64 + 1.4 * rand::random::<f64>(),
+                    b as f32 + 1.4 * rand::random::<f32>(),
                 );
 
                 if (center - Point3::new(4., 0.2, 0.)).length() > 1.4 {
-                    let rand_albedo = || Color3::random() * Color3::random();
+                    let rand_albedo = || rand::random::<Vec3>() * rand::random::<Vec3>();
+                    fn metal_color() -> Vec3 {
+                        Vec3::splat(0.5) + rand::random::<Vec3>() * Vec3::splat(0.5)
+                    }
                     let (material, radius) = match world_seed % 7 {
                         0 => (
                             Material::Lambertian(LambertianMaterial {
@@ -759,8 +767,8 @@ impl Scene {
                         ),
                         1 => (
                             Material::metal_with_ior(
-                                Color3::random_range(0.5, 1.0),
-                                rand::random::<f64>() * 0.5,
+                                metal_color(),
+                                rand::random::<f32>() * 0.5,
                                 2.5,
                             ),
                             0.175,
@@ -768,13 +776,13 @@ impl Scene {
                         2 => (Material::dielectric(1.5), 0.2),
                         3 => (
                             Material::Isotropic(IsotropicMaterial {
-                                albedo: Color3::random(),
+                                albedo: rand::random::<Vec3>(),
                                 tex: None,
                             }),
                             0.225,
                         ),
                         4 => (
-                            Material::glossy(Color3::random(), rand::random::<f64>(), 1.5),
+                            Material::glossy(rand::random::<Vec3>(), rand::random::<f32>(), 1.5),
                             0.25,
                         ),
                         5 => (
@@ -783,20 +791,14 @@ impl Scene {
                                     albedo: rand_albedo(),
                                     tex: None,
                                 }),
-                                Material::metal(
-                                    Color3::random_range(0.5, 1.0),
-                                    rand::random::<f64>() * 0.5,
-                                ),
+                                Material::metal(metal_color(), rand::random::<f32>() * 0.5),
                             ),
                             0.275,
                         ),
                         _ => (
                             Material::lambertian(Arc::new(SolidColor::new(rand_albedo()))).mix(
-                                Material::metal(
-                                    Color3::random_range(0.5, 1.0),
-                                    rand::random::<f64>() * 0.5,
-                                ),
-                                rand::random::<f64>(),
+                                Material::metal(metal_color(), rand::random::<f32>() * 0.5),
+                                rand::random::<f32>(),
                             ),
                             0.3,
                         ),
@@ -901,9 +903,9 @@ impl Scene {
 
         // Three rows of three spheres, evenly spaced. All spheres have radius 1.0,
         // so center-to-center distance is 2.05 (0.05 gap avoids precision overlap).
-        const SPHERE_GAP: f64 = 2.05;
-        const ROW_Z: [f64; 3] = [3.0, 7.0, 11.0];
-        const COL_X: [f64; 3] = [-SPHERE_GAP, 0.0, SPHERE_GAP];
+        const SPHERE_GAP: f32 = 2.05;
+        const ROW_Z: [f32; 3] = [3.0, 7.0, 11.0];
+        const COL_X: [f32; 3] = [-SPHERE_GAP, 0.0, SPHERE_GAP];
 
         // Row 1 (z=3, front): glossy, rough glossy, mixed Lambertian+metal.
         //   Demonstrates specular highlights at different roughnesses and material blending.

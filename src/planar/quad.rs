@@ -7,16 +7,16 @@ use crate::planar::Region2D;
 pub struct QuadRegion;
 
 impl Region2D for QuadRegion {
-    fn contains(&self, a: f64, b: f64) -> bool {
+    fn contains(&self, a: f32, b: f32) -> bool {
         let unit = Interval::from(0., 1.);
         unit.contains(a) && unit.contains(b)
     }
 
-    fn area(&self) -> f64 {
+    fn area(&self) -> f32 {
         1.0
     }
 
-    fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+    fn sample(&self, u: f32, v: f32) -> (f32, f32) {
         (u, v)
     }
 }

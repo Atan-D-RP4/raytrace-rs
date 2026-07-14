@@ -10,8 +10,10 @@
 //! The UV generation converts a 3D point in mapping space to UV coordinates, which is useful for
 //! procedural textures that need UVs but the geometry doesn't provide them.
 
+use glam::Vec3;
+
 use crate::texture::TextureCoords;
-use crate::vec3::{Point3, Vec3};
+use crate::vec3::Point3;
 
 /// 3D coordinate transform applied to the texture-space point.
 ///
@@ -31,7 +33,7 @@ impl TextureMapping3D {
     /// Builds a uniform point-scale mapping.
     ///
     /// `scale` is cell size; smaller values increase frequency.
-    pub fn point_scale_uniform(scale: f64) -> Self {
+    pub fn point_scale_uniform(scale: f32) -> Self {
         assert!(scale > 0.0, "texture scale must be positive");
         let inv_scale = 1.0 / scale;
 
@@ -63,8 +65,8 @@ pub enum TextureMapping2D {
     /// No transformation — use the UV coordinates as-is.
     Identity,
     ScaleUV {
-        su: f64,
-        sv: f64,
+        su: f32,
+        sv: f32,
     },
 }
 
@@ -72,7 +74,7 @@ impl TextureMapping2D {
     /// Builds a uniform UV scale mapping.
     ///
     /// `scale` is cell size; smaller values increase frequency (more detail).
-    pub fn scale_uv_uniform(scale: f64) -> Self {
+    pub fn scale_uv_uniform(scale: f32) -> Self {
         assert!(scale > 0.0, "texture scale must be positive");
         let inv_scale = 1.0 / scale;
 
@@ -89,7 +91,7 @@ impl TextureMapping2D {
     }
 
     /// Applies this mapping to a pair of UV coordinates and returns the mapped copy.
-    pub fn map_uv(&self, u: f64, v: f64) -> (f64, f64) {
+    pub fn map_uv(&self, u: f32, v: f32) -> (f32, f32) {
         match self {
             TextureMapping2D::Identity => (u, v),
             TextureMapping2D::ScaleUV { su, sv } => {
@@ -120,15 +122,15 @@ pub enum UvGen {
 
 impl UvGen {
     /// Converts a 3D point in mapping space to UV coordinates according to this UV generation method.
-    pub fn map_to_uv(&self, point: Point3) -> Option<(f64, f64)> {
+    pub fn map_to_uv(&self, point: Point3) -> Option<(f32, f32)> {
         match self {
             UvGen::None => None,
             UvGen::Spherical => {
-                let point = point.unit_vector();
+                let point = point.normalize();
                 let theta = (-point.y).acos();
-                let phi = (-point.z).atan2(point.x) + std::f64::consts::PI;
-                let u = phi / (2.0 * std::f64::consts::PI);
-                let v = theta / std::f64::consts::PI;
+                let phi = (-point.z).atan2(point.x) + std::f32::consts::PI;
+                let u = phi / (2.0 * std::f32::consts::PI);
+                let v = theta / std::f32::consts::PI;
                 Some((u, v))
             }
         }

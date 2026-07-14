@@ -1,4 +1,4 @@
-use std::f64::consts::PI;
+use std::f32::consts::PI;
 
 use crate::planar::Region2D;
 
@@ -7,19 +7,19 @@ use crate::planar::Region2D;
 pub struct EllipseRegion;
 
 impl Region2D for EllipseRegion {
-    fn contains(&self, a: f64, b: f64) -> bool {
+    fn contains(&self, a: f32, b: f32) -> bool {
         (a * a + b * b) <= 1.0
     }
 
-    fn uv(&self, a: f64, b: f64) -> (f64, f64) {
+    fn uv(&self, a: f32, b: f32) -> (f32, f32) {
         (a * 0.5 + 0.5, b * 0.5 + 0.5)
     }
 
-    fn area(&self) -> f64 {
+    fn area(&self) -> f32 {
         PI
     }
 
-    fn sample(&self, u: f64, v: f64) -> (f64, f64) {
+    fn sample(&self, u: f32, v: f32) -> (f32, f32) {
         let r = u.sqrt();
         let theta = v * 2.0 * PI;
         let (sin_theta, cos_theta) = theta.sin_cos();
