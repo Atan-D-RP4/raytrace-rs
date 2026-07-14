@@ -1,4 +1,4 @@
-# SampleStream Refactor — Two-Stream Architecture (SampleStream + RNG)
+# SampleStream Refactor — Two-Stream Architecture (SampleStream + RNG) - EXECUTED SUCCESSFULLY
 
 ## Changelog
 
@@ -20,8 +20,12 @@
   produces correlated 2D pairs — works for Sobol, stratified grid, and future CMJ.
   Name reflects what it does, not one implementation.
 - **v4.3 (2026-06-30)** — **Kept `EmitterPDF`.** Added `LightPDF` as a single-light
-  wrapper alongside `EmitterPDF`. Light selection moves to integrator via `Rng::next()`.
+  wrapper alongside `EmitterPDF`. Light selection moves to integrator via `SamplerRng::next()`.
   `EmitterPDF` remains for multi-light MIS and non-MIS contexts.
+- **v5 (2026-07-13)** — **Doc updated to reflect actual implementation divergences.**
+  See changes: `SampleDims` eliminated (replaced by `next_dim` closure), `Rng` → `SamplerRng`,
+  `PdfEnum` deleted (PdfKind directly implements PDF), `BsdfSample` → `BsdfScatter` rename,
+  `BsdfScatter::Delta` gains `eta: Option<f64>` field.
 
 ## Problem
 
@@ -115,19 +119,19 @@ pub trait SampleStream: Send + Sync {
 }
 
 /// Stateful source of independent random numbers in [0, 1).
-pub trait Rng: Send + Sync {
+pub trait SamplerRng: Send + Sync {
     /// Returns the next independent random value in [0, 1).
     fn next(&mut self) -> f64;
 }
 ```
 
 **These are trait bounds, not concrete types.** Any sampler can implement both.
-The integrator is generic over any `(S: SampleStream, R: Rng)` pair — preserving
+The integrator is generic over any `(S: SampleStream, R: SamplerRng)` pair — preserving
 the same flexibility as today's `Integrator<S: Sampler>`.
 
 #### 2. Existing samplers implement both traits
 
-All three current samplers gain `SampleStream` + `Rng` implementations, so the
+All three current samplers gain `SampleStream` + `SamplerRng` implementations, so the
 integrator works with any combination:
 
 ```rust
@@ -139,14 +143,14 @@ impl SampleStream for NaiveRandomSampler {
         (self.next_hash(), self.next_hash())
     }
 }
-impl Rng for NaiveRandomSampler {
+impl SamplerRng for NaiveRandomSampler {
     #[inline(always)]
     fn next(&mut self) -> f64 { self.next_hash() }
 }
 
 // === StratifiedRandomSampler: stratified 2D + hash fallback ===
 // SampleStream uses stratified grid for first 2D pair, hash for rest.
-// Rng always uses hash.
+// SamplerRng always uses hash.
 impl SampleStream for StratifiedRandomSampler {
     #[inline(always)]
     fn next_2d(&mut self) -> (f64, f64) {
@@ -159,7 +163,7 @@ impl SampleStream for StratifiedRandomSampler {
         }
     }
 }
-impl Rng for StratifiedRandomSampler {
+impl SamplerRng for StratifiedRandomSampler {
     #[inline(always)]
     fn next(&mut self) -> f64 { self.next_hash() }
 }
@@ -182,7 +186,7 @@ let strat = StratifiedRandomSampler::new(sqrt_spp, seed);
 integrator.li(&mut ray, world, lights, &mut strat, &mut strat);
 ```
 
-The integrator is **not** tied to Sobol. It's generic over any `(SampleStream, Rng)`
+The integrator is **not** tied to Sobol. It's generic over any `(SampleStream, SamplerRng)`
 pair. Swap the implementation at the call site — same as swapping `S` today.
 
 #### 2. SampleStream implementation
@@ -226,7 +230,7 @@ impl SampleStream for SampleStreamWriter {
 other contexts (e.g., pre-generating sample tables). The `SampleStreamWriter` is a
 thin stateful adapter for the integrator's sequential consumption pattern.
 
-#### 3. Rng implementation
+#### 3. SamplerRng implementation
 
 ```rust
 /// Hash-based independent random number generator.
@@ -248,7 +252,7 @@ impl HashRng {
     }
 }
 
-impl Rng for HashRng {
+impl SamplerRng for HashRng {
     #[inline(always)]
     fn next(&mut self) -> f64 {
         let v = hash_sample(self.counter, 0, self.seed);
@@ -297,7 +301,9 @@ impl PDF for CosinePDF {
 
 Same mechanical change for `GgxSamplePDF`, `UniformSpherePDF`, `UniformHemispherePDF`.
 
-#### 5. PdfEnum — remove generic `S`
+#### 5. PdfEnum — deleted (PdfKind now IS a PDF)
+
+> **Note:** The spec proposed de-genericing `PdfEnum<S>` → `PdfEnum`. In the actual implementation, `PdfEnum` was **deleted entirely**. `PdfKind` directly implements the `PDF` trait with `generate()` and `value()` methods — the consolidation suggested in the "Optionally do after" section was already done.
 
 ```rust
 // BEFORE:
@@ -306,31 +312,13 @@ pub struct PdfEnum<S: Sampler> {
     _s: std::marker::PhantomData<S>,
 }
 
-// AFTER:
-pub struct PdfEnum {
-    inner: PdfEnumInner,
-}
-
-enum PdfEnumInner {
-    Cosine(CosinePDF),
-    Ggx(GgxSamplePDF),
-    UniformSphere(UniformSpherePDF),
-}
-
-impl PDF for PdfEnum {
+// AFTER (actual): PdfEnum is gone. PdfKind carries generate() and value() directly.
+impl PDF for PdfKind {
     fn value(&self, direction: Vec3) -> f64 {
-        match &self.inner {
-            PdfEnumInner::Cosine(p) => p.value(direction),
-            PdfEnumInner::Ggx(p) => p.value(direction),
-            PdfEnumInner::UniformSphere(p) => p.value(direction),
-        }
+        PdfKind::value(self, direction)
     }
     fn generate(&self, u: f64, v: f64) -> Vec3 {
-        match &self.inner {
-            PdfEnumInner::Cosine(p) => p.generate(u, v),
-            PdfEnumInner::Ggx(p) => p.generate(u, v),
-            PdfEnumInner::UniformSphere(p) => p.generate(u, v),
-        }
+        PdfKind::generate(self, u, v)
     }
 }
 ```
@@ -429,7 +417,7 @@ pub trait Integrator<S: Sampler>: Send + Sync {
 }
 
 // AFTER:
-pub trait Integrator<S: SampleStream, R: Rng>: Send + Sync {
+pub trait Integrator<S: SampleStream, R: SamplerRng>: Send + Sync {
     fn li(
         &self,
         initial_ray: &mut Ray,
@@ -493,27 +481,23 @@ fn li(
 
             let wo = -ray.direction.unit_vector();
 
-            // Material: hash for lobe selection, stream for direction
-            let lobe_u = rng.next();
-            let (mat_u, mat_v) = stream.next_2d();
+            // Material uses a next_dim closure — SampleDims was eliminated entirely
+            let mut next_mat_dim = || -> f64 { rng.next() };
 
-            if let Some(sample) = material.sample(wo, &si, SampleDims {
-                u: lobe_u,
-                v: mat_u,
-                w: mat_v,
-            }) {
-                let (direction, bias) = match sample {
-                    BsdfSample::Delta { wi, f_cos } => {
-                        (wi, f_cos)
+            if let Some(scatter) = material.scatter(wo, &si, &mut next_mat_dim) {
+                let (direction, bias, eta) = match scatter {
+                    BsdfScatter::Delta { wi, f_cos, eta } => {
+                        (wi, f_cos, eta)
                     }
-                    BsdfSample::NonDelta { pdf_kinds, count } => {
+                    BsdfScatter::NonDelta { pdf_kinds } => {
+                        // PdfKind directly implements PDF — no PdfEnum wrapper
                         let is_volume = si.shading_normal().near_zero();
 
-                        // Env PDF (no generation needed — value-only for MIS)
-                        let env_pdf: PdfEnum = if is_volume {
-                            PdfEnum::new(&PdfKind::UniformSphere)
+                        // Env PDF: use PdfKind directly (not PdfEnum::new)
+                        let env_pdf: PdfKind = if is_volume {
+                            PdfKind::UniformSphere
                         } else {
-                            PdfEnum::new(&PdfKind::Cosine { normal: si.shading_normal() })
+                            PdfKind::Cosine { normal: si.shading_normal() }
                         };
 
                         // Light selection: hash (discrete)
@@ -524,8 +508,8 @@ fn li(
                         // MIS selection: hash (discrete)
                         let mis_select = rng.next();
 
-                        // Material PDFs (if any, skip duplicates)
-                        // ... build pdf_refs as before ...
+                        // Material PDFs from pdf_kinds array
+                        // ... build &dyn PDF refs from PdfKind values ...
 
                         // Direction: stream
                         let (pdf_u, pdf_v) = stream.next_2d();
@@ -535,7 +519,7 @@ fn li(
                         let (direction, contribution) = mis_sample(
                             &pdf_refs[..n], eval, sel_idx, pdf_u, pdf_v
                         );
-                        (direction, contribution)
+                        (direction, contribution, None)
                     }
                 };
 
@@ -594,7 +578,7 @@ impl CameraSampler {
 
 // AFTER — generic over concrete stream types (no dyn):
 impl CameraSampler {
-    pub fn new_sampled<S: SampleStream, R: Rng>(
+    pub fn new_sampled<S: SampleStream, R: SamplerRng>(
         (x, y): (u32, u32),
         stream: &mut S,
         rng: &mut R,
@@ -610,7 +594,9 @@ impl CameraSampler {
 This is a minor change — the camera already receives pre-extracted values.
 The only difference is where those values come from.
 
-#### 10. SampleDims — simplified
+#### 10. SampleDims — eliminated (replaced by `next_dim` closure)
+
+> **Note:** The spec proposed simplifying `SampleDims` from 6 fields to 3 (u, v, w). In the actual implementation, `SampleDims` was **eliminated entirely**. The `Bsdf::scatter()` signature now takes `next_dim: &mut dyn FnMut() -> f64` instead of a fixed struct, allowing each material to consume exactly as many dimensions as it needs.
 
 ```rust
 // BEFORE: 6 fields, most unused per material type
@@ -623,19 +609,20 @@ pub struct SampleDims {
     pub z: f64,  // reserved
 }
 
-// AFTER: only what the material needs
-pub struct SampleDims {
-    /// Categorical decision (lobe selection, Fresnel check).
-    pub u: f64,
-    /// 2D directional sampling on the sphere/hemisphere.
-    pub v: f64,
-    pub w: f64,
-}
+// AFTER (actual): no SampleDims struct — the scatter() signature is:
+fn scatter(
+    &self,
+    wo: Vec3,
+    si: &SurfaceInteraction,
+    next_dim: &mut dyn FnMut() -> f64,
+) -> Option<BsdfScatter>;
 ```
 
-The `x, y, z` reserved fields are removed. Materials that need more randomness
-(e.g., future subsurface scattering) will take additional parameters or use
-their own sampling strategy.
+The `next_dim` closure approach gives materials unlimited dimensions (they call
+`next_dim()` for each random value they need), eliminating the fixed 3-field cap
+and the reserved fields. Materials that need more randomness (e.g., the coated
+material's internal Fresnel split) consume dimensions on demand without any
+struct changes.
 
 #### 11. Renderer — create both streams per pixel
 
@@ -669,7 +656,7 @@ pub struct CpuRenderer<I, S, R, SFact, RFact>
 where
     I: Integrator<S, R>,
     S: SampleStream,
-    R: Rng,
+    R: SamplerRng,
     SFact: SampleStreamFactory<SampleStream = S>,
     RFact: RngFactory<Rng = R>,
 {
@@ -688,23 +675,23 @@ pub trait SampleStreamFactory: Send + Sync {
 }
 
 pub trait RngFactory: Send + Sync {
-    type Rng: Rng;
+    type Rng: SamplerRng;
     fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> Self::Rng;
 }
 ```
 
 **No `dyn` dispatch anywhere in the render loop.** The compiler monomorphizes
-the full path: `CpuRenderer → Integrator::li → SampleStream::next_2d / Rng::next`.
+the full path: `CpuRenderer → Integrator::li → SampleStream::next_2d / SamplerRng::next`.
 
 ### What Stays the Same
 
 - `Sampler` trait — unchanged, pure indexed source (still useful for other contexts)
 - `DimCursor<S>` — unchanged, still useful for sequential access patterns
 - `SobolQmcSampler` — unchanged, stateless `(n, d)` lookup
-- `NaiveRandomSampler` — unchanged, gains `SampleStream` + `Rng` impls
-- `StratifiedRandomSampler` — unchanged, gains `SampleStream` + `Rng` impls
+- `NaiveRandomSampler` — unchanged, gains `SampleStream` + `SamplerRng` impls
+- `StratifiedRandomSampler` — unchanged, gains `SampleStream` + `SamplerRng` impls
 - `SamplerFactory` — unchanged, still useful for creating per-pixel samplers
-- `Material::sample()` — takes `SampleDims` (simplified to 3 fields)
+- `Bsdf::scatter()` — takes `next_dim: &mut dyn FnMut() -> f64` (SampleDims eliminated)
 - `ConstantMedium` — uses `hash_sample()` directly, independent of streams
 - `Sampleable` — already de-genericed, takes `(u, v)` directly
 
@@ -715,7 +702,7 @@ architecture adapts cleanly with **zero `dyn` dispatch**:
 
 ```rust
 /// MLT sampler — wraps a mutable state vector with accept/reject bookkeeping.
-/// Implements both SampleStream and Rng by reading from the same state vector.
+/// Implements both SampleStream and SamplerRng by reading from the same state vector.
 /// A single type satisfies both generic bounds.
 pub struct MltStream {
     state: Vec<f64>,       // primary sample space [d0, d1, d2, ...]
@@ -734,7 +721,7 @@ impl SampleStream for MltStream {
     }
 }
 
-impl Rng for MltStream {
+impl SamplerRng for MltStream {
     fn next(&mut self) -> f64 {
         let v = self.state[self.cursor];
         self.cursor += 1;
@@ -748,7 +735,7 @@ The cursor advances linearly regardless of which trait the integrator calls.
 
 ```rust
 // MLT integrator — same Integrator trait, concrete MltStream type:
-// MltStream implements both SampleStream and Rng, so it fills both generic slots.
+// MltStream implements both SampleStream and SamplerRng, so it fills both generic slots.
 impl Integrator<MltStream, MltStream> for PathTracingIntegrator {
     fn li(
         &self,
@@ -783,25 +770,25 @@ No `dyn` anywhere — the compiler monomorphizes for `MltStream`.
 
 | File | Change | Risk |
 |------|--------|------|
-| `src/sampler.rs` | Add `SampleStream` + `Rng` traits, `SampleStreamWriter`, `HashRng` | Low |
-| `src/pdf.rs` | Remove `S` from `PDF<S>`, `PdfEnum<S>`. Add `LightPDF` alongside existing `EmitterPDF` | Medium |
+| `src/sampler.rs` | Add `SampleStream` + `SamplerRng` traits, `SampleStreamWriter`, `HashRng` | Low |
+| `src/pdf.rs` | Remove `S` from `PDF<S>`. Delete `PdfEnum`. `PdfKind` directly implements `PDF`. Add `LightPDF` alongside `EmitterPDF` | Medium |
 | `src/integrator/mod.rs` | Change `Integrator<S>` → `Integrator<S, R>`. Update `li()` signature | Medium |
 | `src/integrator/path_tracer.rs` | Rewrite `li()` to use two streams. Update `mis_sample` | High |
 | `src/camera/mod.rs` | Update `CameraSampler::new_sampled()` to take `(stream, rng)` | Low |
 | `src/renderer/cpu.rs` | Update generics to `Integrator<S, R>`. Create `SampleStreamWriter` + `HashRng` | Medium |
-| `src/material/mod.rs` | Simplify `SampleDims` to 3 fields | Low |
-| `src/material/*.rs` | Update all `material.sample()` impls for new `SampleDims` | Low |
+| `src/material/mod.rs` | Eliminate `SampleDims` — add `next_dim` param to `Bsdf::scatter()` | Low |
+| `src/material/*.rs` | Update all `scatter()` impls to consume dims from `next_dim` closure | Low |
 
 ## Implementation Steps
 
 | # | Step | Files | Risk | Breaking? |
 |---|------|-------|------|-----------|
-| 1 | Add `SampleStream` + `Rng` traits + impls for all samplers | sampler.rs | Low | No |
+| 1 | Add `SampleStream` + `SamplerRng` traits + impls for all samplers | sampler.rs | Low | No |
 | 2 | Add `LightPDF` alongside existing `EmitterPDF` | pdf.rs | Low | No |
 | 3 | Change `PDF` trait: remove `S`, accept `(u,v)` | pdf.rs, all PDF impls | Medium | Yes |
-| 4 | Change `PdfEnum<S>` → `PdfEnum` | pdf.rs | Medium | Yes |
+| 4 | Delete `PdfEnum` — `PdfKind` directly implements `PDF` trait | pdf.rs | Medium | Yes |
 | 5 | Update `mis_sample` — remove generic, external selection | path_tracer.rs | Medium | Yes |
-| 6 | Simplify `SampleDims` to 3 fields | material/mod.rs, all material impls | Low | Yes |
+| 6 | Eliminate `SampleDims` — use `next_dim` closure in `Bsdf::scatter()` | material/mod.rs, all material impls | Low | Yes |
 | 7 | Update `CameraSampler::new_sampled()` | camera/mod.rs | Low | Yes |
 | 8 | Change `Integrator<S>` → `Integrator<S, R>` | integrator/mod.rs | Medium | Yes |
 | 9 | Rewrite `PathTracingIntegrator::li` to use two streams | path_tracer.rs | High | Yes |
@@ -815,19 +802,19 @@ after the refactor.
 
 ### Migration Strategy
 
-**Phase 1 (non-breaking):** Add `SampleStream` + `Rng` traits alongside existing
+**Phase 1 (non-breaking):** Add `SampleStream` + `SamplerRng` traits alongside existing
 `Sampler`. Implement `SampleStreamWriter`, `HashRng`, and add `SampleStream` +
-`Rng` impls to `NaiveRandomSampler` and `StratifiedRandomSampler`. Add `LightPDF`
+`SamplerRng` impls to `NaiveRandomSampler` and `StratifiedRandomSampler`. Add `LightPDF`
 alongside existing `EmitterPDF`. All existing code continues to work.
 
 **Phase 2 (mechanical):** Change `PDF` trait to remove generic. Update all impls.
-This is the biggest change but is mostly find-and-replace. Update `PdfEnum`.
+This is the biggest change but is mostly find-and-replace. Delete `PdfEnum` — `PdfKind` directly implements the `PDF` trait, absorbing all variants.
 
 **Phase 3 (core):** Rewrite `PathTracingIntegrator::li` to use two streams.
 Remove fixed 11-dim stride. Update `mis_sample`.
 
 **Phase 4 (cleanup):** Update renderer, camera. Remove `DimCursor` from hot path.
-Simplify `SampleDims`. Update integrator to use `LightPDF` for MIS.
+Eliminate `SampleDims` — replace with `next_dim` closure in `Bsdf::scatter()`. Update integrator to use `LightPDF` for MIS.
 
 ## What This Buys
 
@@ -839,7 +826,7 @@ Simplify `SampleDims`. Update integrator to use `LightPDF` for MIS.
 | EmitterPDF waste | 1 selection dim for single-light | `LightPDF` skips selection, `HittablePDF` kept for multi-light |
 | Dynamic dispatch | `dyn` on hot path (v3 proposal) | Zero `dyn` — compiler monomorphizes |
 | Code complexity | Generic `S` everywhere, 11-dim debug_assert | Concrete stream types, no fixed stride |
-| MLT compatibility | Requires fake `sample(n, d)` | Clean `SampleStream + Rng` interface |
+| MLT compatibility | Requires fake `sample(n, d)` | Clean `SampleStream + SamplerRng` interface |
 | Integrator generic | `Integrator<S: Sampler>` | `Integrator<S, R>` (no `S: Sampler`) |
 | PDF generic | `PDF<S: Sampler>` | `PDF` (no generic at all) |
 
@@ -848,7 +835,7 @@ Simplify `SampleDims`. Update integrator to use `LightPDF` for MIS.
 This refactor is compatible with the hybrid architecture in `docs/renderer_arch.md`:
 
 - The `Integrator` trait changes from `Integrator<S: Sampler>` to
-  `Integrator<S: SampleStream, R: Rng>` — still generic, still zero-cost, but
+  `Integrator<S: SampleStream, R: SamplerRng>` — still generic, still zero-cost, but
   with two stream types instead of one sampler type. The visibility/integration
   decomposition is independent of how the integrator gets its random numbers.
 - The `Renderer` trait updates to use the new `Integrator` bounds. No `dyn` needed.
@@ -862,38 +849,42 @@ This refactor is compatible with the hybrid architecture in `docs/renderer_arch.
 - Constant Mediums QMC integration ✓
 - renderer_arch.md audit — consistent ✓
 
-## Optionally do after the refactor is complete
+## Post-refactor follow-up items
 
-After the SampleStream refactor removes the S generic from PDF, the cleanest
-consolidation would be to make PdfKind itself implement generate(u, v) -> Vec3
-and value(dir) -> f64. Then you could:
-1. Delete CosinePDF, GgxSamplePDF, UniformSpherePDF, UniformHemispherePDF — gone
-2. Delete PdfEnum — gone, use PdfKind directly
-3. Have material pdf() delegate to PdfKind::value() where applicable
-The PdfKind enum already carries all the necessary data (normals, wo, alpha).
-And after the refactor, generate(u, v) is a pure function of those parameters —
-no S generic, no cursor. PdfKind is Copy, so the MIS hot path gets it by value
-with zero indirection.
+### DONE in the implementation
+
+The following consolidations (proposed as "optionally do after" in the spec) were
+**already completed** as part of the refactor:
+
+1. ✅ **PdfKind implements PDF directly** — `PdfKind` has `generate()` and `value()` methods
+   (see `src/pdf.rs` and `src/material/mod.rs`). The integrator stores `[PdfKind; MAX_STRATEGIES]`
+   on the stack instead of building `PdfEnum` wrappers.
+2. ✅ **PdfEnum deleted** — No longer exists. `PdfKind` is used directly everywhere.
+3. ✅ **Individual PDF structs (CosinePDF, etc.) removed** — `PdfKind::generate()` dispatches via
+   match, eliminating separate structs for each variant.
+4. ✅ **MIS hot path uses `&dyn PDF` references to `PdfKind`** — The MIS loop holds
+   `[Option<PdfKind>; N]` and takes `&dyn PDF` references to stack copies.
+
 ```rust
-// After refactor + consolidation:
-impl PdfKind {
-    fn generate(&self, u: f64, v: f64) -> Vec3 {
-        match self {
-            PdfKind::Cosine { normal } => {
-                let uvw = Onb::build_from_normal(*normal);
-                uvw.local_to_world(cosine_hemisphere_direction(u, v))
-            }
-            PdfKind::Ggx { wo, normal, alpha } => {
-                let uvw = Onb::build_from_normal(*normal);
-                // GGX half-vector sampling + reflect...
-            }
-            PdfKind::UniformSphere => { /* no normal needed */ }
-            PdfKind::UniformHemisphere { normal } => { /* ... */ }
-            PdfKind::Delta => unreachable!(),
-        }
+// Actual implementation — PdfKind directly implements PDF:
+impl PDF for PdfKind {
+    fn value(&self, direction: Vec3) -> f64 {
+        PdfKind::value(self, direction)
     }
-    fn value(&self, direction: Vec3) -> f64 { /* ... */ }
+    fn generate(&self, u: f64, v: f64) -> Vec3 {
+        PdfKind::generate(self, u, v)
+    }
 }
 ```
-The integrator's MIS step would then hold [PdfKind; MAX_STRATEGIES] instead of
-building PdfEnum objects. One heap-allocation (Vec) gone, one type erased.
+
+The integrator's MIS step holds `[PdfKind; MAX_STRATEGIES]` on the stack, taking
+`&dyn PDF` references to each. One heap-allocation (Vec) gone, the PdfEnum wrapper
+tier eliminated.
+
+### Remaining optional items (not yet done)
+
+- Consider renaming the `PDF` trait methods or removing the trait entirely now that
+  `PdfKind` carries its own methods (the `impl PDF for PdfKind` delegates are thin
+  wrappers).
+- `material.pdf()` currently returns `[Option<PdfKind>; 2]` — could delegate to
+  `PdfKind::value()` directly, but this is already how the integrator uses it.

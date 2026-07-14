@@ -12,8 +12,8 @@ A physically based CPU path tracer in Rust, compared against production renderer
 **[Google Filament](https://github.com/google/filament)** (C++/GLSL, ~250K LOC),
 **[renderling](https://github.com/schell/renderling)** (Rust/wgpu, ~30K LOC)
 
-> **Last updated:** 2026-07-01 — fresh audit at `HEAD: 24808b5`.
-> 50 source files, 23 public modules, 13 traits, ~15 enums, ~45 structs.
+> **Last updated:** 2026-07-14 — fresh audit.
+> 54 source files, 25 public modules, 21 traits, ~18 enums, ~50 structs.
 > 8 core dependencies (image, rand, rayon, winit, softbuffer, tracing, smol, async-tungstenite).
 
 ---
@@ -22,9 +22,9 @@ A physically based CPU path tracer in Rust, compared against production renderer
 
 | Metric | Value |
 |--------|-------|
-| Source files | 50 `.rs` |
-| Public modules | 23 |
-| Public traits | 13 (`Intersectable`, `Bounded`, `Sampleable`, `MaterialHit`, `Sampler`, `SamplerFactory`, `Camera`, `Film`, `Integrator`, `Renderer`, `PDF`, `Shape3D`, `Region2D`, `Bsdf`[private], `Texture`, `Transform`) |
+| Source files | 54 `.rs` |
+| Public modules | 25 |
+| Public traits | 21 (`Intersectable`, `Bounded`, `Sampleable`, `Sampler`, `SamplingSession`, `SampleStream`, `SamplerRng`, `SampleStreamFactory`, `RngFactory`, `Camera`, `Film`, `Integrator`, `Renderer`, `PDF`, `Shape3D`, `Region2D`, `Bsdf`[private], `Texture`, `UVDifferentiable`, `Transform`, `GpuSerializable`) |
 | Material types | 8 (6 BSDF + 2 composition: Mix, Coated) |
 | Texture types | 5 (SolidColor, Checker, Noise, Image, MappedTexture) |
 | Shape types | 2 (Sphere + ShapeObject generic; 9 planar region types via PlanarPatch) |
@@ -33,11 +33,11 @@ A physically based CPU path tracer in Rust, compared against production renderer
 | Samplers | 3 (Sobol, NaiveRandom, Stratified) + Factory pattern |
 | Scene functions | 10 built-in |
 | Unsafe blocks | 2 (GPU serialization only) |
-| `unwrap()`/`expect()` | 8 (init code, hardcoded paths) |
+| `unwrap()`/`expect()` | 13 (init code, sampler locks, hardcoded paths) |
 | `todo!()` / `unimplemented!()` | 0 |
 | TODOs | 20 |
-| `#[allow(dead_code)]` | 1 (`perlin.rs`) |
-| `total LOC` | ~6,500 (src/) |
+| `#[allow(dead_code)]` | 2 (`perlin.rs`, `environment.rs` spotlight field) |
+| `total LOC` | ~7,400 (src/) |
 
 ### Key Architectural Decisions
 
@@ -45,10 +45,9 @@ A physically based CPU path tracer in Rust, compared against production renderer
 |----------|--------|-----------|
 | **Dispatch model** | Enum-based (closed set) | Mirrors pbrt-v4's TaggedPointer; static dispatch, inline-able, no heap alloc |
 | **Material polymorphism** | `Material` enum (10 variants) + private `Bsdf` trait | Hot-path dispatch via match; `Custom(Box<dyn Bsdf>)` escape hatch for extensibility |
-| **Integrator** | Generic trait `Integrator<S: Sampler>` | Pluggable sampler strategy, monomorphized per-sampler |
+| **Integrator** | Generic trait `Integrator<S: Sampler>` where `Sampler` uses GAT `Session<'s>: SamplingSession` | Per-pixel session borrow via `begin_pixel`, prevents cross-pixel sample corruption at compile time |
 | **Renderer** | Generic trait `Renderer<W,C,F,S>` | Swappable render backends (CPU now, GPU future) |
-| **Sampler** | Pure `sample(n, d) -> f64` (deterministic, `Sync`) | Stateless, trivially parallel, cache-friendly, GPU-compatible |
-| **Sampler state** | Thread-local GrayCodeCache | No alloc on hot path; pure fn + shared cache |
+| **Sampler** | Unified `Sampler` trait with GAT `Session<'s>` + two-stream internals (Sobol for 2D, hash for 1D) | Each thread owns one `Sampler` clone. `begin_pixel()` returns a `SamplingSession`. Compiler monomorphizes per-sampler; two-stream internals protect Sobol correlation structure. |
 | **Geometry ownership** | `Vec<Arc<dyn Intersectable>>` | Conservative; arena refactor planned |
 | **Film** | `Film` trait + `RgbFilm` (Welford variance) | Adaptive sampling + clean abstraction |
 | **Camera** | `Camera` trait + `PerspectiveCamera` | Extensible for new camera models |
@@ -64,7 +63,7 @@ A physically based CPU path tracer in Rust, compared against production renderer
 ```text
 src/
 ├── main.rs                          # Entry point — winit event loop, softbuffer, scene build
-├── lib.rs                           # Module declarations (23 pub mod)
+├── lib.rs                           # Module declarations (25 pub mod)
 │
 ├── vec3.rs                          # Vec3, Point3/Color3 aliases, ops, concentric_disk
 ├── ray.rs                           # Ray struct, ParametricCurve
@@ -74,8 +73,11 @@ src/
 ├── perlin.rs                        # Perlin noise (#[allow(dead_code)])
 ├── transform.rs                     # Transform trait, Translate, RotateY (+ 5 TODOs)
 │
-├── sampler.rs                       # Sampler trait, SobolSampler, NaiveRandom, Stratified
-├── pdf.rs                           # PDF<S> trait, PdfEnum, power_heuristic
+├── sampler/
+│   └── mod.rs                       # Sampler(GAT), SamplingSession, SampleStream, SamplerRng, SobolSampler, HashRng
+├── pdf.rs                           # PDF trait, PdfKind, power_heuristic, balance_heuristic, MisHeuristic,
+│   │                                # SolidAnglePdf/AreaPdf, Distribution1DFixed, sample_discrete
+├── distributions.rs                 # Dist1D, Dist2D, Sample1D enum
 │
 ├── hittable.rs                      # Hit, SurfaceInteraction, Intersectable, Bounded, Sampleable, MaterialHit
 ├── bvh.rs                           # BvhNode enum (Empty/Interior/Leaf), SAH bin build
@@ -101,7 +103,7 @@ src/
 │   └── cpu.rs                       # CpuRenderer — rayon tiled, adaptive sampling
 │
 ├── material/
-│   ├── mod.rs                       # Material enum (10 variants), Bsdf trait, BsdfSample, GGX
+│   ├── mod.rs                       # Material enum (10 variants), Bsdf trait, BsdfScatter, GGX
 │   ├── lambertian.rs                # LambertianMaterial — albedo/π
 │   ├── metal.rs                     # MetalMaterial — GGX conductor
 │   ├── dielectric.rs                # DielectricMaterial — Fresnel + tint
@@ -138,18 +140,20 @@ src/
 ### 1.2 Trait Dependency Graph
 
 ```text
-                            ┌──────────┐
-                            │ Sampler   │←─────────── pure(Sync), sample(n, d)
-                            └──────────┘
-                                 │
-                    ┌────────────┼────────────┐
-                    ▼            ▼            ▼
-            ┌────────────┐ ┌──────────┐ ┌──────────┐
-            │ Integrator │ │ PDF<S>   │ │ Camera   │
-            │ :li(),     │ │ :sample()│ │ :gen_ray │
-            │ :max_bounces│ │ :value() │ └──────────┘
-            └──────┬─────┘ └──────────┘
-                   │
+                             ┌──────────────┐
+                             │  Sampler     │←── GAT Session<'s>: SamplingSession
+                             │  (unified)   │    begin_pixel(p) → Session
+                             └──────┬───────┘
+                                    │
+                     ┌──────────────┼──────────────┐
+                     ▼              ▼              ▼
+             ┌────────────┐ ┌──────────┐ ┌──────────┐
+             │ Integrator │ │ PDF      │ │ Camera   │
+             │<S: Sampler>│ │ (no gen) │ │ :gen_ray │
+             │ :li(),     │ │ :sample()│ └──────────┘
+             │ :max_bounces│ │ :value()│
+             └──────┬─────┘ └──────────┘
+                    │
     ┌──────────────┼──────────────┐
     ▼              ▼              ▼
 ┌─────────┐  ┌──────────┐  ┌──────────┐
@@ -195,11 +199,11 @@ raytrace-rs follows pbrt-v4's architectural insight — static dispatch via a cl
 | `Material` (10 variants) | Enum match | Hot path (every bounce). Inline-able, no vtable |
 | `Bsdf` (private trait, impl'd by materials) | Enum → impl method | Inner material logic — callers match Material enum first |
 | `Intersectable` | `dyn` (via `Arc<dyn ...>`) | Heterogeneous scene storage; arena planned |
-| `Sampler` | Generic `<S: Sampler>` | Monomorphized per-sampler; zero-cost |
-| `PDF` | Generic `<S: Sampler>` + `PdfEnum` | Mix of known types (Cosine, GGX) + Hittable that needs `dyn` scene ref |
+| `Sampler` | Generic+GAT (`Sampler` trait) | Unified `begin_pixel` → `Session`; internally two-stream (Sobol + hash) |
+| `PDF` | Trait object `&dyn PDF` from `[PdfKind; N]` | No longer generic; `PdfEnum` deleted, `PdfKind` directly implements `PDF` |
 | `Camera` | Trait w/ concrete `PerspectiveCamera` | Multiple camera models expected (ortho, spherical) |
 | `Film` | Trait w/ concrete `RgbFilm` | Multiple film types expected (spectral, AOV) |
-| `Integrator` | Generic `<S: Sampler>` | Single integrator currently; trait for new types |
+| `Integrator` | Generic `<S: Sampler>` | GAT session per pixel; `S::Session<'_>` provides next_2d/next_1d |
 | `Renderer` | Generic with 4 type params | CPU now; GPU renderer as separate impl later |
 | `Shape3D` | `dyn` (via `ShapeObject`) | Heterogeneous shape storage (sphere + future mesh) |
 | `Region2D` | `dyn` (via `PlanarObject`) | Heterogeneous planar regions |
@@ -213,30 +217,32 @@ raytrace-rs follows pbrt-v4's architectural insight — static dispatch via a cl
 #### Current State
 
 ```text
-CpuRenderer<I, S, Fact>           ← trait Renderer<W,C,F,S>
-├── owns: I (Integrator), Fact (SamplerFactory)
+CpuRenderer<I, S, R, SFact, RFact>   ← trait Renderer<W,C,F,S>
+├── owns: I (Integrator), SFact, RFact
 ├── render() → loops over tiles
 │   ├── rayon::for_each on tiles
-│   │   └── per tile: I.li() for each pixel
+│   │   └── per pixel: sampler.begin_pixel() → session, I.li(session)
 │   ├── FilmTile → merge into RgbFilm
 │   └── adaptive: check RgbFilm.variance() → early exit
 ├── resize() → rebuild Film + tile pool
 └── reset() → clear film
 
-PathTracingIntegrator<S: Sampler>  ← trait Integrator<S>
-├── li(ray, world, lights, sampler) → Color3
+PathTracingIntegrator<S: Sampler>   ← trait Integrator<S>
+├── li(ray, world, lights, session) → Color3
 ├── max_bounces() → usize
-└── bounce loop:
-    ├── world.intersect(ray) → Option<SurfaceInteraction>
-    ├── add emission
-    ├── Russian roulette (bounce ≥ 5, survive = clamp(throughput, 0.05, 1))
-    ├── if material delta: trace reflected ray, pad 4 dims
-    │   └── debug_assert_eq!(11 dims used this bounce)
-    └── if material non-delta:
-        ├── construct MixturePDF[light, hittable, bsdf]
-        ├── sample direction → trace
-        ├── weight = 1/pdf_val
-        └── debug_assert_eq!(11 dims used this bounce)
+├── bounce loop:
+│   ├── world.intersect(ray) → Option<SurfaceInteraction>
+│   ├── add emission
+│   ├── Russian roulette (bounce ≥ 5, survive = clamp(throughput, 0.05, 1))
+│   ├── NEE: sample light → LightPDF → shadow ray → accumulate direct
+│   ├── if material delta → trace reflected ray (no MIS)
+│   ├── if material NonDelta → bucket_mis() with env + material PDFs
+│   │   └── power heuristic between light-sampling and BSDF-sampling
+│   ├── if material Split → li_inner() recursively traces delta branch
+│   │   while the non-delta branch proceeds normally
+│   └── no fixed dim stride — each bounce consumes what it needs
+└── li_inner<S: Sampler>() → recursive helper for Split delta tracing,
+    bounded by SPLIT_MAX_DEPTH (5) to prevent exponential cascade
 ```
 
 **Shadow rays**: Implemented as direct-lighting NEE with explicit occlusion check (commit `24808b5`). The shadow ray tests visibility between the hit point and the sampled light before accumulating direct contribution.
@@ -247,7 +253,7 @@ PathTracingIntegrator<S: Sampler>  ← trait Integrator<S>
 
 | Aspect | raytrace-rs | pbrt-v4 | LuxCore | MoonRay | Mitsuba 3 |
 |--------|-------------|---------|---------|---------|-----------|
-| Integrator abstraction | `Integrator<S>` trait (generic) | `Integrator` base → `RayIntegrator` | `RenderEngine` base | `Engine` class | `Integrator<Float, Spectrum>` template |
+| Integrator abstraction | `Integrator<S>` trait (GAT session) | `Integrator` base → `RayIntegrator` | `RenderEngine` base | `Engine` class | `Integrator<Float, Spectrum>` template |
 | Renderer abstraction | `Renderer<W,C,F,S>` trait | No separate renderer | `RenderEngine` includes it | `Engine` drives | No separate renderer |
 | Shadow rays | ✅ Yes | ✅ `Unoccluded()` | ✅ Yes | ✅ Yes | ✅ Yes |
 | MIS | ✅ Power heuristic (α=1) | ✅ Power heuristic | ✅ Power heuristic | ✅ Power heuristic | ✅ Power heuristic |
@@ -350,23 +356,22 @@ Material enum (10 variants):
 └── Custom(Box<dyn Bsdf>)         # Escape hatch
 
 Bsdf trait (private to material module, 7 methods):
-  sample(&self, wo, u, v) → Option<BsdfSample>
-  eval(&self, wo, wi, kind) → Color3
+  scatter(&self, wo, si, &mut next_dim) → Option<BsdfScatter>
+  eval(&self, wo, wi, si) → Color3
   pdf(&self, wo, wi) → f64
-  pdf_kind(&self) -> PdfKind
-  emitted(&self, u, v, p) → Color3
+  pdf_kind(&self, wo, si) → Option<PdfKind>
+  emitted(&self, si) → Color3
   to_gpu(&self, ...) → GpuMaterialType
-  gpu_params(&self) → Vec<GpuMaterialNode>
   gpu_texture_index(&self) → Option<u32>
 
-BsdfSample enum (3 variants):
-  Delta     { wi, f_cos, pdf_kinds, count }
-  NonDelta  { wi, f_cos, pdf_kinds, count }
-  Emission  { radiance, pdf_kinds }
+BsdfScatter enum (3 variants):
+  Delta     { wi, f_cos, eta }
+  NonDelta  { pdf_kinds: [Option<PdfKind>; MAX_BSDF_STRATS] }
+  Split     { delta_wi, delta_f_cos, delta_eta, non_delta_pdf_kinds }
 
 PdfKind enum:
-  CosineHemisphere | UniformHemisphere | UniformSphere |
-  GgxNdf(f32, f32) | LightArea(Vec3, f64) | Delta
+  Cosine { normal } | Ggx { wo, normal, alpha } |
+  UniformSphere | UniformHemisphere | Delta { normal }
 ```
 
 **Key patterns**:
@@ -374,7 +379,9 @@ PdfKind enum:
 - `Bsdf` is a **private trait** — external code interacts only through the `Material` enum.
 - GPU serialization (`GpuMaterialBuffer`) flattens the material tree into a `Vec<GpuMaterialNode>` with child references as indices.
 - Composition types (Mix, Coated) use `Box<Material>` (not `Box<dyn Bsdf>`) — the enum dispatch recurses through children.
-- Coated uses a hard Fresnel-split: `f` probability to sample coating, `1-f` probability to sample substrate. `eval()` blends both: `coating * f + substrate * (1-f)`.
+- Coated material uses an **internal random walk** for rough coating (not a hard Fresnel-split). When the coating scatter produces a Split (one delta + one non-delta branch), the delta branch is handled recursively inside `scatter()` via a random-walk loop (up to `MAX_INTERNAL_BOUNCES = 5`). This correctly handles rough coatings where the coating layer has a glossy lobe.
+- The `next_dim` closure approach replaces the old fixed-size `SampleDims` struct — materials consume exactly as many random values as they need, eliminating unused reserved fields.
+- `MAX_BSDF_STRATS = 8` gives spare capacity in the PDF kind array for future composition strategies (e.g., environment light PDF).
 
 #### Comparison
 
@@ -383,20 +390,18 @@ PdfKind enum:
 | Dispatch | `Material` enum (10 variants) | `Material` TaggedPointer (11) | `Material` virtual base | `BSDF` template plugin | Shader specialization (`.mat` DSL) |
 | BSDF per element | Single (match→impl) | Single `BxDF` via TaggedPointer | Single (virtual) | Single (plugin) | Hardcoded shader variants |
 | Composition | `Mix` + `Coated` enums | `LayeredBxDF<T,B>` template | `Mix` material type | `blendbsdf`, `mask` plugins | Coating shader variants |
-| Layered approach | Fresnel-split analytic | MC random walk (Guo et al.) | Hierarchical blend | Plugin composition | Layered shader compilation |
-| Rough coating | ❌ Hard-split only (correct only for delta) | ✅ MC layered walk | ✅ GlossyCoating | ✅ Yes via roughdielectric | N/A |
+| Layered approach | Fresnel-split + internal random walk for rough coating | MC random walk (Guo et al.) | Hierarchical blend | Plugin composition | Layered shader compilation |
+| Rough coating | ✅ Internal random walk (MAX_INTERNAL_BOUNCES=5) | ✅ MC layered walk | ✅ GlossyCoating | ✅ Yes via roughdielectric | N/A |
 | Spectral | RGB only | SampledSpectrum (4-point) | Partial (dispersion) | ✅ Full spectral + polarization | RGB only |
 | GPU serialization | ✅ Tree→flat node array | `pstd::vector` (arena) | N/A | N/A | Material compiler |
-| Delta routing | ✅ Enum variant (type-level) | `BxDFFlags` bitmask | Runtime check | Plugin-dependent | N/A |
+| Delta routing | ✅ `BsdfScatter::Split` variant traces both delta + non-delta | `BxDFFlags` bitmask | Runtime check | Plugin-dependent | N/A |
 | Mix efficiency | `eval()` evaluates both children every sample | Evaluates selected lobe only | Same tradeoff | Plugin-dependent | Compiled per variant |
 
 #### Issues
 
-1. **Coated eval/pdf Fresnel blend is correct only for delta coating.** For a rough (non-delta) coating, the blend `coating * f + substrate * (1-f)` doesn't match `sample()`'s selection probability — MIS weights become wrong. Not a current problem since coating is always dielectric (smooth).
+1. **Mix `eval()` evaluates both children every sample.** `scatter()` picks one stochastically via `next_dim()` closure but `eval()` always evaluates both. Acceptable for 2 children; would not scale to N. (The `Mix` material also now handles the one-delta case via `BsdfScatter::Split` — the delta child's contribution is pre-computed, and only the non-delta child is evaluated in `eval()`.)
 
-2. **Coating Fresnel hard-coded to IOR=1.5.** Should read IOR from the coating's `DielectricMaterial`.
-
-3. **Mix `eval()` evaluates both children every sample.** `sample()` picks one stochastically but `eval()` always evaluates both. Acceptable for 2 children; would not scale to N.
+2. **Coated IOR reads from the coating's DielectricMaterial** (resolved: hardcoded IOR=1.5 was replaced with the actual dielectric IOR during the coated decomposition refactor).
 
 ### 2.5 Shapes + Geometry
 
@@ -487,63 +492,62 @@ The flat BVH is production-quality. 64-byte alignment matches cache line size. I
 #### Current State
 
 ```text
-Sampler trait (pure, deterministic, Sync):
-  sample(&self, n: u32, d: u32) → f64
-  └── same (n, d) → same f64 everywhere
+Sampler trait (unified, GAT-based):
+  Session<'s>: SamplingSession (GAT)
+  begin_pixel(p, sample_idx) → Session<'s>
+  samples_per_pixel() → u32
+  └── per-pixel session cannot outlive the pixel — borrow-checker enforced
 
-SamplerFactory trait:
-  create() → Self::Sampler
+SamplingSession trait:
+  next_2d() → (u64, u64)     // correlated 2D (Sobol / stratified)
+  next_1d() → f64              // independent 1D (hash)
+  next_pixel_2d() → (f64, f64) // pixel-filter jitter (may share next_2d)
 
-SobolSampler:
-  Joe & Kuo 2008 direction numbers (2048 dims)
-  Gray-code recurrence for O(1) per-sample advance
-  Thread-local GrayCodeCache with digital shift scrambling
+Two-stream internal implementation:
+  Internally, the production SobolSession pairs:
+    SampleStreamWriter (stateful Sobol 2D stream)
+      [next_pair advances by 1 per call → dims 0-1, 2-3, 4-5...]
+    HashRng (SplitMix64 independent 1D)
 
-NaiveRandomSampler:
-  SplitMix64 hash of (n, d, seed)
+Concrete types:
+  SobolSampler    — production (Sobol + HashRng)
+  StreamRngPair   — generic adapter for any (SampleStream, SamplerRng)
+  ThreadLocal<T>  — per-thread slot via rayon + Mutex
 
-StratifiedSampler:
-  Jittered grid for dims 0-1, hash for rest
-
-DimCursor<S: Sampler>:
-  ┌──────────────────────────────────────────────┐
-  │ sampler: S  (embedded — no separate arg)     │
-  │ base: u64  (pixel seed)                      │
-  │ offset: u64 (current bounce start dim)       │
-  │ sample_idx: u64 (current pixel sample)        │
-  └──────────────────────────────────────────────┘
-
-  QMC stride: 11 dims per bounce
-  (debug_assert_eq!(bounce_end - bounce_start, 11))
+Legacy traits (still present, used internally):
+  QmcSampler      — pure sample(n, d) → f64 (stateless, Sync)
+  SampleStream    — next_2d() → (f64, f64)
+  SamplerRng      — next() → f64
 ```
 
-**Dimension budget per bounce (11)**:
+**No fixed dimension stride.** Each bounce consumes only what it needs:
 
-| Use | Dimenions |
-|-----|-----------|
-| Pixel AA (jitter) | 2 |
-| Lens sample (DOF) | 2 |
-| Time sample (motion blur) | 1 |
-| BSDF sample | 2 |
-| Light sample | 2 |
-| RR / padding | 2 |
+| Use | Dimenions | Stream |
+|-----|-----------|--------|
+| Material direction (BSDF lobe, GGX, etc.) | 2 | SampleStream `next_2d()` |
+| MIS direction (from selected PDF) | 2 | SampleStream `next_2d()` |
+| Russian roulette | 1 | SamplerRng `next_1d()` |
+| Material lobe selection / MIS strategy selection | 1–2 | SamplerRng `next_1d()` |
+| Light selection (NEE) | 1 | SamplerRng `next_1d()` |
 
-**Sobol dimension safety**: 2048 dims / 11 dims-per-bounce ≈ 186 bounces — far beyond any practical path tracer usage.
+Dielectric: 1 RNG (Fresnel split) + 0 Sobol (delta) = **1 dim total**.
+Lambertian: 1 RNG (lobe sel) + 2 Sobol (direction) + 1 RNG (light sel) + 2 Sobol (MIS dir) = **3 RNG + 4 Sobol**.
 
 #### Comparison
 
 | Aspect | raytrace-rs | pbrt-v4 | LuxCore | MoonRay | Mitsuba 3 |
 |--------|-------------|---------|---------|---------|-----------|
-| API | Pure `sample(n,d)` (stateless, Sync) | Stateful `Get1D()`, `Get2D()` | Stateful class | Stateful `SequenceID` | Stateful plugin |
-| Thread safety | Thread-local cache + pure fn | Clone per thread | Per-thread RNG | Per-thread state | Clone per thread |
-| Determinism | Same `(n,d)` → same value | Same sequence per pixel | Per-pixel + random pass | Pixel+purpose hash | Plugin-dependent |
-| Primary sequence | Sobol (2048d, Gray-code) | Multiple (Sobol, Halton, PMJ, etc.) | Sobol | CMJ/PMJ + hash | Multiple (Independent, Stratified, Sobol, etc.) |
-| Scrambling | Digital shift (per-dim hash) | Owen, FastOwen, PermuteDigits | None (pixel jitter) | Precomputed tables | None |
-| Dim management | `DimCursor<S>` auto-advancing + debug_assert | Implicit (sampler tracks dim) | Per engine | Per purpose | Per plugin |
+| API | `Sampler` trait with GAT `Session<'s>: SamplingSession` | Stateful `Get1D()`, `Get2D()` | Stateful class | Stateful `SequenceID` | Stateful plugin |
+| Thread safety | `ThreadLocal<T>` + `Mutex` per thread | Clone per thread | Per-thread RNG | Per-thread state | Clone per thread |
+| Determinism | Same per-pixel seed → same sequences | Same sequence per pixel | Per-pixel + random pass | Pixel+purpose hash | Plugin-dependent |
+| Primary sequence | Sobol (21200d, Gray-code) via `SampleStream` + `HashRng` for 1D | Multiple (Sobol, Halton, PMJ, etc.) | Sobol | CMJ/PMJ + hash | Multiple (Independent, Stratified, Sobol, etc.) |
+| Scrambling | Digital shift (per-dim hash via splitmix) | Owen, FastOwen, PermuteDigits | None (pixel jitter) | Precomputed tables | None |
+| Dim management | Variable per bounce (GAT session consumed as needed) | Implicit (sampler tracks dim) | Per engine | Per purpose | Per plugin |
 | Blue noise | No | ✅ BlueNoiseSampler, ZSampler | No | ✅ Precomputed tables | No |
-| Max dims | 2048 (21200 available in data file) | Unbounded | Unbounded | Precomputed | Unbounded |
+| Max dims | 21200 (full Joe & Kuo dataset) | Unbounded | Unbounded | Precomputed | Unbounded |
+| Two-stream | ✅ Sobol for 2D, hash for 1D discrete decisions | Single stream | Single stream | Single stream | Single stream |
 
-**Design note**: The pure `sample(n,d)` API is architecturally distinct from every production renderer surveyed — all use stateful sampler APIs. The stateless approach is advantageous for GPU (no per-thread sampler state to maintain) and enables trivial determinism verification (`same n,d → same result`).
+**Design note**: The architecture is a hybrid — the `Sampler` trait with GAT session provides a unified interface, while the internal implementation uses two streams (Sobol `SampleStreamWriter` for correlated 2D + `HashRng` for independent 1D). The compiler monomorphizes the integrator for each concrete `Sampler` type, preserving zero runtime overhead. The `QmcSampler` pure `sample(n,d)` API is retained as a building block and is still advantageous for GPU (no per-thread sampler state to maintain).
 
 ### 2.8 Texture System
 
@@ -631,8 +635,8 @@ ConstantMedium<T, SURFACE>:
 | Area | Advantage | Why |
 |------|-----------|-----|
 | **Dispatch performance** | Enum match fast path vs virtual dispatch | pbrt-v4 matches this with TaggedPointer; LuxCore/appleseed use vtable |
-| **Sampler API** | Pure `sample(n,d)` → deterministic, Sync, trivially GPU-friendly | All production renderers use stateful sampler APIs |
-| **QMC dim discipline** | Fixed stride + debug_assert prevents dim aliasing | pbrt-v4 uses implicit cursor — no cross-bounce assertion |
+| **Sampler API** | Unified GAT-based `Sampler` trait with two-stream internals (Sobol for 2D, hash for 1D) — zero `dyn` dispatch, borrow-checker prevents cross-pixel state corruption | All production renderers use stateful sampler APIs with no compile-time cross-pixel guarantees |
+| **QMC dim discipline** | Variable per-bounce consumption, two-stream separates correlated from independent decisions | pbrt-v4 uses implicit cursor — no per-bounce assertion |
 | **Adaptive sampling** | Welford's online variance + convergence mask | Only appleseed has comparable adaptive sampling quality |
 | **Tile pool** | Pre-allocated, reused across passes | pbrt-v4 allocates per-pass; raytrace-rs eliminates this |
 | **GPU material serialization** | Tree→flat at scene-build time | Clean boundary for future GPU integrator |
@@ -661,8 +665,8 @@ raytrace-rs's architectural patterns mirror the Rust graphics ecosystem's evolut
 
 | Pattern | In raytrace-rs | Used by |
 |---------|---------------|---------|
-| **Enum dispatch for hot-path polymorphism** | `Material` (10 variants), `PdfEnum` (6), `BsdfSample` (3) | Performant Rust path tracers; mirrors pbrt-v4's TaggedPointer |
-| **Generic type param for strategy pattern** | `Integrator<S>`, `Renderer<W,C,F,S>`, `PDF<S>`, `DimCursor<S>` | `rend3`, `renderling` |
+| **Enum dispatch for hot-path polymorphism** | `Material` (10 variants), `BsdfScatter` (3), `PdfKind` (5) | Performant Rust path tracers; mirrors pbrt-v4's TaggedPointer |
+| **Generic type param for strategy pattern** | `Integrator<S: Sampler>`, `Renderer<W,C,F,S>`, `Sampler` (GAT) | `rend3`, `renderling` |
 | **Trait object for heterogeneous collections** | `Vec<Arc<dyn Intersectable>>`, `Vec<Arc<dyn Sampleable>>` | All Rust renderers with scene graphs |
 | `enum_dispatch`-equivalent pattern | Manual (match + method delegation) | `enum_dispatch` crate auto-generates this |
 | **Flat storage + SOA for hot paths** | `FlatBvh` (64B nodes), `RgbFilm` (parallel arrays) | `rend3` ECS, `kajiya` real-time path tracer |
@@ -793,7 +797,7 @@ fn eval_bsdf(mat: &GpuMaterialNode, wo: Vec3, wi: Vec3) -> Vec3 {
 | `FlatBvh` (64B `repr(C)` nodes, iterative traversal) | ✅ Yes — byte-identical layout for GPU (f64→f32) | No structural changes needed; BVH build remains on CPU |
 | `GpuMaterialType` / `GpuTextureType` enums (`repr(u32)`) | ✅ Yes — discriminants match SPIR-V match cases | No changes needed |
 | Scene ownership (`Vec<Arc<dyn ...>>`) | ❌ Not GPU-ready | Arena refactor → slab-backed flat arrays |
-| Sampler (`pure sample(n,d)`) | ✅ Yes — stateless, trivially maps to GPU | No changes needed; GPU `n = pixel_x * width + pixel_y; d = bounce * 11 + dim` |
+| Sampler (`Sampler` trait + GAT session, `QmcSampler` pure `sample(n,d)` internally) | ✅ Yes — stateless base, trivially maps to GPU | No changes needed; GPU `n = pixel_x * width + pixel_y; d = bounce * 11 + dim` |
 | **→ The GPU serialization boundary is well-designed. The gap is memory management (slab allocator) and shader code (`#[spirv]` kernels), not data structures.** | | |
 
 #### 3.5.6 Staged GPU Migration Path
@@ -863,35 +867,42 @@ renderling's contribution to each phase:
 | `integrator/path_tracer.rs` | 6 | gpu | Mirror boundary in path-trace kernel / WGSL entrypoint |
 | `texture/mod.rs` | 12 | renderer-agnostic | Replace direct path-tracer handoff |
 
-**Categories**: GPU pipeline (4), type-safety (4), opt-preview (3), transforms (4), refactor (1), renderer-agnostic (1), mapping (1).
+**Categories**: GPU pipeline (4), type-safety (4), opt-preview (3), transforms (4), refactor (1), renderer-agnostic (1), mapping (1), gpu-sampler (1). The new `SPLIT_MAX_DEPTH` and `MAX_BSDF_STRATS` constants add to the design documentation but are not TODOs.
 
 **Zero**: `todo!()`, `unimplemented!()`, FIXMEs, HACKs, XXXs.
 
-### 4.2 Unsafe Blocks (2)
+### 4.2 Unsafe Blocks (2 + 1 dead_code)
 
 | File | Line | Context | Risk |
 |------|------|---------|------|
 | `material/gpu.rs` | 77 | `std::slice::from_raw_parts` — casting GpuMaterialNode → u32 bytes | Low — well-bounded, tested |
 | `texture/gpu.rs` | 92 | `std::slice::from_raw_parts` — casting GpuTextureNode → u32 bytes | Low — well-bounded, tested |
+| `environment.rs` | 23 | `#[allow(dead_code)]` on `spotlight` field | Low — constant overhead |
 
-Both are in GPU serialization code — reinterpreting structs as byte slices for buffer upload. Each has corresponding test coverage.
+Both serialization unsafe blocks are in GPU serialization code — reinterpreting structs as byte slices for buffer upload. Each has corresponding test coverage. The `environment.rs` dead_code is a constant overhead unused by scene configuration.
 
-### 4.3 `unwrap()`/`expect()` Calls (8 total)
+### 4.3 `unwrap()`/`expect()` Calls (13 total)
 
 | File | Line | Context | Risk |
 |------|------|---------|------|
-| `main.rs` | 50 | Softbuffer context creation | Low (init) |
-| `main.rs` | 53 | Softbuffer surface creation | Low (init) |
-| `main.rs` | 154 | Buffer present | Medium (could panic on lost surface) |
-| `main.rs` | 183 | Surface resize | Low (init) |
-| `main.rs` | 226 | Event loop | Medium (unreachable) |
-| `main.rs` | 559 | Film output size | Low (assertion) |
-| `scene.rs` | 811 | Image file load | Medium (hardcoded path, dev machine) |
-| `material/mod.rs` | 789 | `buf.nodes.last()` in test | Low (test) |
+| `main.rs` | 48 | Softbuffer context creation | Low (init) |
+| `main.rs` | 51 | Softbuffer surface creation | Low (init) |
+| `main.rs` | 152 | Buffer present | Medium (could panic on lost surface) |
+| `main.rs` | 181 | Surface resize | Low (init) |
+| `main.rs` | 224 | Event loop | Medium (unreachable) |
+| `main.rs` | 581 | Film output size | Low (assertion) |
+| `renderer/cpu.rs` | 213 | `current_thread_index()` in Rayon pool | Low (guaranteed in pool) |
+| `renderer/cpu.rs` | 214 | `samplers[thread_idx].lock()` | Low (Mutex, uncontended) |
+| `sampler/mod.rs` | 394 | `current_thread_index()` in Rayon pool | Low (guaranteed in pool) |
+| `sampler/mod.rs` | 395 | `self.items[idx].lock()` | Low (Mutex, uncontended) |
+| `scene.rs` | 728 | Image file load (`kiara_1_dawn_4k.hdr`) | Medium (hardcoded path, dev machine) |
+| `scene.rs` | 832 | Image file load (`earthmap.png`) | Medium (hardcoded path, dev machine) |
+| `material/mod.rs` | 699 | `buf.nodes.last()` in GPU serialization | Low (test, unreachable if nodes non-empty) |
 
 ### 4.4 `#[allow(dead_code)]`
 
-`perlin.rs` — the entire Perlin noise module has `#[allow(dead_code)]`. It's likely unused by any current scene. Should either be used by `NoiseTexture` (confirm) or removed.
+- `perlin.rs` — the entire Perlin noise module has `#[allow(dead_code)]`. Used by `NoiseTexture` (confirmed).
+- `environment.rs:23` — `spotlight` field on `EnvironmentMap`. A constant angular falloff parameter that should be replaced by a cone-angle texture or scene configuration.
 
 ### 4.5 Config & Tooling
 
@@ -899,10 +910,11 @@ Both are in GPU serialization code — reinterpreting structs as byte slices for
 |------|--------|
 | `rustfmt` | No `rustfmt.toml` — uses default |
 | `clippy` | No `clippy.toml`. 1 `#[allow(clippy::...)]` in `pdf.rs` |
-| Test modules | 6 `#[cfg(test)]` modules (sampler, flat_bvh, integrator, film/rgb, material, texture/gpu) |
+| Test modules | 6 `#[cfg(test)]` modules (sampler, flat_bvh, integrator, film/rgb, material, texture/gpu) — same as before, new sampler tests added within `sampler/mod.rs` |
 | CI | None (no `.github/`) |
 | Workspace | Single crate (no workspace) |
 | `Cargo.lock` | Present (deterministic builds) |
+| Sobol direction numbers | Full Joe & Kuo 2008 dataset (21200 dims, generated in `build.rs` via include!) — up from 2048 in the old hardcoded file |
 
 ---
 
@@ -916,13 +928,22 @@ Both are in GPU serialization code — reinterpreting structs as byte slices for
 | **P0** | Triangle mesh support + OBJ loader | New file + parser | Unlocks real-world 3D scenes | `shape/mesh.rs`, `shape/obj.rs` |
 | **P1** | Complete transform system (RotateX, RotateZ, Scale, matrix, composition) | ~60 lines | Full scene transform support | `transform.rs` |
 | **P1** | Point3/Color3/Direction newtypes | ~50 lines | Type safety, prevent coordinate/color confusion | `vec3.rs`, `ray.rs`, `hittable.rs` |
-| **P1** | CMJ/PMJ sampler | ~100 lines | Better early-preview stratification | `sampler.rs` |
-| **P2** | Rough clearcoat MIS | ~80 lines | Physically correct rough coating | `material/mod.rs` (Coated) |
-| **P2** | Per-type bounce limits (diffuse/glossy/spec depths) | ~20 lines | Production bounce control | `integrator/path_tracer.rs` |
-| **P2** | Light importance sampling (power-based selection) | ~40 lines | Reduce variance in many-light scenes | `pdf.rs`, `integrator/` |
-| **P3** | Texture mapping 2D/3D clean split | ~80 lines | Cleaner architecture | `texture/mapping.rs`, `hittable.rs` |
-| **P3** | Denoiser integration (OIDN) | ~100 lines | Interactive-quality output at low spp | `film/` |
-| **P3** | AOV support (albedo, normal, depth) | ~80 lines | Debug visualization, compositing | `film/` |
+| **P1** | CMJ/PMJ sampler for early bounces | ~100 lines | Better early-preview stratification | `sampler/mod.rs` |
+| **P1** | Per-type bounce limits (diffuse/glossy/spec depths) | ~20 lines | Production bounce control | `integrator/path_tracer.rs` |
+| **P1** | Light importance sampling (power-based selection) | ~40 lines | Reduce variance in many-light scenes | `pdf.rs`, `integrator/` |
+| **P2** | Texture mapping 2D/3D clean split | ~80 lines | Cleaner architecture | `texture/mapping.rs`, `hittable.rs` |
+| **P2** | Denoiser integration (OIDN) | ~100 lines | Interactive-quality output at low spp | `film/` |
+| **P2** | AOV support (albedo, normal, depth) | ~80 lines | Debug visualization, compositing | `film/` |
+
+### Resolved since last audit
+
+| Issue | Resolution |
+|-------|-----------|
+| **Rough clearcoat MIS** (was P2) | Coated material now uses internal random walk for rough coating — the `scatter()` method loops up to `MAX_INTERNAL_BOUNCES = 5`, handling the Split (delta + non-delta) component of a rough coating correctly via recursive substrate evaluation. |
+| **Sampler refactor** (structural) | Two-stream architecture implemented: `Sampler` trait with GAT `Session<'s>: SamplingSession`, `SobolSampler` (Sobol + HashRng), `StreamRngPair` generic adapter. Eliminated `DimCursor`, fixed 11-dim stride, and `PDF<S>` generic. |
+| **PDF System** (structural) | `PdfEnum` deleted, `PdfKind` directly implements `PDF` trait. Added `SolidAnglePdf`/`AreaPdf` domain newtypes, `MisHeuristic` enum, `Distribution1DFixed<const N>`, `balance_heuristic`, `Sample1D` enum, `sample_discrete` helper. |
+| **Path splitting** (structural) | `BsdfScatter::Split` variant for Mix one-delta children → `li_inner()` recursive delta trace in integrator. Mix/Coated handle Split in their scatter methods. |
+| **Coated IOR hardcode** (was issue #2) | Coated material now reads IOR from the coating's `DielectricMaterial` instead of hardcoded 1.5. |
 
 ### 5.2 Development Phases
 
@@ -939,9 +960,9 @@ Phase 2 — Memory model (1-3 months)
 
 Phase 3 — Quality (3-6 months)
 ├── CMJ/PMJ sampler for early bounces
-├── Rough clearcoat MIS
 ├── Per-type bounce limits
-└── Light importance sampling
+├── Light importance sampling
+└── BDPT/MLT exploration
 
 Phase 4 — Production polish (6-12 months)
 ├── AOV support
@@ -950,13 +971,15 @@ Phase 4 — Production polish (6-12 months)
 └── GPU rendering exploration (WGSL/WebGPU)
 ```
 
+**Completed since last audit**: Sampler refactor (two-stream architecture, GAT `Sampler` trait, `SobolSampler`), PDF system overhaul (`PdfEnum` deleted, `PdfKind` direct impl, `SolidAnglePdf`/`AreaPdf`, `MisHeuristic`, `Distribution1DFixed`), path splitting (`BsdfScatter::Split`, `li_inner`), rough clearcoat MIS (Coated internal random walk), Coated IOR decoupling.
+
 ### 5.3 Architectural Positioning
 
 The codebase has **strong architectural fundamentals** that compare favorably with production renderers:
 
 - **Trait boundaries** (Integrator, Renderer, Camera, Film) match the decomposition of pbrt-v4 and exceed it in flexibility (generic type params instead of virtual inheritance).
 - **Enum dispatch** for materials matches pbrt-v4's TaggedPointer pattern — all production renderers with virtual dispatch (LuxCore, appleseed) pay a vtable penalty on every BSDF evaluation that raytrace-rs avoids.
-- **Pure sampler API** is architecturally distinct from every surveyed renderer and positions the codebase well for GPU.
+- **Pure sampler API** is architecturally distinct from every surveyed renderer and positions the codebase well for GPU. The two-stream internal architecture (Sobol for 2D, hash for 1D) protects Sobol correlation structure while the unified `Sampler` trait with GAT session provides compile-time cross-pixel state safety.
 - **GPU serialization** groundwork (material tree → flat node array) is already in place and tested.
 - **Adaptive sampling** with Welford's online variance is production-quality.
 

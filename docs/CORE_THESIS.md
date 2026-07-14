@@ -1,7 +1,6 @@
 # Starlight Rendering Engine
 
-## Architecture Ideal v3 — Spatial Microkernel
-
+## Architecture Ideal v3 — Spatial Microkernel (live tracking: ./renderer_arch.md)
 ______________________________________________________________________
 
 ## Changelog from v1

@@ -40,6 +40,28 @@
   const H: u32` enables compile-time bounds checking. Added `AOVSet` trait, `NoAOVs`,
   `DenoiserAOVs` types. `RgbFilm<W, H, D, A>` is now fully generic.
 
+## Implementation Status
+
+### Phase 0 — Tent filter extraction (DONE)
+Moving `apply_tent_filter` out of `RgbFilm::add_sample` into post-processing was done in commit e036898. The code now applies the tent filter as a separate step in the render pipeline.
+
+### Phase 1 — ImageFilter trait + FilterPipeline trait (PLANNED)
+The `ImageFilter` trait, `FilterPipeline` trait, `pipeline!` macro, and the `SingleFilter`/`FilterChain`/`NoFilters` types described below are **not implemented** in the codebase yet. The design below is the proposed architecture.
+
+### Phase 1.5 — Bilateral denoiser (PLANNED)
+Not implemented.
+
+### Phase 2 — A-Trous wavelet denoiser (PLANNED)
+Not implemented.
+
+### Phase 3 — OIDN integration (PLANNED)
+Not implemented.
+
+### Film trait with GATs (PLANNED)
+The generic `RgbFilm<P, A>` design below is **not implemented**. The current `RgbFilm` still has fixed fields (`pixels`, `sample_num`, `raw_sum`, `m_2`) with no generic parameters, no `pipeline` / `pipeline_applied` / `aovs` fields, and no `AOVSet` integration.
+
+______________________________________________________________________
+
 ## Architecture Decision
 
 **Unified ImageFilter + FilterPipeline design with GAT-based Film trait.**
@@ -199,6 +221,8 @@ pub trait Film: Send + Sync {
 ```
 
 ### RgbFilm with FilterPipeline generic
+
+**Note: This generic design is NOT yet implemented.** The current `RgbFilm` still has fixed fields (`pixels`, `sample_num`, `raw_sum`, `m_2`) — no generic `P` or `A` parameters, no `pipeline`, `pipeline_applied`, or `aovs` fields.
 
 ```rust
 pub struct RgbFilm<P: FilterPipeline = SingleFilter<TentFilter>, A: AOVSet = NoAOVs> {

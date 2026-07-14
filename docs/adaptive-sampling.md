@@ -31,6 +31,20 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
+## Implementation Status
+
+### What's DONE (implemented):
+- **Hardcoded Welford variance tracking** in `RgbFilm` — `m_2` and `sample_num` fields updated inline in `add_sample()`
+- **Dual thresholds** — `min_samples_before_adapt`, `threshold_abs`, `threshold_rel` configured via `AdaptiveSamplingConfig`
+- **Per-pixel convergence check** — `reset_convergence_mask()` in `RgbFilm`, called from `CpuRenderer::render()`
+- **Adaptive sampling info printed per tile** — convergence statistics logged during rendering
+
+### What's PLANNED (not implemented):
+- **`VarianceEstimator` trait extraction** — Welford logic still inlined in `RgbFilm::add_sample`, not extracted into a standalone type
+- **`ConvergenceCriterionEnum`** — convergence check hardcoded in `reset_convergence_mask`, not extracted into pluggable variants
+- **`SamplingPolicy` trait** — `if converged[idx] { continue }` pattern hardcoded in render loop, not extracted into a trait
+- **`BufferFlushStrategy`** — not yet designed; no flush strategy abstraction exists
+
 ## 0. Current Implementation
 
 ### 0.1 Data Model
@@ -186,7 +200,7 @@ ______________________________________________________________________
 
 ## 2. Abstraction Catalog
 
-### 2a. `VarianceEstimator` — composable Welford engine
+### 2a. `VarianceEstimator` — composable Welford engine (not yet implemented)
 
 **Currently:** Welford logic is inlined in `RgbFilm::add_sample` (rgb.rs:82-101).
 Three parallel vectors (`pixels`, `sample_counts`, `m_2`) carry the same per-pixel
@@ -232,7 +246,7 @@ variance values (wasteful) or expose raw M2 (leaking implementation details).
 `pixel_variance`, `convergence_mask`, `reset_convergence_mask`, `reset`, and
 constructor. ~80 lines changed, net -30 lines (eliminates parallel array bookkeeping).
 
-### 2b. `ConvergenceCriterionKind` enum — pluggable convergence rules
+### 2b. `ConvergenceCriterionKind` enum — pluggable convergence rules (not yet implemented)
 
 **Currently:** The convergence test is hardcoded in `reset_convergence_mask`
 (rgb.rs:200-213): `var_rms < threshold_abs || var_rms / luminance < threshold_rel`.
@@ -265,7 +279,7 @@ impl ConvergenceCriterion for HybridThreshold {
     }
 }
 
-// === Wrapper enum (delegates via match) ===
+// === Wrapper enum (delegates via match) — not yet implemented ===
 pub enum ConvergenceCriterionEnum {
     Hybrid(HybridThreshold),
     Absolute(AbsoluteThreshold),
@@ -340,7 +354,7 @@ neighborhood check (§3a) is implemented.
 
 **Effort:** Small (~60 lines for the enum + variants + `From` impls + descriptor).
 
-### 2c. `SamplingPolicy` trait — separates "what to sample" from "how to render"
+### 2c. `SamplingPolicy` trait — separates "what to sample" from "how to render" (not yet implemented)
 
 **Currently:** The convergence mask + `if converged[idx] { continue }` pattern is
 hardcoded in the render loop (cpu.rs:128-167, 187-189).

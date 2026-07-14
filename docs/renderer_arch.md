@@ -23,8 +23,8 @@ ______________________________________________________________________
   deferred upgrade with five use cases: MIS, denoiser confidence, adaptive sampling,
   progressive rendering, and tile merging.
 - **v5 (2026-06-28)** — Static dispatch audit. Added `SampleableEnum` with `From` impls
-  (replaces `Arc<dyn Sampleable>`). Made `Integrator<W, S>` generic over world type
-  (replaces `&dyn Intersectable`). Made `VisibilityGenerator<W>` generic. Updated all
+  (replaces `Arc<dyn Sampleable>`). Proposed `Integrator<W, S>` generic over world type
+  (aspirational — not yet implemented). Made `VisibilityGenerator<W>` generic. Updated all
   renderer implementations. Updated "Why generics over dyn T" section with three-strategy
   approach (generics, enums, trait-bound enums). Updated unified dependency order.
 - **v6 (2026-06-28)** — Applied Niri/Smithay `render_elements!` pattern to all enums:
@@ -40,12 +40,23 @@ ______________________________________________________________________
 - **v9 (2026-06-29)** — Updated §10 to reflect rename from `DenoiserFeatures` to
   `AOVStorage`. AOVs are the fundamental abstraction: integrator writes, consumers
   read. `GBuffer` vs `AOVStorage` naming distinction clarified.
+- **v10 (2026-07-13)** — Aligned doc with actual code after SampleStream refactor.
+  Removed `SampleStreamEnum<S>` (does not exist — plain `S: SampleStream` generic used).
+  Updated `Integrator<W: Intersectable, S: Sampler>` to `Integrator<S: SampleStream, R: SamplerRng>`
+  (no world generic). Updated `CpuRenderer<I, S, Fact>` to `CpuRenderer<I, S, R, SF, RF>`.
+  Updated `Renderer<W, C, F, S>` to `Renderer<W, C, F>` (dropped `S` generic).
+  Added `SampleStreamFactory`, `RngFactory`, `SamplerRng` trait documentation.
+  Updated RgbFilm fields (`sample_num`, `raw_sum`, `m_2`). Marked aspirational items
+  (GBuffer, VisibilityGenerator, RasterRenderer, HybridRenderer, TriangleRasterizer,
+  RayVisibilityGenerator, RasterCamera) as "(not yet implemented)". Updated §9
+  "Why Integrator is generic over W" to reflect actual `&dyn Intersectable` usage.
+  Updated §6 and §10 cross-references.
 
 ______________________________________________________________________
 
 ## 0. Problem Statement
 
-The current `Renderer<W, C, F, S>` trait bundles visibility generation, light
+The current `Renderer<W, C, F>` trait bundles visibility generation, light
 transport, and film writing into a single `render()` call. The `CpuRenderer`
 implements this as a per-pixel Monte Carlo loop: `camera.generate_ray()` →
 `integrator.li()` → `film.add_sample()`.
@@ -76,18 +87,17 @@ ______________________________________________________________________
 
 ```rust
 // src/renderer/mod.rs
-pub trait Renderer<W, C, F, S>: Send + Sync
+pub trait Renderer<W, C, F>: Send + Sync
 where
     W: Intersectable,
     C: Camera,
     F: Film,
-    S: Sampler,
 {
     fn render(
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &[SampleableEnum]),
+        scene: (&W, &[Arc<dyn Sampleable>]),
         framebuffer: Option<SharedFramebuffer>,
     );
     fn resize(&mut self, _width: u32, _height: u32) {}
@@ -95,13 +105,14 @@ where
 }
 
 // src/integrator/mod.rs
-pub trait Integrator<W: Intersectable, S: Sampler>: Send + Sync {
+pub trait Integrator<S: SampleStream, R: SamplerRng>: Send + Sync {
     fn li(
         &self,
         initial_ray: &mut Ray,
-        world: &W
-        lights: &[SampleableEnum],
-        sampler: &mut DimCursor<S>,
+        world: &dyn Intersectable,
+        lights: &[Arc<dyn Sampleable>],
+        stream: &mut S,
+        rng: &mut R,
     ) -> Color3;
 }
 
@@ -116,11 +127,15 @@ pub trait Camera: Send + Sync {
 pub trait Film: Send + Sync {
     // Might gain a weight: f64 param in the future for MIS, denoiser confidence, adaptive sampling, etc.
     fn add_sample(&mut self, x: u32, y: u32, color: Color3);
-    fn merge_tile(&mut self, tile: &FilmTile);
-    fn progressive(&self) -> impl Iterator<Item = u8> + '_;
+    fn read_image(&self) -> Vec<u8>;
+    fn write_image(&self, path: impl AsRef<Path>) -> ImageResult<()>;
     fn resolution(&self) -> (u32, u32);
     fn reset(&mut self);
-    // ... convergence methods
+    fn merge_tile(&mut self, tile: &FilmTile);
+    fn progressive(&self) -> impl Iterator<Item = u8> + '_;
+    fn pixel_variance(&self, idx: usize) -> f64;
+    fn convergence_mask(&self, threshold_rel: f64, threshold_abs: f64, min_samples: u32) -> Vec<bool>;
+    fn reset_convergence_mask(&self, threshold_rel: f64, threshold_abs: f64, min_samples: u32, out: &mut [bool]) -> bool;
 }
 
 // src/hittable.rs
@@ -236,10 +251,18 @@ pub struct FilmTile {
 pub struct RgbFilm {
     width: u32,
     height: u32,
+    /// Accumulated raw sample colors: sum(color) per pixel.
     pixels: Vec<Color3>,
-    sample_counts: Vec<u32>,
-    m_2: Vec<Color3>,           // Welford's online variance
+    /// Actual number of samples per pixel.
+    sample_num: Vec<u32>,
+    /// Sum of raw (unweighted) sample colors. Used by Welford's algorithm
+    /// to compute variance for convergence checking.
+    raw_sum: Vec<Color3>,
+    /// The running sum of squared differences from the unweighted mean.
+    m_2: Vec<Color3>,
+    // Exposure value for tone mapping.
     exposure: f64,
+    // Whether to apply tone mapping to final colors.
     tone_map: bool,
 }
 ```
@@ -248,19 +271,23 @@ pub struct RgbFilm {
 
 ```rust
 // src/renderer/cpu.rs
-pub struct CpuRenderer<I, S, Fact>
+pub struct CpuRenderer<I, S, R, SF, RF>
 where
-    I: Integrator<S>,
-    S: Sampler,
-    Fact: SamplerFactory<Sampler = S>,
+    I: Integrator<S, R>,
+    S: crate::sampler::SampleStream + Send + Sync,
+    R: crate::sampler::SamplerRng,
+    SF: SampleStreamFactory<SampleStream = S>,
+    RF: RngFactory<Rng = R>,
 {
     samples_per_pixel: u32,
     threshold_abs: f64,
     threshold_rel: f64,
     min_samples_before_adapt: u32,
-    integrator: I,              // owns the integrator
-    sampler_factory: Fact,      // owns the sampler factory
-    _phantom: PhantomData<S>,
+    integrator: I,
+    stream_factory: SF,
+    rng_factory: RF,
+    _phantom_s: std::marker::PhantomData<S>,
+    _phantom_r: std::marker::PhantomData<R>,
 }
 ```
 
@@ -315,25 +342,28 @@ added to `PerspectiveCamera`.
 **Evolution:** Add `RasterCamera` trait. Implement for `PerspectiveCamera`. No
 breaking change to existing code.
 
-#### Integrator (stays generic, gains SampleStreamEnum)
+#### Integrator (two-stream: QMC stream + independent RNG)
 
 ```rust
 /// Light transport estimation. Given a ray and scene, returns radiance.
-pub trait Integrator<W: Intersectable, S: Sampler>: Send + Sync {
+pub trait Integrator<S: SampleStream, R: SamplerRng>: Send + Sync {
     fn li(
         &self,
         initial_ray: &mut Ray,
-        world: &W,
-        lights: &[SampleableEnum],
-        stream: &mut SampleStreamEnum<S>,
+        world: &dyn Intersectable,
+        lights: &[Arc<dyn Sampleable>],
+        stream: &mut S,
+        rng: &mut R,
     ) -> Color3;
 }
 ```
 
-**Current state:** Generic over `S: Sampler`, takes `&mut DimCursor<S>`.
-**Evolution:** Becomes `Integrator<W, S>` (generic over world type). The `DimCursor<S>`
-parameter is replaced by `SampleStreamEnum<S>` — a concrete enum that avoids `dyn`
-dispatch while enabling future MLT support. See `docs/samplestream-refactor.md`.
+**Current state:** Already matches the two-stream design above. The world is passed as
+`&dyn Intersectable` at the method level (NOT a generic on the trait). The `SampleStream`
+provides correlated QMC samples for AA/lens, while `SamplerRng` provides independent
+values for variable-length material paths.
+**Evolution:** Add world generic `W: Intersectable` to the trait to eliminate the
+`&dyn Intersectable` vtable dispatch in the hot path: `Integrator<W: Intersectable, S, R>`.
 
 #### Film (extended for denoiser)
 
@@ -382,7 +412,7 @@ parameter is additive — existing `add_sample(x, y, color)` call sites would pa
 the full `RgbFilm<D>` generic redesign. The denoiser is a generic parameter on Film,
 not on Renderer — following the `SamplerFactory` associated-type pattern.
 
-#### VisibilityGenerator (NEW)
+#### VisibilityGenerator *(not yet implemented)*
 
 ```rust
 /// Produces primary visibility as SurfaceInteractions in a GBuffer.
@@ -408,18 +438,17 @@ removed from the trait because it's an implementation detail — each renderer
 owns its integrator (if needed).
 
 ```rust
-pub trait Renderer<W, C, F, S>: Send + Sync
+pub trait Renderer<W, C, F>: Send + Sync
 where
     W: Intersectable,
     C: Camera,
     F: Film,
-    S: Sampler,
 {
     fn render(
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &[SampleableEnum]),
+        scene: (&W, &[Arc<dyn Sampleable>]),
         framebuffer: Option<SharedFramebuffer>,
     );
 
@@ -428,11 +457,12 @@ where
 }
 ```
 
-**Current state:** `Renderer<W, C, F, S>` — already does NOT take integrator as
-parameter. The integrator is internal to `CpuRenderer`.
+**Current state:** `Renderer<W, C, F>` — the `S` generic was removed because
+the renderer no longer needs a sampler; sampling is handled internally by
+`CpuRenderer` via `SampleStreamFactory` and `RngFactory`.
 **Evolution:** No change to the trait signature. The trait is already correct.
 
-### Layer 2: GBuffer (NEW)
+### Layer 2: GBuffer *(not yet implemented)*
 
 ```rust
 /// Primary visibility buffer. Stores SurfaceInteractions produced by
@@ -463,34 +493,41 @@ the GBuffer borrows from the scene. On GPU (Stage 4+), this becomes a buffer of
 #### PathTracingRenderer (CpuRenderer, unchanged except denoiser call)
 
 ```rust
-pub struct CpuRenderer<I, S, Fact>
+pub struct CpuRenderer<I, S, R, SF, RF>
 where
-    I: Integrator<W, S>,    // now generic over world type
-    S: Sampler,
-    Fact: SamplerFactory<Sampler = S>,
+    I: Integrator<S, R>,
+    S: crate::sampler::SampleStream + Send + Sync,
+    R: crate::sampler::SamplerRng,
+    SF: SampleStreamFactory<SampleStream = S>,
+    RF: RngFactory<Rng = R>,
 {
     samples_per_pixel: u32,
     // ... adaptive sampling params ...
     integrator: I,
-    sampler_factory: Fact,
-    _phantom: PhantomData<S>,
+    stream_factory: SF,
+    rng_factory: RF,
+    _phantom_s: std::marker::PhantomData<S>,
+    _phantom_r: std::marker::PhantomData<R>,
 }
 
-impl<W, I, C, F, S, Fact> Renderer<W, C, F, S> for CpuRenderer<I, S, Fact>
+impl<W, I, C, F, S, R, SF, RF> Renderer<W, C, F> for CpuRenderer<I, S, R, SF, RF>
 where
     W: Intersectable,
-    I: Integrator<W, S>,
+    I: Integrator<S, R>,
     C: Camera,
     F: Film,
-    S: Sampler,
-    Fact: SamplerFactory<Sampler = S>,
+    S: crate::sampler::SampleStream + Send + Sync,
+    R: crate::sampler::SamplerRng,
+    SF: SampleStreamFactory<SampleStream = S>,
+    RF: RngFactory<Rng = R>,
 {
     fn render(&self, camera, film, scene, framebuffer) {
         let (world, lights) = scene;
-        // Current logic: per-pixel Monte Carlo loop
-        // For each pixel:
-        //   camera.generate_ray() → ray
-        //   integrator.li(ray, world, lights) → radiance
+        // Per-pixel Monte Carlo loop with two-stream sampling:
+        //   stream_factory.for_pixel(x, y, sample_idx) → correlated QMC stream
+        //   rng_factory.for_pixel(x, y, sample_idx) → independent RNG
+        //   CameraSampler::new_sampled((x, y), &mut stream, &mut rng) → camera sample
+        //   integrator.li(ray, world, lights, &mut stream, &mut rng) → radiance
         //   film.add_sample(radiance)
 
         // After sampling loop completes:
@@ -499,27 +536,28 @@ where
 }
 ```
 
-**Current state:** `CpuRenderer` does not call `apply_denoiser()`.
-**Evolution:** Add `film.apply_denoiser()` after the sampling loop. This is the only
-change to `CpuRenderer` — the rest of the struct and trait impl are unchanged.
+**Current state:** Already matches the code above. The `CpuRenderer` now has five
+generic parameters: `I` (integrator), `S` (SampleStream), `R` (SamplerRng),
+`SF` (SampleStreamFactory), `RF` (RngFactory). Does not yet call `apply_denoiser()`.
+**Evolution:** Add `film.apply_denoiser()` after the sampling loop (from
+`docs/denoiser.md` §6). This is additive — the struct and trait impl remain.
 
 **Cross-reference:** See `docs/denoiser.md` §6 for placement details and
 `docs/adaptive-sampling.md` §5.3 for the render loop integration.
 
-#### RasterRenderer (NEW)
+#### RasterRenderer *(not yet implemented)*
 
 ```rust
 pub struct RasterRenderer<V> {
     visibility: V,
 }
 
-impl<W, V, C, F, S> Renderer<W, C, F, S> for RasterRenderer<V>
+impl<W, V, C, F> Renderer<W, C, F> for RasterRenderer<V>
 where
     W: Intersectable,
     V: VisibilityGenerator<W>,
     C: RasterCamera,
     F: Film,
-    S: Sampler,
 {
     fn render(&self, camera, film, scene, framebuffer) {
         let (world, lights) = scene;
@@ -537,7 +575,7 @@ where
 **Current state:** Does not exist.
 **Evolution:** New implementation.
 
-#### HybridRenderer (NEW)
+#### HybridRenderer *(not yet implemented)*
 
 ```rust
 pub struct HybridRenderer<V, I, S> {
@@ -547,14 +585,14 @@ pub struct HybridRenderer<V, I, S> {
     _phantom: PhantomData<S>,
 }
 
-impl<W, V, I, C, F, S> Renderer<W, C, F, S> for HybridRenderer<V, I, S>
+impl<W, V, I, C, F, S> Renderer<W, C, F> for HybridRenderer<V, I, S>
 where
     W: Intersectable,
     V: VisibilityGenerator<W>,
-    I: Integrator<W, S>,
+    I: Integrator<S, R>,
     C: RasterCamera,
     F: Film,
-    S: Sampler,
+    S: SampleStream,
 {
     fn render(&self, camera, film, scene, framebuffer) {
         let (world, lights) = scene;
@@ -581,7 +619,7 @@ where
 **Current state:** Does not exist.
 **Evolution:** New implementation.
 
-#### TriangleRasterizer (NEW, VisibilityGenerator impl)
+#### TriangleRasterizer *(not yet implemented, VisibilityGenerator impl)*
 
 ```rust
 pub struct TriangleRasterizer;
@@ -608,7 +646,7 @@ impl<W: Intersectable> VisibilityGenerator<W> for TriangleRasterizer {
 **Current state:** Does not exist.
 **Evolution:** New implementation.
 
-#### RayVisibilityGenerator (NEW, VisibilityGenerator impl)
+#### RayVisibilityGenerator *(not yet implemented, VisibilityGenerator impl)*
 
 ```rust
 pub struct RayVisibilityGenerator;
@@ -638,7 +676,7 @@ ______________________________________________________________________
 ## 3. Composition Diagram
 
 ```
-                    Renderer<W, C, F, S>
+                    Renderer<W, C, F>
                          │
             ┌────────────┼────────────┐
             │            │            │
@@ -656,7 +694,7 @@ ______________________________________________________________________
                    (the ABI)          ─────┘
 ```
 
-All three renderers implement the same `Renderer<W, C, F, S>` trait. The
+All three renderers implement the same `Renderer<W, C, F>` trait. The
 difference is internal:
 
 - **CpuRenderer**: per-pixel `camera.generate_ray()` → `integrator.li()`
@@ -714,12 +752,14 @@ ______________________________________________________________________
 | 8 | Create `HybridRenderer` | No | `src/renderer/hybrid.rs` (new) |
 
 Steps 1–8 are all additive — no existing code breaks. The `CpuRenderer` and
-`Renderer` trait are unchanged.
+`Renderer` trait are unchanged. The two-stream refactor (`Sampler` → `SampleStream` +
+`SamplerRng`) and the `Renderer<W, C, F>` simplification (removed `S` generic)
+are already complete in the current codebase.
 
 ### What Does NOT Change
 
-- `Renderer<W, C, F, S>` trait — already correct (no integrator parameter)
-- `Integrator<S>` trait — already correct (light transport, not visibility). The `S: Sampler` generic will be replaced by `Integrator<S: SampleStream, R: Rng>` in the two-stream refactor (see `docs/samplestream-refactor.md`). This is compatible with the hybrid architecture — the visibility/integration decomposition is independent of how the integrator gets its random numbers.
+- `Renderer<W, C, F>` trait — already correct (no integrator parameter, no sampler generic)
+- `Integrator<S: SampleStream, R: SamplerRng>` — already correct (light transport, not visibility). The two-stream refactor (split `S: Sampler` into `S: SampleStream` + `R: SamplerRng`) is already complete. This is compatible with the hybrid architecture — the visibility/integration decomposition is independent of how the integrator gets its random numbers.
 - `Camera` trait — already correct (ray generation)
 - `SurfaceInteraction<'si>` — already correct (the ABI, lifetime-annotated material ref)
 - `Hit`, `MaterialHit<'a>` — already correct
@@ -732,9 +772,9 @@ Steps 1–8 are all additive — no existing code breaks. The `CpuRenderer` and
 - `RgbFilm` — becomes generic `RgbFilm<D: Denoiser = NoDenoiser>` (from `docs/denoiser.md` §Phase 1)
 - `CpuRenderer` — gains `film.apply_denoiser()` call after sampling loop (from `docs/denoiser.md` §6)
 - `RgbFilm` internals — may extract `VarianceEstimator` (from `docs/adaptive-sampling.md` §2a)
-- `Integrator<S>` — becomes `Integrator<W, S>` (generic over world type, from this doc)
-- `Integrator<W, S>` — `DimCursor<S>` replaced by `SampleStreamEnum<S>` (from `docs/samplestream-refactor.md`)
-- `CpuRenderer` — creates `SampleStreamEnum::indexed()` internally (from `docs/samplestream-refactor.md`)
+- `Integrator` — add world generic `W: Intersectable` to eliminate `&dyn Intersectable` (from this doc)
+- `Integrator` — `DimCursor<S>` replaced by `&mut S: &mut SampleStream` (from `docs/samplestream-refactor.md`), plus new `&mut R: SamplerRng` parameter
+- `CpuRenderer` — gains `R: SamplerRng`, `SF: SampleStreamFactory`, `RF: RngFactory` generics; creates per-pixel streams/rngs via factories internally (from `docs/samplestream-refactor.md`)
 - `Renderer::render()` — scene parameter changes from `(&W, &[Arc<dyn Sampleable>])` to `(&W, &[SampleableEnum])` (from this doc)
 
 These changes are all additive or backwards-compatible. The `Renderer` trait signature
@@ -754,15 +794,15 @@ that maps directly to our architecture:
 ```
 pbrt-v4                          raytrace-rs
 ─────────────────────────────    ─────────────────────────────
-Integrator                       Renderer<W, C, F, S>
+Integrator                       Renderer<W, C, F>
   owns: aggregate, lights          orchestration: render()
   provides: render(), intersect()
 
-ImageTileIntegrator               CpuRenderer<I, S, Fact>
+ImageTileIntegrator               CpuRenderer<I, S, R, SF, RF>
   adds: evaluate_pixel_sample()    tile-based: parallel tile loop
   owns: camera, sampler_prototype
 
-RayIntegrator                     Integrator<S>
+RayIntegrator                     Integrator<S, R>
   adds: li()                       ray-based: li() per ray
   final: EvaluatePixelSample()
 ```
@@ -810,17 +850,19 @@ This pattern is useful for our design. We could add a `RendererVariant` enum
 for selecting between path tracer, rasterizer, and hybrid renderer at runtime:
 
 ```rust
-enum RendererVariant<W, C, F, S, V, I, Fact>
+enum RendererVariant<W, C, F, S, R, V, I, SF, RF>
 where
     W: Intersectable,
     C: Camera,
     F: Film,
-    S: Sampler,
+    S: SampleStream + Send + Sync,
+    R: SamplerRng,
     V: VisibilityGenerator,
-    I: Integrator<S>,
-    Fact: SamplerFactory<Sampler = S>,
+    I: Integrator<S, R>,
+    SF: SampleStreamFactory<SampleStream = S>,
+    RF: RngFactory<Rng = R>,
 {
-    PathTracing(CpuRenderer<I, S, Fact>),
+    PathTracing(CpuRenderer<I, S, R, SF, RF>),
     Raster(RasterRenderer<V>),
     Hybrid(HybridRenderer<V, I, S>),
 }
@@ -871,17 +913,17 @@ ______________________________________________________________________
 The target architecture eliminates `dyn T` from hot paths using three strategies,
 following the Niri/Smithay `render_elements!` pattern for enum-based delegation:
 
-1. **Generics for renderer-level composition** — `Renderer<W, C, F, S>`,
-   `CpuRenderer<I, S, Fact>`, `RasterRenderer<V>`, `HybridRenderer<V, I, S>`
+1. **Generics for renderer-level composition** — `Renderer<W, C, F>`,
+   `CpuRenderer<I, S, R, SF, RF>`, `RasterRenderer<V>`, `HybridRenderer<V, I, S>`
    are all generic. Zero-cost monomorphization.
 
 2. **Enums for scene objects** — `SampleableEnum` replaces `Arc<dyn Sampleable>`.
    `IntersectableEnum` (from CORE_THESIS §2.4) replaces `Arc<dyn Intersectable>`.
    `From` impls make construction ergonomic. `match` enables type-specific optimization.
 
-3. **Enums for trait-object hot paths** — `SampleStreamEnum<S>` replaces
-   `&mut dyn SampleStream`. `ConvergenceCriterionEnum` replaces
-   `&dyn ConvergenceCriterion`. `PdfEnum<S>` (already exists) replaces
+3. **Generics for trait-object hot paths** — `S: SampleStream` and `R: SamplerRng`
+   are generic parameters (not `dyn`), giving zero-cost dispatch. `ConvergenceCriterionEnum`
+   replaces `&dyn ConvergenceCriterion`. `PdfEnum<S>` (already exists) replaces
    `&dyn PDF<S>`.
 
 Each enum follows the **Descriptor → Concrete → Wrapper** pattern:
@@ -914,14 +956,17 @@ The GBuffer stores these, so it borrows from the scene's material storage. This
 is correct for CPU. On GPU, `SurfaceInteraction` would use `material_id`
 indexing (CORE_THESIS §2.18), and the GBuffer would own its data.
 
-### Why Integrator is generic over W
+### Why Integrator uses &dyn Intersectable (planned: generic over W)
 
-The `Integrator<W, S>` trait is generic over both the world type and sampler.
-This eliminates `&dyn Intersectable` from the integrator's hot path — the
-compiler monomorphizes `li()` for each concrete world type (BVH, flat BVH, etc.).
-The rasterizer doesn't use an integrator for primary visibility — it evaluates
-materials directly. The hybrid renderer uses the integrator for secondary effects
-only. The trait boundary is correct.
+The current `Integrator<S: SampleStream, R: SamplerRng>` takes `world: &dyn Intersectable`
+at the method level. This trades a vtable call per bounce for simpler trait bounds —
+the integrator doesn't need to know the concrete BVH type.
+
+**Planned evolution:** Add `W: Intersectable` as a generic parameter to the trait.
+This eliminates the `&dyn Intersectable` vtable dispatch, letting the compiler
+monomorphize `li()` for each concrete world type (BVH, flat BVH, etc.).
+This is tracked as a future refactor; the current approach is correct and
+performs well for the current scene complexity.
 
 ______________________________________________________________________
 
@@ -967,25 +1012,27 @@ visibility generator. These are different abstractions at different layers:
 
 | renderer_arch Section | SampleStream Section | Relationship |
 |---------------------|---------------------|--------------|
-| Integrator\<W, S> (§2) | §4 — SampleStreamEnum enum | Integrator gains `SampleStreamEnum<S>` parameter (enum, not `dyn`) |
-| CpuRenderer\<I, S, Fact> (§2) | §6 — De-generic CpuRenderer | SampleStream may remove `S` and `Fact` generics, creates `IndexedSamplerStream` internally |
-| Renderer\<W, C, F, S> (§2) | Not changed by SampleStream | Renderer trait keeps `S: Sampler` — SampleStream only affects Integrator and CpuRenderer internals |
+| Integrator\<S: SampleStream, R: SamplerRng> (§1-2) | §4 — two-stream split | Integrator now takes `&mut S` (stream) + `&mut R` (rng) instead of `&mut DimCursor<S>` |
+| CpuRenderer\<I, S, R, SF, RF> (§1-2) | §6 — Factory pattern | CpuRenderer gained `R`, `SF`, `RF` generics; creates per-pixel streams/rngs via factories |
+| Renderer\<W, C, F> (§1-2) | Not changed by SampleStream | Renderer trait dropped `S` generic — sampling is internal to CpuRenderer |
 | VisibilityGenerator (§2) | Independent | Visibility decomposition is orthogonal to how integrator gets random numbers |
 | SampleableEnum (§2) | Independent | Scene object enums are orthogonal to sampler abstraction |
 
-**Compatibility:** The SampleStream refactor is fully compatible with the hybrid
-architecture. The visibility/integration/composition decomposition is independent
-of how the integrator gets its random numbers. When SampleStream lands, CpuRenderer
-simplifies from `CpuRenderer<I, S, Fact>` to `CpuRenderer<I>` — but the `Renderer`
-trait and `VisibilityGenerator` trait are unaffected.
+**Compatibility:** The SampleStream refactor is already complete and is fully
+compatible with the hybrid architecture. The visibility/integration/composition
+decomposition is independent of how the integrator gets its random numbers.
+The `Renderer` trait and `VisibilityGenerator` trait are unaffected.
+The refactor replaced the old `DimCursor` with the two-stream pattern:
+`SampleStream` for correlated QMC samples (AA, lens) and `SamplerRng` for
+independent randomness (material scattering, path termination).
 
 ### Unified Dependency Order
 
 | Order | What | Source Doc | Breaking? |
 |-------|------|------------|-----------|
 | 1 | SampleableEnum + From impls | renderer_arch.md §2 | No |
-| 2 | Integrator\<W, S> generic over world | renderer_arch.md §2 | No |
-| 3 | SampleStreamEnum\<S> enum + IndexedSamplerStream | samplestream-refactor.md Step 1 | No |
+| 2 | Integrator\<S: SampleStream, R: SamplerRng> two-stream refactor | samplestream-refactor.md | No |
+| 3 | SampleStreamFactory + RngFactory traits + Renderer\<W, C, F> (dropped S generic) | samplestream-refactor.md | No |
 | 4 | PdfEnum\<S> (already exists, keep) | pdf.rs | No |
 | 5 | §2a VarianceEstimator extraction | adaptive-sampling.md | No |
 | 6 | Denoiser trait + NoDenoiser + RgbFilm\<D> | denoiser.md Phase 0-1 | No |
@@ -995,9 +1042,10 @@ trait and `VisibilityGenerator` trait are unaffected.
 | 10 | A-Trous wavelet + AOVStorage | denoiser.md Phase 2 | No |
 | 11 | OIDN integration (optional) | denoiser.md Phase 3 | No |
 
-Steps 1-4 (static dispatch foundation) can proceed in parallel with steps 5-7
-(denoiser/adaptive). Steps 8-9 (hybrid rendering) depend on step 1 (SampleableEnum)
-and step 2 (Integrator\<W, S>). Step 10 depends on step 6 (needs `RgbFilm<D>` generic).
+Steps 1-4 (static dispatch foundation) are partially complete: the two-stream
+refactor (steps 2-3) is done. SampleableEnum (step 1) remains aspirational.
+Steps 5-7 (denoiser/adaptive) can proceed in parallel with steps 8-9 (hybrid
+rendering). Step 10 depends on step 6 (needs `RgbFilm<D>` generic).
 Step 11 is independent.
 
 ______________________________________________________________________
