@@ -19,18 +19,16 @@ pub mod mapping;
 pub use gpu::{GPU_TEX_NONE, GpuTextureBuffer, GpuTextureNode, GpuTextureType};
 pub use impls::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor};
 
-use glam::Vec3;
-
-use crate::vec3::{Color3, Point3};
+use crate::vec3::{Color3, Direction3, Point3};
 
 pub trait UVDifferentiable {
     /// Returns the UV coordinates and their screen-space derivatives.
     ///
     /// (∂u/∂p, ∂v/∂p) at a mapping-space point.
     /// Default: zeroed → textures fall back to point sampling (volumes, no-UV).
-    fn uv_gradient(&self, _mapping_point: &Point3) -> (Vec3, Vec3) {
+    fn uv_gradient(&self, _mapping_point: &Point3) -> (Direction3, Direction3) {
         // Default: no derivatives (zeroed)
-        (Vec3::ZERO, Vec3::ZERO)
+        (Direction3::ZERO, Direction3::ZERO)
     }
 }
 
@@ -71,9 +69,9 @@ impl TexturePoints {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextureDerivatives {
     /// Screen-space derivative of the hit position with respect to screen x.
-    pub dpdx: Vec3,
+    pub dpdx: Direction3,
     /// Screen-space derivative of the hit position with respect to screen y.
-    pub dpdy: Vec3,
+    pub dpdy: Direction3,
     /// Screen-space derivative of U with respect to screen x.
     pub dudx: f32,
     /// Screen-space derivative of U with respect to screen y.
@@ -86,7 +84,14 @@ pub struct TextureDerivatives {
 
 impl TextureDerivatives {
     /// Creates a new derivative bundle.
-    pub fn new(dpdx: Vec3, dpdy: Vec3, dudx: f32, dudy: f32, dvdx: f32, dvdy: f32) -> Self {
+    pub fn new(
+        dpdx: Direction3,
+        dpdy: Direction3,
+        dudx: f32,
+        dudy: f32,
+        dvdx: f32,
+        dvdy: f32,
+    ) -> Self {
         Self {
             dpdx,
             dpdy,
@@ -99,14 +104,19 @@ impl TextureDerivatives {
 
     /// Build UV derivatives from world-space position derivatives and the
     /// surface's UV Jacobian (∂u/∂p, ∂v/∂p).
-    pub fn from_surface(dpdx: Vec3, dpdy: Vec3, dudp: Vec3, dvdp: Vec3) -> Self {
+    pub fn from_surface(
+        dpdx: Direction3,
+        dpdy: Direction3,
+        dudp: Direction3,
+        dvdp: Direction3,
+    ) -> Self {
         Self {
             dpdx,
             dpdy,
-            dudx: dpdx.dot(dudp),
-            dudy: dpdy.dot(dudp),
-            dvdx: dpdx.dot(dvdp),
-            dvdy: dpdy.dot(dvdp),
+            dudx: dpdx.dot(dudp.into_inner()),
+            dudy: dpdy.dot(dudp.into_inner()),
+            dvdx: dpdx.dot(dvdp.into_inner()),
+            dvdy: dpdy.dot(dvdp.into_inner()),
         }
     }
 
@@ -136,7 +146,7 @@ pub struct TextureCoords {
     /// Coordinate spaces (world, mapping, texture) carried through the pipeline.
     pub tex_points: TexturePoints,
     /// Outward geometric normal at the hit point (before shading adjustments).
-    pub geometry_normal: Vec3,
+    pub geometry_normal: Direction3,
     /// Screen-space derivatives for filtering (currently zeroed).
     pub derivatives: TextureDerivatives,
 }
@@ -148,7 +158,7 @@ impl TextureCoords {
         v: f32,
         world_point: Point3,
         mapping_point: Point3,
-        geometry_normal: Vec3,
+        geometry_normal: Direction3,
         derivatives: Option<TextureDerivatives>,
     ) -> Self {
         Self {

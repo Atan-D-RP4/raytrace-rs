@@ -252,15 +252,15 @@ impl Intersectable for FlatBvh {
 
         // Precompute ray components — hoisted out of the loop to avoid
         // repeated field access through pointer indirection.
-        let ox = ray.origin.x;
-        let oy = ray.origin.y;
-        let oz = ray.origin.z;
-        let idx = ray.inverse_direction.x;
-        let idy = ray.inverse_direction.y;
-        let idz = ray.inverse_direction.z;
-        let dx = ray.direction.x;
-        let dy = ray.direction.y;
-        let dz = ray.direction.z;
+        let ox = ray.origin.x();
+        let oy = ray.origin.y();
+        let oz = ray.origin.z();
+        let idx = ray.inverse_direction.x();
+        let idy = ray.inverse_direction.y();
+        let idz = ray.inverse_direction.z();
+        let dx = ray.direction.x();
+        let dy = ray.direction.y();
+        let dz = ray.direction.z();
         let tmin = ray_t.min;
 
         while sp > 0 {
@@ -377,12 +377,12 @@ impl Intersectable for FlatBvh {
         stack[sp] = 0;
         sp += 1;
 
-        let ox = ray.origin.x;
-        let oy = ray.origin.y;
-        let oz = ray.origin.z;
-        let idx = ray.inverse_direction.x;
-        let idy = ray.inverse_direction.y;
-        let idz = ray.inverse_direction.z;
+        let ox = ray.origin.x();
+        let oy = ray.origin.y();
+        let oz = ray.origin.z();
+        let idx = ray.inverse_direction.x();
+        let idy = ray.inverse_direction.y();
+        let idz = ray.inverse_direction.z();
         let tmin = ray_t.min;
         let tmax = ray_t.max; // fixed — no shrinking, we don't care which hit, just whether one exists
 

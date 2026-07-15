@@ -17,8 +17,6 @@
 
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
@@ -27,7 +25,7 @@ use crate::material::{
 };
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 const MIRROR_THRESHOLD: f32 = 0.01;
 
@@ -56,7 +54,7 @@ impl Bsdf for GlossyMaterial {
     /// the mixture PDF and uses the reflected direction directly.
     fn scatter(
         &self,
-        wo: Vec3,
+        wo: Direction3,
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
@@ -85,10 +83,10 @@ impl Bsdf for GlossyMaterial {
         let u = next_dim();
         let v = next_dim();
         let h_local = ggx_sample_h(alpha, u, v);
-        let onb = Onb::build_from_normal(si.shading_normal().into_inner());
+        let onb = Onb::build_from_normal(si.shading_normal());
         let h_world = onb.local_to_world(h_local);
 
-        let wi = -wo.reflect(h_world);
+        let wi = -wo.reflect(h_world.into_inner());
 
         if wi.dot(si.shading_normal().into_inner()) <= 0.0 {
             return None;
@@ -97,14 +95,14 @@ impl Bsdf for GlossyMaterial {
         let mut pk = [None; MAX_BSDF_STRATS];
         pk[0] = Some(PdfKind::Ggx {
             wo,
-            normal: si.shading_normal().into_inner(),
+            normal: si.shading_normal(),
             alpha,
         });
         Some(BsdfScatter::NonDelta { pdf_kinds: pk })
     }
 
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.
-    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         if self.is_delta() {
             return Color3::ZERO;
         }
@@ -117,7 +115,7 @@ impl Bsdf for GlossyMaterial {
 
         let h = (wo + wi).normalize();
         let cos_h_n = h.dot(si.shading_normal().into_inner()).max(0.0);
-        let cos_h_o = wo.dot(h).max(0.0);
+        let cos_h_o = wo.dot(h.into_inner()).max(0.0);
 
         let cos_o = wo.dot(si.shading_normal().into_inner()).max(0.0);
         let cos_i = wi.dot(si.shading_normal().into_inner()).max(0.0);
@@ -135,7 +133,7 @@ impl Bsdf for GlossyMaterial {
     }
 
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
         if self.is_delta() {
             return 0.0;
         }
@@ -144,7 +142,7 @@ impl Bsdf for GlossyMaterial {
 
         let h = (wo + wi).normalize();
         let cos_h_n = h.dot(si.shading_normal().into_inner()).max(0.0);
-        let cos_h_o = wo.dot(h).max(0.0);
+        let cos_h_o = wo.dot(h.into_inner()).max(0.0);
 
         if cos_h_o <= 0.0 {
             return 0.0;
@@ -155,26 +153,26 @@ impl Bsdf for GlossyMaterial {
 
     /// Returns the PDF kind for the GGX distribution, which is used in mixture sampling.
     /// Returns `None` for near-mirror materials so the integrator skips GGX PDF strategy.
-    fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, wo: Direction3, si: &SurfaceInteraction) -> Option<PdfKind> {
         if self.is_delta() {
             None
         } else {
             let alpha = self.ggx_alpha().unwrap_or(0.001);
             Some(PdfKind::Ggx {
                 wo,
-                normal: si.shading_normal().into_inner(),
+                normal: si.shading_normal(),
                 alpha,
             })
         }
     }
 
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, wo: Direction3, si: &SurfaceInteraction) -> f32 {
         let albedo = self
             .tex
             .as_ref()
             .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
-        let albedo_avg = (albedo.x + albedo.y + albedo.z) / 3.0;
+        let albedo_avg = (albedo.x() + albedo.y() + albedo.z()) / 3.0;
         let cos_theta = wo.dot(si.shading_normal().into_inner()).abs();
         let f = fresnel_schlick(cos_theta, self.r0);
         // Base color × Fresnel gives the specular reflectance; roughness adds
@@ -199,9 +197,9 @@ impl Bsdf for GlossyMaterial {
 impl GpuSerializable for GlossyMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![
-            self.albedo.x,
-            self.albedo.y,
-            self.albedo.z,
+            self.albedo.x(),
+            self.albedo.y(),
+            self.albedo.z(),
             self.roughness,
             self.ior,
         ];

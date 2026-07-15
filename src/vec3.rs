@@ -201,6 +201,25 @@ macro_rules! impl_vec_methods {
     };
 }
 
+macro_rules! impl_vec_index {
+    ($ty:ident) => {
+        impl std::ops::Index<usize> for $ty {
+            type Output = f32;
+            #[inline(always)]
+            fn index(&self, index: usize) -> &f32 {
+                &self.0[index]
+            }
+        }
+
+        impl std::ops::IndexMut<usize> for $ty {
+            #[inline(always)]
+            fn index_mut(&mut self, index: usize) -> &mut f32 {
+                &mut self.0[index]
+            }
+        }
+    };
+}
+
 // ── Accessor ───────────────────────────────────────────────────────────────
 impl_accessors!(Color3);
 impl_accessors!(Point3);
@@ -258,6 +277,12 @@ impl_scalar_mul_reverse!(Color3);
 impl_scalar_mul_reverse!(Point3);
 impl_scalar_mul_reverse!(Direction3);
 
+// ── Indexing ───────────────────────────────────────────────────────────────
+
+impl_vec_index!(Color3);
+impl_vec_index!(Point3);
+impl_vec_index!(Direction3);
+
 // ── Vec3 methods returning Self ────────────────────────────────────────────
 
 impl_vec_methods!(
@@ -269,6 +294,7 @@ impl_vec_methods!(
     floor,
     fract
 );
+
 impl_vec_methods!(
     Point3,
     normalize,
@@ -278,6 +304,7 @@ impl_vec_methods!(
     floor,
     fract
 );
+
 impl_vec_methods!(
     Direction3,
     normalize,
@@ -295,38 +322,46 @@ impl Color3 {
     pub fn min(self, other: glam::Vec3) -> Self {
         Self(self.0.min(other))
     }
+
     #[inline]
     pub fn max(self, other: glam::Vec3) -> Self {
         Self(self.0.max(other))
     }
+
     #[inline]
     pub fn clamp(self, min: glam::Vec3, max: glam::Vec3) -> Self {
         Self(self.0.clamp(min, max))
     }
 }
+
 impl Point3 {
     #[inline]
     pub fn min(self, other: glam::Vec3) -> Self {
         Self(self.0.min(other))
     }
+
     #[inline]
     pub fn max(self, other: glam::Vec3) -> Self {
         Self(self.0.max(other))
     }
+
     #[inline]
     pub fn clamp(self, min: glam::Vec3, max: glam::Vec3) -> Self {
         Self(self.0.clamp(min, max))
     }
 }
+
 impl Direction3 {
     #[inline]
     pub fn min(self, other: glam::Vec3) -> Self {
         Self(self.0.min(other))
     }
+
     #[inline]
     pub fn max(self, other: glam::Vec3) -> Self {
         Self(self.0.max(other))
     }
+
     #[inline]
     pub fn clamp(self, min: glam::Vec3, max: glam::Vec3) -> Self {
         Self(self.0.clamp(min, max))
@@ -340,10 +375,12 @@ impl Color3 {
     pub fn r(self) -> f32 {
         self.0.x
     }
+
     #[inline(always)]
     pub fn g(self) -> f32 {
         self.0.y
     }
+
     #[inline(always)]
     pub fn b(self) -> f32 {
         self.0.z
@@ -354,32 +391,39 @@ impl Color3 {
 
 impl std::ops::Add<glam::Vec3> for Point3 {
     type Output = Point3;
+
     #[inline(always)]
     fn add(self, rhs: glam::Vec3) -> Point3 {
         Point3(self.0 + rhs)
     }
 }
+
 impl std::ops::AddAssign<glam::Vec3> for Point3 {
     #[inline(always)]
     fn add_assign(&mut self, rhs: glam::Vec3) {
         self.0 += rhs;
     }
 }
+
 impl std::ops::Sub<glam::Vec3> for Point3 {
     type Output = Point3;
+
     #[inline(always)]
     fn sub(self, rhs: glam::Vec3) -> Point3 {
         Point3(self.0 - rhs)
     }
 }
+
 impl std::ops::SubAssign<glam::Vec3> for Point3 {
     #[inline(always)]
     fn sub_assign(&mut self, rhs: glam::Vec3) {
         self.0 -= rhs;
     }
 }
+
 impl std::ops::Sub<Point3> for Point3 {
     type Output = Direction3;
+
     #[inline(always)]
     fn sub(self, rhs: Point3) -> Direction3 {
         Direction3(self.0 - rhs.0)
@@ -390,15 +434,35 @@ impl std::ops::Sub<Point3> for Point3 {
 
 impl std::ops::Add<Direction3> for Point3 {
     type Output = Point3;
+
     #[inline(always)]
     fn add(self, rhs: Direction3) -> Point3 {
         Point3(self.0 + rhs.0)
     }
 }
+
 impl std::ops::AddAssign<Direction3> for Point3 {
     #[inline(always)]
     fn add_assign(&mut self, rhs: Direction3) {
         self.0 += rhs.0;
+    }
+}
+
+// ── Point3 - Direction3 (affine combination) ────────────────────────────
+
+impl std::ops::Sub<Direction3> for Point3 {
+    type Output = Point3;
+
+    #[inline(always)]
+    fn sub(self, rhs: Direction3) -> Point3 {
+        Point3(self.0 - rhs.0)
+    }
+}
+
+impl std::ops::SubAssign<Direction3> for Point3 {
+    #[inline(always)]
+    fn sub_assign(&mut self, rhs: Direction3) {
+        self.0 -= rhs.0;
     }
 }
 
@@ -409,16 +473,29 @@ impl Direction3 {
     pub fn dot(self, other: glam::Vec3) -> f32 {
         self.0.dot(other)
     }
+
     #[inline(always)]
     pub fn cross(self, other: glam::Vec3) -> Direction3 {
         Direction3(self.0.cross(other))
     }
+
     #[inline(always)]
     pub fn reflect(self, normal: glam::Vec3) -> Self {
         Self(self.0.reflect(normal))
     }
+
     #[inline(always)]
     pub fn refract(self, normal: glam::Vec3, eta: f32) -> Self {
         Self(self.0.refract(normal, eta))
+    }
+
+    #[inline(always)]
+    pub fn length_squared(self) -> f32 {
+        self.0.length_squared()
+    }
+
+    #[inline(always)]
+    pub fn length(self) -> f32 {
+        self.0.length()
     }
 }

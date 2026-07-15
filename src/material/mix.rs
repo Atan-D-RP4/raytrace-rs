@@ -7,15 +7,13 @@
 
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
     Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
     MAX_BSDF_STRATS, PdfKind,
 };
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 /// Stochastic mix of two materials. `weight` is the probability of choosing `b`.
 #[derive(Clone)]
@@ -31,7 +29,7 @@ pub struct MixMaterial {
 impl Bsdf for MixMaterial {
     fn scatter(
         &self,
-        wo: Vec3,
+        wo: Direction3,
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
@@ -128,7 +126,7 @@ impl Bsdf for MixMaterial {
         Some(result)
     }
 
-    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         let w = self.weight;
         // Delta children have zero eval (handled by their own eval() guard),
         // so only accumulate non-delta contributions.
@@ -145,7 +143,7 @@ impl Bsdf for MixMaterial {
         (1.0 - w) * eval_a + w * eval_b
     }
 
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
         let w = self.weight;
         // Delta children have zero pdf (handled by their own pdf() guard),
         // so only accumulate non-delta contributions.
@@ -163,7 +161,7 @@ impl Bsdf for MixMaterial {
         (1.0 - w) * pdf_a + w * pdf_b
     }
 
-    fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, wo: Direction3, si: &SurfaceInteraction) -> Option<PdfKind> {
         // Try the higher-weighted child's PDF kind first. If it has
         // no PDF kind (e.g. a delta material), fall back to the
         // other child rather than returning None.
@@ -174,7 +172,7 @@ impl Bsdf for MixMaterial {
         }
     }
 
-    fn emitted(&self, wo: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn emitted(&self, wo: Direction3, si: &SurfaceInteraction) -> Color3 {
         if !self.a.is_emissive() && !self.b.is_emissive() {
             return Color3::ZERO;
         }
@@ -186,7 +184,7 @@ impl Bsdf for MixMaterial {
         self.a.is_emissive() || self.b.is_emissive()
     }
 
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, wo: Direction3, si: &SurfaceInteraction) -> f32 {
         let w = self.weight;
         // Delta children have negligible albedo at non-mirror directions,
         // so only accumulate non-delta contributions.

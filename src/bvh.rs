@@ -104,6 +104,7 @@ impl BvhNode {
                     let (min_c, max_c) = centroids.iter().fold(
                         (f32::INFINITY, f32::NEG_INFINITY),
                         |(min, max), (_, _, centroid)| {
+                            let centroid = centroid.into_inner();
                             (min.min(centroid[axis]), max.max(centroid[axis]))
                         },
                     );
@@ -119,6 +120,7 @@ impl BvhNode {
 
                     // Bin the objects
                     for (_, bbox, centroid) in centroids.iter() {
+                        let centroid = centroid.into_inner();
                         let t = (centroid[axis] - min_c) / range;
                         let b = (t * BVH_BIN_SIZE as f32)
                             .floor()

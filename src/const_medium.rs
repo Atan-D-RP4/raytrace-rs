@@ -144,12 +144,12 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         // Deterministic QMC sample for volume scattering distance.
         // Derive a unique seed from the ray's origin and direction so the same ray always gets the
         // same scattering distance (reproducible), while different rays vary.
-        let o = (ray.origin.x.to_bits() as u64)
+        let o = (ray.origin.x().to_bits() as u64)
             .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
-            .wrapping_add(ray.origin.y.to_bits() as u64);
-        let d = (ray.direction.x.to_bits() as u64)
+            .wrapping_add(ray.origin.y().to_bits() as u64);
+        let d = (ray.direction.x().to_bits() as u64)
             .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
-            .wrapping_add(ray.direction.y.to_bits() as u64);
+            .wrapping_add(ray.direction.y().to_bits() as u64);
         let seed = sampler::splitmix64(o.wrapping_add(d)) as u32;
         let qmc_sample = sampler::hash_sample(seed, VOLUME_DIM, self.vol_seed);
 
@@ -233,7 +233,7 @@ mod tests {
         if let Some(ref h) = hit {
             let p = h.hit.point;
             assert!(
-                p.length() < 1.0,
+                p.into_inner().length() < 1.0,
                 "scatter point {p:?} should be inside the sphere"
             );
         }

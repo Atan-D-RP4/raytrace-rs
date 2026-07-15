@@ -70,13 +70,13 @@ impl Perlin {
     }
 
     pub fn noise(&self, p: &Point3) -> f32 {
-        let i = p.x.floor() as i32;
-        let j = p.y.floor() as i32;
-        let k = p.z.floor() as i32;
+        let i = p.x().floor() as i32;
+        let j = p.y().floor() as i32;
+        let k = p.z().floor() as i32;
 
-        let u = p.x - i as f32;
-        let v = p.y - j as f32;
-        let w = p.z - k as f32;
+        let u = p.x() - i as f32;
+        let v = p.y() - j as f32;
+        let w = p.z() - k as f32;
 
         let mut c = [[[Vec3::ZERO; 2]; 2]; 2];
 

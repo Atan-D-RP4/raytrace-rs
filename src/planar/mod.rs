@@ -152,8 +152,12 @@ impl<R: Region2D, M: Borrow<Material>> PlanarPatch<R, M> {
 
         let point = ray.at(t);
         let planar_hit_point_vector = point - self.corner;
-        let a = self.w.dot(planar_hit_point_vector.cross(self.side_b));
-        let b = self.w.dot(self.side_a.cross(planar_hit_point_vector));
+        let a = self
+            .w
+            .dot(planar_hit_point_vector.cross(self.side_b).into_inner());
+        let b = self
+            .w
+            .dot(self.side_a.cross(planar_hit_point_vector.into_inner()));
 
         Some(PlanarHit {
             time: t,
@@ -170,7 +174,7 @@ impl<R: Region2D, M: Borrow<Material>> PlanarPatch<R, M> {
 
 impl<R: Region2D, M: Borrow<Material>> UVDifferentiable for PlanarPatch<R, M> {
     /// Returns (∂u/∂P, ∂v/∂P) as 3-vectors. Constant across the patch.
-    fn uv_gradient(&self, _mapping_point: &Point3) -> (Vec3, Vec3) {
+    fn uv_gradient(&self, _mapping_point: &Point3) -> (Direction3, Direction3) {
         let a = self.side_a;
         let b = self.side_b;
         let aa = a.dot(a);
@@ -182,7 +186,7 @@ impl<R: Region2D, M: Borrow<Material>> UVDifferentiable for PlanarPatch<R, M> {
         let du_dp = (b * bb - a * ab) / det;
         // dv_dp = (−ab·side_a + aa·side_b) / det
         let dv_dp = (a * -ab + b * aa) / det;
-        (du_dp, dv_dp)
+        (Direction3(du_dp), Direction3(dv_dp))
     }
 }
 
@@ -221,31 +225,35 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Bounded for PlanarPatch<R, 
 }
 
 impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<R, M> {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3, _time: f32) -> f32 {
+    fn pdf_value(&self, origin: Point3, direction: Direction3, _time: f32) -> f32 {
         // Back-face culling - if the ray is coming from behind the patch, it cannot hit the
         // emitting side, so return 0 PDF.
         // This avoids the mismatch where `.abs()` would return a positive PDF but `emitted()`
         // returns zero for the back face, wasting 50% of light-importance samples.
-        if self.normal.dot(direction) >= 0.0 {
+        if self.normal.dot(direction.into_inner()) >= 0.0 {
             return 0.0;
         }
 
         // Inline plane intersection — avoids constructing a temporary Ray (3
         // divisions for `inverse_direction` that `hit_plane` never uses).
-        let denom = self.normal.dot(direction);
+        let denom = self.normal.dot(direction.into_inner());
         if denom.abs() < 1e-8 {
             return 0.0;
         }
 
-        let t = (self.d - self.normal.dot(origin)) / denom;
+        let t = (self.d - self.normal.dot(origin.into_inner())) / denom;
         if t <= 0.001 {
             return 0.0;
         }
 
         let point = origin + direction * t;
-        let planar_hit_point_vector = point - self.corner.into_inner();
-        let a = self.w.dot(planar_hit_point_vector.cross(self.side_b));
-        let b = self.w.dot(self.side_a.cross(planar_hit_point_vector));
+        let planar_hit_point_vector = point - self.corner;
+        let a = self
+            .w
+            .dot(planar_hit_point_vector.cross(self.side_b).into_inner());
+        let b = self
+            .w
+            .dot(self.side_a.cross(planar_hit_point_vector.into_inner()));
 
         if !self.region.contains(a, b) {
             return 0.0;
@@ -254,7 +262,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         let distance_squared = t * t * direction.length_squared();
         // The normal is constant for a planar patch; .abs() gives the Jacobian
         // factor for the area-to-solid-angle measure conversion.
-        let cosine = self.normal.dot(-direction.normalize()).abs();
+        let cosine = self.normal.dot(-(direction.into_inner().normalize())).abs();
         // Use bounding_box_area() to match the actual sampling distribution:
         // bbox-based samplers (RoundedRect, Superellipse, Polygon, Function)
         // rejection-sample from the bounding box, so the PDF denominator must
@@ -264,15 +272,15 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         distance_squared / (cosine * world_area)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f32, v: f32, _time: f32) -> Vec3 {
+    fn random_direction(&self, origin: Point3, u: f32, v: f32, _time: f32) -> Direction3 {
         let (a, b) = self.region.sample(u, v);
         let random_point = self.corner + (self.side_a * a) + (self.side_b * b);
-        (random_point - origin).into_inner()
+        random_point - origin
     }
 
     fn sample_light(
         &self,
-        origin: Vec3,
+        origin: Point3,
         u: f32,
         v: f32,
         time: f32,
@@ -288,16 +296,9 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         };
         // Compute the light's emission at the sampled point.
         // The surface is front-facing when the light normal points toward the shaded surface.
-        let front_face = self.normal.dot(-direction) > 0.0;
+        let front_face = self.normal.dot((-direction).into_inner()) > 0.0;
         let point = origin + direction;
-        let hit = Hit::new(
-            time,
-            Point3(point),
-            Point3(point),
-            Direction3(self.normal),
-            None,
-            None,
-        );
+        let hit = Hit::new(time, point, point, Direction3(self.normal), None, None);
         let si = SurfaceInteraction::new(
             hit,
             Direction3(self.normal),
@@ -309,7 +310,7 @@ impl<R: Region2D, M: Borrow<Material> + Send + Sync> Sampleable for PlanarPatch<
         let emission = self.material().emitted(wo, &si);
 
         crate::hittable::LightSample {
-            direction: Direction3(direction),
+            direction,
             normal: Direction3(self.normal),
             distance,
             pdf: area_pdf,

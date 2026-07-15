@@ -1,5 +1,3 @@
-use glam::Vec3;
-
 use crate::aabb::Aabb;
 use crate::vec3::{Direction3, Point3};
 
@@ -16,7 +14,7 @@ pub struct Ray {
     pub origin: Point3,
     pub direction: Direction3,
     pub time: f32,
-    pub inverse_direction: Vec3,
+    pub inverse_direction: Direction3,
     pub differentials: Option<RayDifferentials>,
 }
 
@@ -30,7 +28,7 @@ impl Ray {
             origin,
             direction,
             time: 0.,
-            inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
+            inverse_direction: Direction3(direction.into_inner().recip()),
             differentials: None,
         }
     }
@@ -44,7 +42,7 @@ impl Ray {
             origin,
             direction,
             time,
-            inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
+            inverse_direction: Direction3(direction.into_inner().recip()),
             differentials: None,
         }
     }
@@ -63,7 +61,7 @@ impl Ray {
             origin,
             direction,
             time,
-            inverse_direction: Vec3::new(1. / direction.x, 1. / direction.y, 1. / direction.z),
+            inverse_direction: Direction3(direction.into_inner().recip()),
             differentials,
         }
     }
@@ -82,28 +80,27 @@ impl Ray {
     /// preventing extreme LOD and warping at grazing angles where intersection becomes ill-conditioned.
     pub(crate) fn differential_footprint(
         rx_origin: Point3,
-        rx_direction: Vec3,
+        rx_direction: Direction3,
         hit_point: Point3,
-        normal: Vec3,
+        normal: Direction3,
         t_hit: f32,
         primary_origin: Point3,
-        primary_direction: Vec3,
-    ) -> Vec3 {
-        let denom = normal.dot(rx_direction);
+        primary_direction: Direction3,
+    ) -> Direction3 {
+        let denom = normal.dot(rx_direction.into_inner());
         if denom.abs() < 1e-4 {
             // Grazing angle: tangent-plane formula is ill-conditioned.
             // Fall back to the bounded t_hit estimate.
-            return (rx_origin.into_inner() - primary_origin.into_inner())
-                + t_hit * (rx_direction - primary_direction);
+            return (rx_origin - primary_origin) + t_hit * (rx_direction - primary_direction);
         }
         let t = normal.dot(hit_point.into_inner() - rx_origin.into_inner()) / denom;
-        (rx_origin.into_inner() + rx_direction * t) - hit_point.into_inner()
+        (rx_origin + rx_direction * t) - hit_point
     }
 
     /// Propagate ray differentials through a surface scatter event.
     pub fn propagate_differentials(
         &self,
-        normal: Vec3,
+        normal: Direction3,
         hit_time: f32,
         eta: Option<f32>,
         hit_point: Point3,
@@ -113,34 +110,34 @@ impl Ray {
             // the incoming position derivatives (dpdx / dpdy at the hit).
             let dpdx = Ray::differential_footprint(
                 rd.rx_origin,
-                rd.rx_direction.into_inner(),
+                rd.rx_direction,
                 hit_point,
                 normal,
                 hit_time,
                 self.origin,
-                self.direction.into_inner(),
+                self.direction,
             );
             let dpdy = Ray::differential_footprint(
                 rd.ry_origin,
-                rd.ry_direction.into_inner(),
+                rd.ry_direction,
                 hit_point,
                 normal,
                 hit_time,
                 self.origin,
-                self.direction.into_inner(),
+                self.direction,
             );
 
             // Regenerate the ray differentials for the scattered ray. For reflection, the direction derivatives
             // are reflected. For refraction, the direction derivatives are refracted.
             let (rx_direction, ry_direction) = if let Some(eta) = eta {
                 (
-                    rd.rx_direction.refract(normal, eta),
-                    rd.ry_direction.refract(normal, eta),
+                    rd.rx_direction.refract(normal.into_inner(), eta),
+                    rd.ry_direction.refract(normal.into_inner(), eta),
                 )
             } else {
                 (
-                    rd.rx_direction.reflect(normal),
-                    rd.ry_direction.reflect(normal),
+                    rd.rx_direction.reflect(normal.into_inner()),
+                    rd.ry_direction.reflect(normal.into_inner()),
                 )
             };
 
@@ -166,11 +163,11 @@ pub struct ParametricCurve {
     /// Starting point of the curve (e.g., ray origin).
     pub origin: Point3,
     /// Velocity vector of the curve (e.g., ray direction). Can be zero for stationary curves.
-    pub velocity: Vec3,
+    pub velocity: Direction3,
 }
 
 impl ParametricCurve {
-    pub fn new(origin: Point3, velocity: Vec3) -> Self {
+    pub fn new(origin: Point3, velocity: Direction3) -> Self {
         Self { origin, velocity }
     }
 

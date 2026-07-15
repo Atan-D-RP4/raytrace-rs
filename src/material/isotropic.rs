@@ -13,8 +13,6 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
@@ -22,7 +20,7 @@ use crate::material::{
     PdfKind,
 };
 use crate::texture::Texture;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 /// Isotropic scattering medium (volumes).
 #[derive(Clone)]
@@ -39,7 +37,7 @@ impl Bsdf for IsotropicMaterial {
     /// direction.
     fn scatter(
         &self,
-        _wo: Vec3,
+        _wo: Direction3,
         _si: &SurfaceInteraction,
         _next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
@@ -50,7 +48,7 @@ impl Bsdf for IsotropicMaterial {
 
     /// Isotropic phase function: `albedo / (4π)`. Returns the attenuation
     /// regardless of direction — every scattering direction is equally likely.
-    fn eval(&self, _wo: Vec3, _wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, _wo: Direction3, _wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         let attenuation = self
             .tex
             .as_ref()
@@ -60,19 +58,19 @@ impl Bsdf for IsotropicMaterial {
     }
 
     /// Uniform sphere PDF: `1 / (4π)`.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f32 {
+    fn pdf(&self, _wo: Direction3, _wi: Direction3, _si: &SurfaceInteraction) -> f32 {
         1.0 / (4.0 * PI)
     }
 
     /// Isotropic scattering is non-directional, so the reflectance estimate is simply `1.0`.
-    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, _wo: Direction3, _si: &SurfaceInteraction) -> f32 {
         1.0
     }
 }
 
 impl GpuSerializable for IsotropicMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![self.albedo.x, self.albedo.y, self.albedo.z];
+        let params = vec![self.albedo.x(), self.albedo.y(), self.albedo.z()];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {

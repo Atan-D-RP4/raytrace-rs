@@ -14,8 +14,6 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::hittable::SurfaceInteraction;
 use crate::material::GPU_NONE;
 use crate::material::gpu::GpuSerializable;
@@ -24,7 +22,7 @@ use crate::material::{
     PdfKind,
 };
 use crate::texture::Texture;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 /// Diffuse (Lambertian) surface.
 #[derive(Clone)]
@@ -43,25 +41,25 @@ impl Bsdf for LambertianMaterial {
     /// `pdf_kind`. The `f_cos` field carries the albedo (texture or solid color).
     fn scatter(
         &self,
-        _wo: Vec3,
+        _wo: Direction3,
         si: &SurfaceInteraction,
         _next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         let mut pk = [None; MAX_BSDF_STRATS];
         pk[0] = Some(PdfKind::Cosine {
-            normal: si.shading_normal().into_inner(),
+            normal: si.shading_normal(),
         });
         Some(BsdfScatter::NonDelta { pdf_kinds: pk })
     }
 
     /// Lambertian BRDF: `albedo · cos(θ) / π`. Returns zero if `wi` is below the surface.
-    fn eval(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, _wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         let attenuation = self
             .tex
             .as_ref()
             .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
-        let cos_theta = si.shading_normal().into_inner().dot(wi);
+        let cos_theta = si.shading_normal().into_inner().dot(wi.into_inner());
         if cos_theta < 0.0 {
             Color3::new(0., 0., 0.)
         } else {
@@ -70,19 +68,19 @@ impl Bsdf for LambertianMaterial {
     }
 
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
-    fn pdf(&self, _wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
-        let cos_theta = si.shading_normal().into_inner().dot(wi);
+    fn pdf(&self, _wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
+        let cos_theta = si.shading_normal().into_inner().dot(wi.into_inner());
         if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
     }
 
     /// Returns `PdfKind::Cosine` for the cosine-weighted hemisphere PDF.
-    fn pdf_kind(&self, _wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, _wo: Direction3, si: &SurfaceInteraction) -> Option<PdfKind> {
         Some(PdfKind::Cosine {
-            normal: si.shading_normal().into_inner(),
+            normal: si.shading_normal(),
         })
     }
 
-    fn reflectance_estimate(&self, _wo: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, _wo: Direction3, si: &SurfaceInteraction) -> f32 {
         let albedo = self
             .tex
             .as_ref()
@@ -90,13 +88,13 @@ impl Bsdf for LambertianMaterial {
             .unwrap_or(self.albedo);
         // Lambertian directional-hemispherical reflectance = albedo (exact:
         // ∫ (albedo/π) * cos θ dω = albedo). Average across RGB channels.
-        (albedo.x + albedo.y + albedo.z) / 3.0
+        (albedo.x() + albedo.y() + albedo.z()) / 3.0
     }
 }
 
 impl GpuSerializable for LambertianMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![self.albedo.x, self.albedo.y, self.albedo.z];
+        let params = vec![self.albedo.x(), self.albedo.y(), self.albedo.z()];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {

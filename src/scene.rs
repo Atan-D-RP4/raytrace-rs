@@ -19,7 +19,7 @@ use crate::texture::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, Texture,
 };
 use crate::transform::{RotateY, TransformObject, Translate};
-use crate::vec3::{Color3, Point3};
+use crate::vec3::{Color3, Direction3, Point3};
 
 fn checker_texture(scale: f32, even: Color3, odd: Color3) -> Arc<dyn Texture> {
     let mapped_tex = MappedTexture::new(CheckerTexture::from_color(even, odd));
@@ -110,7 +110,7 @@ impl Scene {
         self
     }
 
-    pub fn vup(mut self, vup: Vec3) -> Self {
+    pub fn vup(mut self, vup: Direction3) -> Self {
         self.config.vup = vup;
         self
     }
@@ -359,7 +359,7 @@ impl Scene {
         scene.config.vfov = 40.0;
         scene.config.look_from = Point3::new(478., 278., -600.);
         scene.config.look_at = Point3::new(278., 278., 0.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.defocus_angle = 0.0;
         scene.config.focus_distance = 800.0;
 
@@ -540,7 +540,7 @@ impl Scene {
         scene.config.vfov = 40.0;
         scene.config.look_from = Point3::new(278., 278., -800.);
         scene.config.look_at = Point3::new(278., 278., 0.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
 
         scene.config.defocus_angle = 0.0;
         scene.config.focus_distance = 800.0;
@@ -568,7 +568,7 @@ impl Scene {
         scene.config.vfov = 20.;
         scene.config.look_from = Point3::new(26., 3., 6.);
         scene.config.look_at = Point3::new(0., 2., 0.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
 
         scene.config.defocus_angle = 0.;
 
@@ -616,7 +616,7 @@ impl Scene {
         quad_vecs.iter().zip(colors).for_each(|(vecs, color)| {
             #[allow(non_snake_case)]
             let (Q, u, v) = vecs;
-            let material = Material::lambertian_color(color.x, color.y, color.z);
+            let material = Material::lambertian_color(color.x(), color.y(), color.z());
             scene.add_quad(*Q, *u, *v, material);
         });
 
@@ -628,7 +628,7 @@ impl Scene {
         scene.config.vfov = 80.0;
         scene.config.look_from = Point3::new(0., 0., 9.);
         scene.config.look_at = Point3::new(0., 0., 0.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
 
         scene.config.defocus_angle = 0.0;
 
@@ -665,7 +665,7 @@ impl Scene {
         scene.config.vfov = 20.0;
         scene.config.look_from = Point3::new(13., 2., 3.);
         scene.config.look_at = Point3::new(0., 0., 0.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -692,7 +692,7 @@ impl Scene {
         scene.config.vfov = 20.0;
         scene.config.look_from = Point3::new(13., 2., 3.);
         scene.config.look_at = Point3::new(0., 0., 0.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -718,7 +718,7 @@ impl Scene {
         scene.config.vfov = 20.0;
         scene.config.look_from = Point3::new(13., 2., 3.);
         scene.config.look_at = Point3::new(0., 0., 0.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -752,7 +752,7 @@ impl Scene {
                     b as f32 + 1.4 * rand::random::<f32>(),
                 );
 
-                if (center - Point3::new(4., 0.2, 0.)).length() > 1.4 {
+                if (center - Point3::new(4., 0.2, 0.)).into_inner().length() > 1.4 {
                     let rand_albedo = || rand::random::<Vec3>() * rand::random::<Vec3>();
                     fn metal_color() -> Vec3 {
                         Vec3::splat(0.5) + rand::random::<Vec3>() * Vec3::splat(0.5)
@@ -811,7 +811,7 @@ impl Scene {
                             0.3,
                         ),
                     };
-                    center.y = radius;
+                    center = Point3::new(center.x(), radius, center.z());
 
                     if world_seed.is_multiple_of(2) {
                         let target_center =
@@ -857,7 +857,7 @@ impl Scene {
         scene.config.vfov = 30.0;
         scene.config.look_from = Point3::new(13., 2., 6.);
         scene.config.look_at = Point3::new(0., 1., 0.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -887,7 +887,7 @@ impl Scene {
         scene.config.vfov = 20.0;
         scene.config.look_from = Point3::new(-2., 2., 1.);
         scene.config.look_at = Point3::new(0., 0., -1.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.defocus_angle = 10.0;
         scene.config.focus_distance = 3.4;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -991,7 +991,7 @@ impl Scene {
         scene.config.vfov = 38.0;
         scene.config.look_from = Point3::new(0., 3.5, 16.);
         scene.config.look_at = Point3::new(0., 1., 7.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.focus_distance = 10.0;
         scene.config.defocus_angle = 0.0;
         scene.config.background = Color3::new(0.1, 0.1, 0.1);
@@ -1066,7 +1066,7 @@ impl Scene {
         scene.config.vfov = 38.0;
         scene.config.look_from = Point3::new(0., 3.5, 16.);
         scene.config.look_at = Point3::new(0., 1., 7.);
-        scene.config.vup = Vec3::new(0., 1., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.focus_distance = 10.0;
         scene.config.defocus_angle = 0.0;
         scene.config.background = Color3::new(0.1, 0.1, 0.1);

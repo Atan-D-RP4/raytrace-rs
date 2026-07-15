@@ -16,14 +16,12 @@
 //! not over a distribution. The integrator must skip MIS weighting and use the
 //! sampled direction directly.
 
-use glam::Vec3;
-
 use crate::hittable::SurfaceInteraction;
 use crate::material::fresnel_schlick;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 use crate::pdf::PdfKind;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 /// Dielectric transmission/reflection controlled by refractive index.
 #[derive(Clone)]
@@ -41,7 +39,7 @@ impl Bsdf for DielectricMaterial {
     /// Then use Fresnel to decide between reflection and refraction.
     fn scatter(
         &self,
-        wo: Vec3,
+        wo: Direction3,
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
@@ -60,9 +58,9 @@ impl Bsdf for DielectricMaterial {
         // Use Fresnel's equations to determine the probability of reflection vs refraction.
         let u = next_dim();
         let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > u {
-            -wo.reflect(si.shading_normal().into_inner())
+            (-wo).reflect(si.shading_normal().into_inner())
         } else {
-            -wo.refract(si.shading_normal().into_inner(), ri)
+            (-wo).refract(si.shading_normal().into_inner(), ri)
         };
 
         // Return the chosen direction with unit attenuation (delta material — all energy goes one way).
@@ -74,23 +72,23 @@ impl Bsdf for DielectricMaterial {
     }
 
     /// Delta material — cannot evaluate at arbitrary directions. Returns zero.
-    fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, _wo: Direction3, _wi: Direction3, _si: &SurfaceInteraction) -> Color3 {
         Color3::ZERO
     }
 
     /// Delta material — probability of any specific direction is zero.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f32 {
+    fn pdf(&self, _wo: Direction3, _wi: Direction3, _si: &SurfaceInteraction) -> f32 {
         0.0
     }
 
     /// Delta material — no PDF kind for arbitrary directions.
-    fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, _wo: Direction3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }
 
     /// Estimate the reflectance fraction for the coating layer. This is used in
     /// the integrator to determine how much light is reflected vs transmitted.
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, wo: Direction3, si: &SurfaceInteraction) -> f32 {
         let cos_theta = wo.dot(si.shading_normal().into_inner()).abs();
         // Only the reflective fraction of the dielectric is returned to the
         // coating; transmitted light goes into the substrate and doesn't

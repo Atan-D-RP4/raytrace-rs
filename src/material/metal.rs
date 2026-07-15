@@ -23,8 +23,6 @@
 
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
@@ -33,7 +31,7 @@ use crate::material::{
 };
 use crate::onb::Onb;
 use crate::texture::Texture;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 const MIRROR_THRESHOLD: f32 = 0.01;
 
@@ -63,7 +61,7 @@ impl Bsdf for MetalMaterial {
     /// the mixture PDF and uses the reflected direction directly.
     fn scatter(
         &self,
-        wo: Vec3,
+        wo: Direction3,
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
@@ -93,11 +91,11 @@ impl Bsdf for MetalMaterial {
         let v = next_dim();
         let h_local = ggx_sample_h(alpha, u, v);
 
-        let onb = Onb::build_from_normal(si.shading_normal().into_inner());
+        let onb = Onb::build_from_normal(si.shading_normal());
         let h_world = onb.local_to_world(h_local);
 
         // Reflect wo about H to get wi.
-        let wi = -wo.reflect(h_world);
+        let wi = -wo.reflect(h_world.into_inner());
 
         if wi.dot(si.shading_normal().into_inner()) <= 0.0 {
             return None;
@@ -106,14 +104,14 @@ impl Bsdf for MetalMaterial {
         let mut pk = [None; MAX_BSDF_STRATS];
         pk[0] = Some(PdfKind::Ggx {
             wo,
-            normal: si.shading_normal().into_inner(),
+            normal: si.shading_normal(),
             alpha,
         });
         Some(BsdfScatter::NonDelta { pdf_kinds: pk })
     }
 
     /// Cook-Torrance BRDF: `albedo · F · D · G / (4 · cos_o · cos_i)`.
-    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         // If the material is effectively a mirror, return zero for arbitrary directions.
         if self.is_delta() {
             return Color3::ZERO;
@@ -126,7 +124,7 @@ impl Bsdf for MetalMaterial {
         let alpha = self.ggx_alpha().unwrap_or(0.001);
         let h = (wo + wi).normalize();
         let cos_h_n = h.dot(si.shading_normal().into_inner()).max(0.0);
-        let cos_h_o = wo.dot(h).max(0.0);
+        let cos_h_o = wo.dot(h.into_inner()).max(0.0);
         let cos_o = wo.dot(si.shading_normal().into_inner()).max(0.0);
         let cos_i = wi.dot(si.shading_normal().into_inner()).max(0.0);
         if cos_h_o <= 0.0 || cos_o <= 0.0 || cos_i <= 0.0 {
@@ -140,7 +138,7 @@ impl Bsdf for MetalMaterial {
     }
 
     /// GGX NDF sampling PDF: `D(H) · cos(H·N) / (4 · cos(H·O))`.
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
         // If the material is effectively a mirror, return zero for arbitrary directions.
         if self.is_delta() {
             return 0.0;
@@ -148,7 +146,7 @@ impl Bsdf for MetalMaterial {
         let alpha = self.ggx_alpha().unwrap_or(0.001);
         let h = (wo + wi).normalize();
         let cos_h_n = h.dot(si.shading_normal().into_inner()).max(0.0);
-        let cos_h_o = wo.dot(h).max(0.0);
+        let cos_h_o = wo.dot(h.into_inner()).max(0.0);
         if cos_h_o <= 0.0 {
             return 0.0;
         }
@@ -156,13 +154,13 @@ impl Bsdf for MetalMaterial {
     }
 
     /// Returns the PDF kind for the GGX NDF if `fuzz` is non-zero, otherwise `None`.
-    fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, wo: Direction3, si: &SurfaceInteraction) -> Option<PdfKind> {
         if self.is_delta() {
             None
         } else {
             Some(PdfKind::Ggx {
                 wo,
-                normal: si.shading_normal().into_inner(),
+                normal: si.shading_normal(),
                 alpha: (self.roughness * self.roughness).clamp(0.001, 1.0),
             })
         }
@@ -171,7 +169,7 @@ impl Bsdf for MetalMaterial {
     /// Returns an estimate of the material's reflectance for a given outgoing
     /// direction. For a smooth conductor, this is approximately the Fresnel term with a roughness
     /// boost. For rough conductors, the effective reflectance is higher due to multiple scattering.
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, wo: Direction3, si: &SurfaceInteraction) -> f32 {
         let cos_theta = wo.dot(si.shading_normal().into_inner()).abs();
         // For a smooth conductor, reflectance ≈ Fresnel(θ) — the GGX lobe
         // is narrow, so most energy is at the mirror direction. Roughness
@@ -197,9 +195,9 @@ impl Bsdf for MetalMaterial {
 impl GpuSerializable for MetalMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let params = vec![
-            self.albedo.x,
-            self.albedo.y,
-            self.albedo.z,
+            self.albedo.x(),
+            self.albedo.y(),
+            self.albedo.z(),
             self.roughness,
             self.ior,
         ];

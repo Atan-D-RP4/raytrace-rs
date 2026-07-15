@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
@@ -31,7 +29,7 @@ pub struct Hit {
     /// not have UVs.
     pub uv: Option<(f32, f32)>,
     // Optional UV gradient for texture filtering. `None` if not computed.
-    pub uv_gradients: Option<(Vec3, Vec3)>,
+    pub uv_gradients: Option<(Direction3, Direction3)>,
 
     /// Outward geometric normal before face-orientation or shading adjustments.
     /// Must be unit length — set_face_normal depends on it.
@@ -45,7 +43,7 @@ impl Hit {
         mapping_point: Point3,
         geometric_normal: Direction3,
         uv: Option<(f32, f32)>,
-        uv_gradients: Option<(Vec3, Vec3)>,
+        uv_gradients: Option<(Direction3, Direction3)>,
     ) -> Self {
         debug_assert!(
             geometric_normal.length_squared() <= 1e-6
@@ -129,21 +127,21 @@ impl<'si> SurfaceInteraction<'si> {
             let p = ray.at(t_hit);
             let dpdx = Ray::differential_footprint(
                 rd.rx_origin,
-                rd.rx_direction.into_inner(),
+                rd.rx_direction,
                 p,
-                geometric_normal.into_inner(),
+                geometric_normal,
                 t_hit,
                 ray.origin,
-                ray.direction.into_inner(),
+                ray.direction,
             );
             let dpdy = Ray::differential_footprint(
                 rd.ry_origin,
-                rd.ry_direction.into_inner(),
+                rd.ry_direction,
                 p,
-                geometric_normal.into_inner(),
+                geometric_normal,
                 t_hit,
                 ray.origin,
-                ray.direction.into_inner(),
+                ray.direction,
             );
             let (du_dp, dv_dp) = gradients;
             Some(TextureDerivatives::from_surface(dpdx, dpdy, du_dp, dv_dp))
@@ -190,7 +188,7 @@ impl<'si> SurfaceInteraction<'si> {
 
     /// Convenience: evaluate emission at this surface point for a given outgoing direction.
     /// Delegates to `Material::emitted()`.
-    pub fn emitted(&self, wo: Vec3) -> Color3 {
+    pub fn emitted(&self, wo: Direction3) -> Color3 {
         self.material.emitted(wo, self)
     }
 
@@ -230,7 +228,7 @@ impl<'si> SurfaceInteraction<'si> {
             v,
             self.point(),
             self.hit.mapping_point,
-            *self.geometric_normal(),
+            self.geometric_normal(),
             self.tex_derivatives,
         )
     }
@@ -319,16 +317,16 @@ pub struct LightSample {
 pub trait Sampleable: Intersectable + Send + Sync {
     /// Returns the PDF value for sampling this hittable from a given origin and direction.
     /// Default returns 0.0 (no contribution to the PDF).
-    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f32) -> f32 {
+    fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
         let _ = (origin, direction, time);
         0.0
     }
 
     /// Samples a random direction toward this hittable from a given origin.
     /// Takes `(u, v)` in `[0, 1)` for sampling. Default returns Vec3::ZERO.
-    fn random_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
+    fn random_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
         let _ = (origin, u, v, time);
-        Vec3::ZERO
+        Direction3::ZERO
     }
 
     /// Samples a point on the light and returns everything needed for direct lighting:
@@ -337,19 +335,19 @@ pub trait Sampleable: Intersectable + Send + Sync {
     /// The returned [`LightSample`] is self-consistent — the direction points from
     /// `origin` to the sampled point, the normal is the outward normal at that point,
     /// and the distance equals `direction.length()`.
-    fn sample_light(&self, origin: Vec3, u: f32, v: f32, time: f32) -> LightSample;
+    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample;
 }
 
 impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f32) -> f32 {
+    fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
         (**self).pdf_value(origin, direction, time)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
+    fn random_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
         (**self).random_direction(origin, u, v, time)
     }
 
-    fn sample_light(&self, origin: Vec3, u: f32, v: f32, time: f32) -> LightSample {
+    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
         (**self).sample_light(origin, u, v, time)
     }
 }

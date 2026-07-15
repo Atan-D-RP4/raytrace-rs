@@ -1,7 +1,6 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 
-use glam::Vec3;
 use image::Rgba32FImage;
 
 use crate::aabb::Aabb;
@@ -10,7 +9,7 @@ use crate::film::rgb::LUMINANCE;
 use crate::hittable::{Bounded, Intersectable, LightSample, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::vec3::{Color3, Direction3};
+use crate::vec3::{Color3, Direction3, Point3};
 
 /// Equirectangular HDR environment map with sin(θ)-weighted luminance importance sampling.
 /// The distribution is built once at construction and reused for all sample/pdf queries.
@@ -39,7 +38,7 @@ impl EnvironmentMap {
                 let pixel = image.get_pixel(i, j);
 
                 let luminance =
-                    LUMINANCE.x * pixel[0] + LUMINANCE.y * pixel[1] + LUMINANCE.z * pixel[2];
+                    LUMINANCE.x() * pixel[0] + LUMINANCE.y() * pixel[1] + LUMINANCE.z() * pixel[2];
 
                 total_luminance += luminance;
 
@@ -89,7 +88,7 @@ impl EnvironmentMap {
 
     /// Evaluate environment radiance (Le) in world-space `direction`.
     /// Performs nearest-neighbor lookup on the equirectangular map.
-    pub fn le(&self, direction: Vec3) -> Color3 {
+    pub fn le(&self, direction: Direction3) -> Color3 {
         let (i, j) = self.pixel_uv_from_direction(direction);
 
         let pixel = self.image.get_pixel(i as u32, j as u32);
@@ -98,10 +97,10 @@ impl EnvironmentMap {
 
     /// Convert a world-space direction to equirectangular pixel coordinates (i, j).
     /// y-up convention: θ = 0 at north pole, φ ∈ [-π, π].
-    pub fn pixel_uv_from_direction(&self, direction: Vec3) -> (usize, usize) {
+    pub fn pixel_uv_from_direction(&self, direction: Direction3) -> (usize, usize) {
         let w = direction.normalize(); // ensure unit length
-        let theta = w.y.acos(); // y-up: θ = 0 at north pole
-        let phi = w.z.atan2(w.x); // φ in [-π, π]
+        let theta = w.y().acos(); // y-up: θ = 0 at north pole
+        let phi = w.z().atan2(w.x()); // φ in [-π, π]
 
         // Map to [0, 1) texture coordinates
         let u = phi / (2.0 * PI); // [−½, ½]
@@ -117,11 +116,11 @@ impl EnvironmentMap {
         (i, j)
     }
 
-    pub fn to_solid_angle_pdf(&self, direction: Vec3) -> f32 {
+    pub fn to_solid_angle_pdf(&self, direction: Direction3) -> f32 {
         let (i, j) = self.pixel_uv_from_direction(direction);
         let pdf_pixel = self.pdf(i, j);
 
-        let theta = direction.y.acos(); // y-up: θ = 0 at north pole
+        let theta = direction.y().acos(); // y-up: θ = 0 at north pole
         let sin_theta = theta.sin().max(1e-10);
 
         pdf_pixel / (sin_theta * 2.0 * PI * PI)
@@ -154,11 +153,11 @@ impl Intersectable for EnvironmentLight {
 }
 
 impl Sampleable for EnvironmentLight {
-    fn pdf_value(&self, _origin: Vec3, direction: Vec3, _time: f32) -> f32 {
+    fn pdf_value(&self, _origin: Point3, direction: Direction3, _time: f32) -> f32 {
         self.env_map.to_solid_angle_pdf(direction)
     }
 
-    fn random_direction(&self, _origin: Vec3, u: f32, v: f32, _time: f32) -> Vec3 {
+    fn random_direction(&self, _origin: Point3, u: f32, v: f32, _time: f32) -> Direction3 {
         let (i, j, _pdf_pixel) = self.env_map.sample(u, v);
         let width = self.env_map.width();
         let height = self.env_map.height();
@@ -173,18 +172,18 @@ impl Sampleable for EnvironmentLight {
         let y = theta.cos();
         let z = sin_theta * phi.sin();
 
-        Vec3::new(x, y, z)
+        Direction3::new(x, y, z)
     }
 
-    fn sample_light(&self, origin: Vec3, u: f32, v: f32, time: f32) -> LightSample {
+    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
         let direction = self.random_direction(origin, u, v, time);
         let pdf = self.pdf_value(origin, direction, time);
         let radiance = self.env_map.le(direction);
 
         LightSample {
-            direction: Direction3(direction),
-            normal: Direction3(Vec3::ZERO), // Environment light has no surface normal
-            distance: f32::INFINITY,        // Environment light is at infinity
+            direction,
+            normal: Direction3::ZERO, // Environment light has no surface normal
+            distance: f32::INFINITY,  // Environment light is at infinity
             pdf,
             emission: radiance,
         }

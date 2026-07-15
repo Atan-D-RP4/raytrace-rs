@@ -10,8 +10,6 @@
 
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
@@ -19,7 +17,7 @@ use crate::material::{
     MAX_BSDF_STRATS, PdfKind, fresnel_r0, fresnel_schlick, ggx_sample_h,
 };
 use crate::onb::Onb;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 /// Maximum number of internal bounces for a Coated material. Each bounce
 /// gets a fresh dimension from `next_dim()` for the internal Fresnel split.
@@ -34,9 +32,9 @@ const COATED_FIRE_FLY_LIMIT: f32 = 2.0;
 fn beers_absorption(throughput: Color3, tint: Color3, path_len: f32) -> Color3 {
     throughput
         * Color3::new(
-            tint.x.powf(path_len.abs()),
-            tint.y.powf(path_len.abs()),
-            tint.z.powf(path_len.abs()),
+            tint.x().powf(path_len.abs()),
+            tint.y().powf(path_len.abs()),
+            tint.z().powf(path_len.abs()),
         )
 }
 
@@ -57,7 +55,7 @@ pub struct CoatedMaterial {
 /// Result of Snell's law refraction from air into the coating layer.
 struct InternalFrame {
     /// Direction inside the coating that refracts to the external direction at the top interface.
-    wo_internal: Vec3,
+    wo_internal: Direction3,
     /// Cosine of the internal angle (dot(wo_internal, sn)).
     cos_wi_inside: f32,
 }
@@ -66,36 +64,59 @@ struct InternalFrame {
 enum ScatterInternalResult {
     /// Exited the coating. Return this Delta scatter to the caller.
     Exited {
-        wi: Vec3,
+        /// Direction of the ray exiting the coating layer (toward air).
+        wi: Direction3,
+        /// BSDF × cosine for the exit direction, including substrate contribution.
         f_cos: Color3,
+        /// Optional eta for the exit direction (None if no eta change).
         eta: Option<f32>,
     },
     /// Reflected internally. Updated wi and throughput for the next bounce.
-    InternalReflection { wi: Vec3, throughput: Color3 },
+    InternalReflection {
+        /// Direction of the ray reflected internally (toward substrate).
+        wi: Direction3,
+        /// Updated throughput after Beer's law absorption for the internal bounce.
+        throughput: Color3,
+    },
 }
 
-/// Parameters for GGX substrate scatter, grouped to satisfy the
-/// `too_many_arguments` clippy lint.
+/// Parameters for GGX substrate scatter
 struct GgxScatterParams<'a> {
-    wo_global: Vec3,
+    /// Outgoing direction in the global frame (away from surface).
+    wo_global: Direction3,
+    /// Tint color of the coating layer (used for Beer's law absorption).
     coating_tint: Color3,
-    n: Vec3,
-    normal: Vec3,
+    /// Shading normal of the surface (points away from surface).
+    shading_normal: Direction3,
+    /// GGX half-vector normal from the substrate's PDF (points away from surface).
+    normal: Direction3,
+    /// GGX alpha parameter from the substrate's PDF.
     alpha: f32,
+    /// Current throughput of the path (accumulated color).
     throughput: Color3,
+    /// Current internal dimension for the Fresnel split at the coating-air boundary.
     internal_dim: f32,
+    /// Surface interaction for the current bounce (used for substrate evaluation).
     si: &'a SurfaceInteraction<'a>,
+    /// Function to generate the next random dimension for QMC sampling.
     next_dim: &'a mut dyn FnMut() -> f32,
 }
 
 /// Parameters for the delta substrate internal bounce helper.
 struct DeltaSubstrateParams {
+    /// Tint color of the coating layer (used for Beer's law absorption).
     coating_tint: Color3,
-    wi_internal: Vec3,
+    /// Direction of the ray inside the coating layer (toward substrate).
+    wi_internal: Direction3,
+    /// BSDF × cosine for the internal direction from the substrate.
     f_cos_internal: Color3,
-    n: Vec3,
+    /// Shading normal of the surface (points away from surface).
+    shading_normal: Direction3,
+    /// Current throughput of the path (accumulated color).
     throughput: Color3,
+    /// Optional eta for the internal direction (None if no eta change).
     eta: Option<f32>,
+    /// Current internal dimension for the Fresnel split at the coating-air boundary.
     internal_dim: f32,
 }
 
@@ -107,10 +128,10 @@ impl CoatedMaterial {
     /// produces `wo`. Uses Snell's law: sin(θ_c) = sin(θ_a) / coating_ior.
     ///
     /// Returns `None` if total internal reflection occurs (sin_wi_inside >= 1.0).
-    fn snell_internal_frame(&self, wo: Vec3, sn: Vec3) -> Option<InternalFrame> {
-        let cos_wo_global = wo.dot(sn).max(0.0);
+    fn snell_internal_frame(&self, wo: Direction3, sn: Direction3) -> Option<InternalFrame> {
+        let cos_wo_global = wo.dot(sn.into_inner()).max(0.0);
         let wo_perp = wo - cos_wo_global * sn;
-        let sin_wo = wo_perp.length();
+        let sin_wo = wo_perp.into_inner().length();
         let sin_wi_inside = sin_wo / self.coating_ior;
         if sin_wi_inside >= 1.0 {
             return None; // TIR
@@ -152,41 +173,41 @@ impl CoatedMaterial {
             coating_tint,
             wi_internal,
             f_cos_internal,
-            n,
+            shading_normal,
             throughput,
             eta,
             internal_dim,
         } = params;
         // Beer's law for the upward crossing through the coating layer
-        let path_len_up = self.thickness / wi_internal.dot(n).abs();
+        let path_len_up = self.thickness / wi_internal.dot(shading_normal.into_inner()).abs();
         let throughput = beers_absorption(throughput, coating_tint, path_len_up);
 
         // Fresnel split at top interface (coating-air boundary),
         // using internal_dim from the caller's next_dim().
-        let cos_wi_internal = wi_internal.dot(n).abs();
+        let cos_wi_internal = wi_internal.dot(shading_normal.into_inner()).abs();
         let sin2_theta = (1.0 - cos_wi_internal * cos_wi_internal).max(0.0);
         let tir = self.coating_ior * self.coating_ior * sin2_theta > 1.0;
         let f_top_internal = fresnel_schlick(cos_wi_internal, fresnel_r0(self.coating_ior));
 
         if tir || internal_dim < f_top_internal {
             // Must reflect (TIR) or stochastic Fresnel reflection.
-            let wi = wi_internal.reflect(n);
+            let wi = wi_internal.reflect(shading_normal.into_inner());
             // Beer's law for the downward crossing (back through the coating)
-            let path_len_down = self.thickness / wi.dot(n).abs();
+            let path_len_down = self.thickness / wi.dot(shading_normal.into_inner()).abs();
             let throughput = beers_absorption(throughput, coating_tint, path_len_down);
             ScatterInternalResult::InternalReflection { wi, throughput }
         } else {
             // Transmit out of the coating layer, i.e., exit to air
-            let exit_dir = wi_internal.refract(-n, self.coating_ior);
+            let exit_dir = wi_internal.refract(-shading_normal.into_inner(), self.coating_ior);
             let raw = throughput * f_cos_internal;
             // Frame-independent heuristic firefly backstop:
             // `f_cos` = BSDF × cosine should be bounded for physically valid materials
             // (Lambertian max ≈ 0.32, GGX max ≈ 2-3 at extreme grazing).
             // This is NOT a physically derived limit — it's a safety net.
             let bounded_f_cos = Color3::new(
-                raw.x.min(COATED_FIRE_FLY_LIMIT),
-                raw.y.min(COATED_FIRE_FLY_LIMIT),
-                raw.z.min(COATED_FIRE_FLY_LIMIT),
+                raw.x().min(COATED_FIRE_FLY_LIMIT),
+                raw.y().min(COATED_FIRE_FLY_LIMIT),
+                raw.z().min(COATED_FIRE_FLY_LIMIT),
             );
             ScatterInternalResult::Exited {
                 wi: exit_dir,
@@ -209,7 +230,7 @@ impl CoatedMaterial {
         params: &mut GgxScatterParams<'_>,
     ) -> Option<ScatterInternalResult> {
         // Compute wo_internal using Snell's law helper.
-        let frame = self.snell_internal_frame(params.wo_global, params.n)?;
+        let frame = self.snell_internal_frame(params.wo_global, params.shading_normal)?;
         let wo_int = frame.wo_internal;
 
         // GGX importance sampling using fresh dimensions from next_dim().
@@ -221,47 +242,50 @@ impl CoatedMaterial {
         let h_world = onb.local_to_world(h_local);
 
         // Reflect wo_internal about the half-vector
-        let wi_int = -wo_int.reflect(h_world);
+        let wi_int = -wo_int.reflect(h_world.into_inner());
 
         // Check hemisphere: wi_int must point toward the substrate
-        if wi_int.dot(params.n) <= 0.0 {
+        if wi_int.dot(params.shading_normal.into_inner()) <= 0.0 {
             return None;
         }
 
         // Beer's law for the upward crossing
-        let path_len_up = self.thickness / wi_int.dot(params.n).abs();
+        let path_len_up = self.thickness / wi_int.dot(params.shading_normal.into_inner()).abs();
         let throughput = beers_absorption(params.throughput, params.coating_tint, path_len_up);
 
         // Fresnel split at top interface
-        let cos_wi_int = wi_int.dot(params.n).abs();
+        let cos_wi_int = wi_int.dot(params.shading_normal.into_inner()).abs();
         let sin2_theta = (1.0 - cos_wi_int * cos_wi_int).max(0.0);
         let tir = self.coating_ior * self.coating_ior * sin2_theta > 1.0;
         let f_top_int = fresnel_schlick(cos_wi_int, fresnel_r0(self.coating_ior));
 
         if tir || params.internal_dim < f_top_int {
             // Internal reflection — continue bouncing
-            let wi = wi_int.reflect(params.n);
-            let path_len_down = self.thickness / wi.dot(params.n).abs();
+            let wi = wi_int.reflect(params.shading_normal.into_inner());
+            let path_len_down = self.thickness / wi.dot(params.shading_normal.into_inner()).abs();
             let throughput = beers_absorption(throughput, params.coating_tint, path_len_down);
             Some(ScatterInternalResult::InternalReflection { wi, throughput })
         } else {
             // Transmit out of the coating layer
-            let exit_dir = wi_int.refract(-params.n, self.coating_ior);
+            let exit_dir = wi_int.refract(-params.shading_normal.into_inner(), self.coating_ior);
             // Include the substrate's BSDF value in f_cos.
             let substrate_val = self.substrate.eval(wo_int, wi_int, params.si);
             let sub_pdf = self.substrate.pdf(wo_int, wi_int, params.si);
             let substrate_f = substrate_val / sub_pdf.max(1e-10);
-            let exit_fresnel =
-                1.0 - fresnel_schlick(exit_dir.dot(params.n).abs(), fresnel_r0(self.coating_ior));
+            let exit_fresnel = 1.0
+                - fresnel_schlick(
+                    exit_dir.dot(params.shading_normal.into_inner()).abs(),
+                    fresnel_r0(self.coating_ior),
+                );
             let raw = throughput * substrate_f * exit_fresnel;
             // Heuristic firefly backstop: `f_cos` = BSDF × cosine should be bounded
             // for physically valid materials (Lambertian max ≈ 0.32, GGX max ≈ 2-3
             // at extreme grazing). This is NOT a physically derived limit — it's a
             // safety net.
             let bounded_f_cos = Color3::new(
-                raw.x.min(COATED_FIRE_FLY_LIMIT),
-                raw.y.min(COATED_FIRE_FLY_LIMIT),
-                raw.z.min(COATED_FIRE_FLY_LIMIT),
+                raw.x().min(COATED_FIRE_FLY_LIMIT),
+                raw.y().min(COATED_FIRE_FLY_LIMIT),
+                raw.z().min(COATED_FIRE_FLY_LIMIT),
             );
             Some(ScatterInternalResult::Exited {
                 wi: exit_dir,
@@ -275,12 +299,12 @@ impl CoatedMaterial {
 impl Bsdf for CoatedMaterial {
     fn scatter(
         &self,
-        wo: Vec3,
+        wo: Direction3,
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         let wo_global = wo;
-        let n = si.shading_normal().into_inner();
+        let sn = si.shading_normal();
         let mut throughput = Color3::new(1.0, 1.0, 1.0);
 
         // coating_tint is already clamped to [0, 1] in the constructor.
@@ -288,12 +312,12 @@ impl Bsdf for CoatedMaterial {
 
         // Fresnel split at coating-air boundary (top interface).
         let top_fresnel = next_dim();
-        let cos_wo = wo.dot(n).abs();
+        let cos_wo = wo.dot(sn.into_inner()).abs();
         let f_top = fresnel_schlick(cos_wo, fresnel_r0(self.coating_ior));
         if top_fresnel < f_top {
             // Reflect off the coating, i.e., exit immediately
             return Some(BsdfScatter::Delta {
-                wi: -wo.reflect(n),
+                wi: -wo.reflect(sn.into_inner()),
                 f_cos: throughput,
                 eta: None,
             });
@@ -302,20 +326,20 @@ impl Bsdf for CoatedMaterial {
         // Refract into the coating layer. For IOR < 1 (e.g., sphere 1
         // with coating=dielectric(0.4)), this can TIR at shallow angles.
         // Detect TIR using Snell's law: if ri² * sin²(θ) > 1.0, TIR occurs.
-        let cos_in = -wo.dot(n);
+        let cos_in = -wo.dot(sn.into_inner());
         let sin2_in = (1.0 - cos_in * cos_in).max(0.0);
         let ri = 1.0 / self.coating_ior;
         if ri * ri * sin2_in > 1.0 {
             // TIR: no transmission into coating. Fresnel reflect instead.
             return Some(BsdfScatter::Delta {
-                wi: -wo.reflect(n),
+                wi: -wo.reflect(sn.into_inner()),
                 f_cos: throughput,
                 eta: None,
             });
         }
-        let mut wi = -wo.refract(n, ri);
+        let mut wi = (-wo).refract(sn.into_inner(), ri);
         // Beer's law absorption per crossing in the coating layer
-        let path_len = self.thickness / wi.dot(n).abs();
+        let path_len = self.thickness / wi.dot(sn.into_inner()).abs();
         throughput = beers_absorption(throughput, coating_tint, path_len);
 
         // Bounce internally between coating and substrate interfaces.
@@ -343,7 +367,7 @@ impl Bsdf for CoatedMaterial {
                     coating_tint,
                     wi_internal,
                     f_cos_internal,
-                    n,
+                    shading_normal: sn,
                     throughput,
                     eta,
                     internal_dim,
@@ -390,7 +414,7 @@ impl Bsdf for CoatedMaterial {
                         let mut params = GgxScatterParams {
                             wo_global,
                             coating_tint,
-                            n,
+                            shading_normal: sn,
                             normal,
                             alpha,
                             throughput,
@@ -435,17 +459,17 @@ impl Bsdf for CoatedMaterial {
                     // fireflies.
                     if let Some(alpha) = self.coating.ggx_alpha() {
                         let mut pk = [None; MAX_BSDF_STRATS];
-                        pk[0] = Some(PdfKind::Cosine { normal: n });
+                        pk[0] = Some(PdfKind::Cosine { normal: sn });
                         pk[1] = Some(PdfKind::Ggx {
                             wo: wo_global,
-                            normal: n,
+                            normal: sn,
                             alpha,
                         });
                         return Some(BsdfScatter::NonDelta { pdf_kinds: pk });
                     }
 
                     let mut pk = [None; MAX_BSDF_STRATS];
-                    pk[0] = Some(PdfKind::Cosine { normal: n });
+                    pk[0] = Some(PdfKind::Cosine { normal: sn });
                     return Some(BsdfScatter::NonDelta { pdf_kinds: pk });
                 }
 
@@ -460,7 +484,7 @@ impl Bsdf for CoatedMaterial {
                         coating_tint,
                         wi_internal: delta_wi,
                         f_cos_internal: delta_f_cos,
-                        n,
+                        shading_normal: sn,
                         throughput,
                         eta: delta_eta,
                         internal_dim,
@@ -491,7 +515,7 @@ impl Bsdf for CoatedMaterial {
         None
     }
 
-    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         let sn = si.shading_normal().into_inner();
         // Compute the cosine of the angle between the outgoing/incoming directions and the
         // shading normal.
@@ -509,10 +533,10 @@ impl Bsdf for CoatedMaterial {
         let fresnel_i = self.fresnel_transmittance(cos_wi);
 
         // Refract global incoming direction into the coating's internal frame.
-        let wi_internal = -wi.refract(sn, 1.0 / self.coating_ior);
+        let wi_internal = (-wi).refract(sn, 1.0 / self.coating_ior);
 
         // Compute internal frame: direction inside coating that refracts to wo_global.
-        let wo_frame = match self.snell_internal_frame(wo, sn) {
+        let wo_frame = match self.snell_internal_frame(wo, sn.into()) {
             Some(f) => f,
             None => return direct_coat, // TIR — substrate invisible from this angle
         };
@@ -564,21 +588,21 @@ impl Bsdf for CoatedMaterial {
         // (with Jacobian) + inter-reflection correction.
         let raw = direct_coat + t_o * substrate_direct * jacobian_sub * t_i * (1.0 + series);
         Color3::new(
-            raw.x.min(COATED_FIRE_FLY_LIMIT),
-            raw.y.min(COATED_FIRE_FLY_LIMIT),
-            raw.z.min(COATED_FIRE_FLY_LIMIT),
+            raw.x().min(COATED_FIRE_FLY_LIMIT),
+            raw.y().min(COATED_FIRE_FLY_LIMIT),
+            raw.z().min(COATED_FIRE_FLY_LIMIT),
         )
     }
 
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
-        let sn = si.shading_normal().into_inner();
-        let cos_wo = wo.dot(sn).abs();
-        let cos_wi = wi.dot(sn).abs();
+    fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
+        let sn = si.shading_normal();
+        let cos_wo = wo.dot(sn.into_inner()).abs();
+        let cos_wi = wi.dot(sn.into_inner()).abs();
         // Fresnel transmittance at top interface for outgoing direction
         let fresnel_t = self.fresnel_transmittance(cos_wo);
 
         // Refract global incoming direction into internal frame (same as eval)
-        let wi_internal = -wi.refract(sn, 1.0 / self.coating_ior);
+        let wi_internal = -wi.refract(sn.into_inner(), 1.0 / self.coating_ior);
 
         // Compute internal frame: direction inside coating that refracts to wo_global.
         let wo_frame = match self.snell_internal_frame(wo, sn) {
@@ -594,24 +618,24 @@ impl Bsdf for CoatedMaterial {
         // where θ_air is the angle of wi from sn, and θ_coating is the angle of -wi_internal from
         // sn (the outward-pointing internal direction).
         let cos_ext = cos_wi.max(1e-10);
-        let cos_int = (-wi_internal).dot(sn).max(0.0).max(1e-10);
+        let cos_int = (-wi_internal).dot(sn.into_inner()).max(0.0).max(1e-10);
         // dω_int/dω_ext = cos_ext / (η² · cos_int)
         let jacobian = cos_ext / (self.coating_ior * self.coating_ior * cos_int);
 
         fresnel_t * self.substrate.pdf(wo_internal, -wi_internal, si) * jacobian
     }
 
-    fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, wo: Direction3, si: &SurfaceInteraction) -> Option<PdfKind> {
         // Refract global wo into the coating's internal frame so the
         // substrate's GGX PDF uses the same coordinates as eval/pdf.
-        let sn = si.shading_normal().into_inner();
+        let sn = si.shading_normal();
         let wo_frame = self.snell_internal_frame(wo, sn)?;
         self.substrate.pdf_kind(wo_frame.wo_internal, si)
     }
 
-    fn emitted(&self, wo: Vec3, si: &SurfaceInteraction) -> Color3 {
-        let sn = si.shading_normal().into_inner();
-        let cos_wo = wo.dot(sn).abs();
+    fn emitted(&self, wo: Direction3, si: &SurfaceInteraction) -> Color3 {
+        let sn = si.shading_normal();
+        let cos_wo = wo.dot(sn.into_inner()).abs();
         // Fresnel transmittance at coating-air boundary for the exit direction
         let fresnel_t = self.fresnel_transmittance(cos_wo);
         // Compute internal frame: direction inside coating that refracts to wo_global.
@@ -634,7 +658,7 @@ impl Bsdf for CoatedMaterial {
         self.coating.is_delta() && self.substrate.is_delta()
     }
 
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, wo: Direction3, si: &SurfaceInteraction) -> f32 {
         // Approximate the directional-hemispherical reflectance of the coated material, averaged
         // across color channels. This is a rough estimate for MIS weighting and needn't be exact.
         let r0 = fresnel_r0(self.coating_ior);
@@ -652,9 +676,9 @@ impl GpuSerializable for CoatedMaterial {
         let params = vec![
             self.coating_ior,
             self.thickness,
-            self.coating_tint.x,
-            self.coating_tint.y,
-            self.coating_tint.z,
+            self.coating_tint.x(),
+            self.coating_tint.y(),
+            self.coating_tint.z(),
         ];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);

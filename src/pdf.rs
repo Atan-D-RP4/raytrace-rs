@@ -7,7 +7,7 @@ use crate::distributions::Sample1D;
 use crate::environment::EnvironmentMap;
 use crate::hittable::Sampleable;
 use crate::onb::Onb;
-use crate::vec3::{Point3, concentric_disk};
+use crate::vec3::{Direction3, Point3, concentric_disk};
 
 // ================================================================
 // § PDF domain newtypes
@@ -392,10 +392,10 @@ impl<const N: usize> Distribution1DFixed<N> {
 ///
 /// Reference: Shirley & Chiu, "A Low Distortion Map Between Disk and Square", 1997.
 #[inline(always)]
-pub fn cosine_hemisphere_direction(u: f32, v: f32) -> Vec3 {
+pub fn cosine_hemisphere_direction(u: f32, v: f32) -> Direction3 {
     // Concentric disk mapping: map (u,v) in [0,1)^2 to (x,y) on the unit disk.
     let (x, y) = concentric_disk(u, v);
-    Vec3::new(x, y, (1.0 - x * x - y * y).max(0.0).sqrt())
+    Direction3::new(x, y, (1.0 - x * x - y * y).max(0.0).sqrt())
 }
 
 /// Uniform hemisphere direction via spherical coordinates.
@@ -403,12 +403,12 @@ pub fn cosine_hemisphere_direction(u: f32, v: f32) -> Vec3 {
 /// Takes two uniform random values `(u, v)` in `[0, 1)` and
 /// returns a direction on the unit hemisphere with PDF `1 / (2π)`.
 #[inline(always)]
-pub fn uniform_hemisphere_direction(u: f32, v: f32) -> Vec3 {
+pub fn uniform_hemisphere_direction(u: f32, v: f32) -> Direction3 {
     let phi = 2.0 * PI * u;
     let (sin_phi, cos_phi) = phi.sin_cos();
     let z = v;
     let r = (1.0 - z * z).max(0.0).sqrt();
-    Vec3::new(r * cos_phi, r * sin_phi, z)
+    Direction3::new(r * cos_phi, r * sin_phi, z)
 }
 
 /// Probability density function for sampling directions.
@@ -417,10 +417,10 @@ pub fn uniform_hemisphere_direction(u: f32, v: f32) -> Vec3 {
 /// The caller provides the random numbers; the PDF just maps them to directions.
 pub trait PDF {
     /// Evaluates the PDF value for a given direction.
-    fn value(&self, direction: Vec3) -> f32;
+    fn value(&self, direction: Direction3) -> f32;
 
     /// Generates a random direction according to the PDF from `(u, v)` in [0, 1)².
-    fn generate(&self, u: f32, v: f32) -> Vec3;
+    fn generate(&self, u: f32, v: f32) -> Direction3;
 }
 
 /// PDF for sampling directions from a set of light emitters
@@ -444,14 +444,14 @@ impl<'a> EmitterPDF<'a> {
 }
 
 impl<'a> PDF for EmitterPDF<'a> {
-    fn value(&self, direction: Vec3) -> f32 {
+    fn value(&self, direction: Direction3) -> f32 {
         if self.objects.is_empty() {
             return 0.0;
         }
         let inv_len = 1.0 / self.objects.len() as f32;
         self.objects
             .iter()
-            .map(|o| o.pdf_value(*self.origin, direction, self.time) * inv_len)
+            .map(|o| o.pdf_value(self.origin, direction, self.time) * inv_len)
             .sum()
     }
 
@@ -462,12 +462,12 @@ impl<'a> PDF for EmitterPDF<'a> {
     /// `v` is passed through to the selected light's `random_direction()` method
     /// which uses it for the secondary random dimension (e.g., surface position
     /// within the light or directional PDF sampling).
-    fn generate(&self, u: f32, v: f32) -> Vec3 {
+    fn generate(&self, u: f32, v: f32) -> Direction3 {
         if self.objects.is_empty() {
-            return Vec3::ZERO;
+            return Direction3(Vec3::ZERO);
         }
         let index = (u * self.objects.len() as f32).min(self.objects.len() as f32 - 1e-15) as usize;
-        self.objects[index].random_direction(*self.origin, u, v, self.time)
+        self.objects[index].random_direction(self.origin, u, v, self.time)
     }
 }
 
@@ -492,12 +492,12 @@ impl<'a> LightPDF<'a> {
 }
 
 impl<'a> PDF for LightPDF<'a> {
-    fn value(&self, direction: Vec3) -> f32 {
-        self.object.pdf_value(*self.origin, direction, self.time)
+    fn value(&self, direction: Direction3) -> f32 {
+        self.object.pdf_value(self.origin, direction, self.time)
     }
 
-    fn generate(&self, u: f32, v: f32) -> Vec3 {
-        self.object.random_direction(*self.origin, u, v, self.time)
+    fn generate(&self, u: f32, v: f32) -> Direction3 {
+        self.object.random_direction(self.origin, u, v, self.time)
     }
 }
 
@@ -514,15 +514,15 @@ impl EnvPdf<'_> {
 }
 
 impl<'a> PDF for EnvPdf<'a> {
-    fn value(&self, direction: Vec3) -> f32 {
+    fn value(&self, direction: Direction3) -> f32 {
         self.0.to_solid_angle_pdf(direction)
     }
-    fn generate(&self, u: f32, v: f32) -> Vec3 {
+    fn generate(&self, u: f32, v: f32) -> Direction3 {
         let (col, row, _) = self.0.sample(u, v);
         let theta = (row as f32 + 0.5) / self.0.height() as f32 * PI;
         let phi = (col as f32 + 0.5) / self.0.width() as f32 * 2.0 * PI;
         let sin_theta = theta.sin();
-        Vec3::new(sin_theta * phi.cos(), theta.cos(), sin_theta * phi.sin())
+        Direction3::new(sin_theta * phi.cos(), theta.cos(), sin_theta * phi.sin())
     }
 }
 
@@ -530,14 +530,14 @@ impl<'a> PDF for EnvPdf<'a> {
 ///
 /// Samples a half-vector H from the GGX NDF given roughness² `alpha` and uniform
 /// random variables `u`, `v` in [0, 1). Returns H in tangent space (Z = normal).
-pub fn ggx_sample_h(alpha: f32, u: f32, v: f32) -> Vec3 {
+pub fn ggx_sample_h(alpha: f32, u: f32, v: f32) -> Direction3 {
     let cos_theta = ((1.0 - v) / (1.0 + (alpha * alpha - 1.0) * v))
         .clamp(0.0, 1.0)
         .sqrt();
     let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
     let phi = 2.0 * PI * u;
     let (sin_phi, cos_phi) = phi.sin_cos();
-    Vec3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta)
+    Direction3::new(sin_theta * cos_phi, sin_theta * sin_phi, cos_theta)
 }
 
 /// GGX/Trowbridge-Reitz normal distribution function (NDF).
@@ -561,25 +561,28 @@ pub fn ggx_d(cos_theta_h: f32, alpha: f32) -> f32 {
 #[derive(Clone, Copy, Debug)]
 pub enum PdfKind {
     /// Cosine-weighted hemisphere. `normal` defines the hemisphere orientation.
-    Cosine { normal: Vec3 },
+    Cosine {
+        /// Surface normal.
+        normal: Direction3,
+    },
     /// GGX microfacet importance sampling. Samples half-vector from NDF, reflects.
     Ggx {
         /// Outgoing direction (surface → camera), world space.
-        wo: Vec3,
+        wo: Direction3,
         /// Surface normal.
-        normal: Vec3,
+        normal: Direction3,
         /// GGX alpha (roughness² clamped to [0.001, 1]).
         alpha: f32,
     },
     /// Uniform over the full sphere (isotropic volumes).
     UniformSphere,
     /// Uniform over the hemisphere oriented by `normal`.
-    UniformHemisphere { normal: Vec3 },
+    UniformHemisphere { normal: Direction3 },
 }
 
 impl PdfKind {
     /// Generate a direction from this PDF distribution.
-    pub fn generate(&self, u: f32, v: f32) -> Vec3 {
+    pub fn generate(&self, u: f32, v: f32) -> Direction3 {
         match self {
             PdfKind::Cosine { normal } => {
                 let uvw = Onb::build_from_normal(*normal);
@@ -590,14 +593,14 @@ impl PdfKind {
                 let wo_unit = wo.normalize();
                 let h_local = ggx_sample_h(*alpha, u, v);
                 let h_world = onb.local_to_world(h_local);
-                -wo_unit.reflect(h_world)
+                -wo_unit.reflect(h_world.into_inner())
             }
             PdfKind::UniformSphere => {
                 let phi = 2.0 * PI * u;
                 let (sin_phi, cos_phi) = phi.sin_cos();
                 let z = 1.0 - 2.0 * v;
                 let r = (1.0 - z * z).max(0.0).sqrt();
-                Vec3::new(r * cos_phi, r * sin_phi, z)
+                Direction3::new(r * cos_phi, r * sin_phi, z)
             }
             PdfKind::UniformHemisphere { normal } => {
                 let uvw = Onb::build_from_normal(*normal);
@@ -605,37 +608,37 @@ impl PdfKind {
                 let (sin_phi, cos_phi) = phi.sin_cos();
                 let z = v;
                 let r = (1.0 - z * z).max(0.0).sqrt();
-                let local_dir = Vec3::new(r * cos_phi, r * sin_phi, z);
+                let local_dir = Direction3::new(r * cos_phi, r * sin_phi, z);
                 uvw.local_to_world(local_dir)
             }
         }
     }
 
     /// Evaluate the PDF value for a given direction.
-    pub fn value(&self, direction: Vec3) -> f32 {
+    pub fn value(&self, direction: Direction3) -> f32 {
         match self {
             PdfKind::Cosine { normal } => {
                 let uvw = Onb::build_from_normal(*normal);
-                let cos_theta = direction.dot(uvw.w);
+                let cos_theta = direction.dot(uvw.w.into_inner());
                 (cos_theta / PI).max(0.0)
             }
             PdfKind::Ggx { wo, normal, alpha } => {
                 let onb = Onb::build_from_normal(*normal);
                 let wo_unit = wo.normalize();
                 let h = (wo_unit + direction).normalize();
-                let cos_h = wo_unit.dot(h).abs();
+                let cos_h = wo_unit.dot(h.into_inner()).abs();
                 if cos_h <= 0.0 {
                     return 0.0;
                 }
                 let h_local = onb.world_to_local(h);
-                let cos_h_n = h_local.z.max(0.0);
+                let cos_h_n = h_local.z().max(0.0);
                 let d = ggx_d(cos_h_n, *alpha);
                 d * cos_h_n / (4.0 * cos_h)
             }
             PdfKind::UniformSphere => 1.0 / (4.0 * PI),
             PdfKind::UniformHemisphere { normal } => {
                 let uvw = Onb::build_from_normal(*normal);
-                let cos_theta = direction.dot(uvw.w);
+                let cos_theta = direction.dot(uvw.w.into_inner());
                 if cos_theta > 0.0 {
                     1.0 / (2.0 * PI)
                 } else {
@@ -647,11 +650,11 @@ impl PdfKind {
 }
 
 impl PDF for PdfKind {
-    fn value(&self, direction: Vec3) -> f32 {
+    fn value(&self, direction: Direction3) -> f32 {
         PdfKind::value(self, direction)
     }
 
-    fn generate(&self, u: f32, v: f32) -> Vec3 {
+    fn generate(&self, u: f32, v: f32) -> Direction3 {
         PdfKind::generate(self, u, v)
     }
 }

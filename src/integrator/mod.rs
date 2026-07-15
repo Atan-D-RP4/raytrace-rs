@@ -1,19 +1,17 @@
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::ray::Ray;
 pub use crate::sampler::Sampler;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 pub mod path_tracer;
 pub use path_tracer::PathTracingIntegrator;
 
 pub trait Integrator<S: Sampler>: Send + Sync {
     /// Default background radiance for a ray that missed all geometry.
-    fn background(&self, direction: Vec3) -> Color3 {
+    fn background(&self, direction: Direction3) -> Color3 {
         match self.env_map() {
             Some(env) => env.le(direction),
             None => self.background_color(),
@@ -184,6 +182,6 @@ mod tests {
             &lights,
             &mut session,
         );
-        assert!(color.x.is_finite() && color.y.is_finite() && color.z.is_finite());
+        assert!(color.x().is_finite() && color.y().is_finite() && color.z().is_finite());
     }
 }

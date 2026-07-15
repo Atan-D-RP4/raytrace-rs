@@ -242,7 +242,7 @@ where
                                     .li(&mut cam_ray.ray, world, lights, &mut session);
                             let sample = radiance * cam_ray.weight;
                             // Guard against NaN/Inf poisoning the accumulation buffer.
-                            if sample.is_finite() {
+                            if sample.into_inner().is_finite() {
                                 tile.add_sample(x, y, sample);
                             }
                         }

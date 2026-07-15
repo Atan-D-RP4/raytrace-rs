@@ -53,15 +53,13 @@ pub use lambertian::LambertianMaterial;
 pub use metal::MetalMaterial;
 pub use mix::MixMaterial;
 
-pub use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
-
 use std::sync::Arc;
 
-use glam::Vec3;
+pub use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
 
 use crate::hittable::SurfaceInteraction;
 use crate::texture::Texture;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 use self::gpu::GpuSerializable;
 use gpu::GPU_NONE;
@@ -114,7 +112,7 @@ pub enum BsdfScatter {
     /// Perfect specular — used directly without MIS weighting.
     Delta {
         /// Scattered direction (toward camera for reflection, through surface for refraction).
-        wi: Vec3,
+        wi: Direction3,
         /// BSDF × cosine. Tint for dielectrics, white for lossless coatings.
         f_cos: Color3,
         /// GGX alpha for microfacet materials, or `None` for non-GGX materials.
@@ -129,7 +127,7 @@ pub enum BsdfScatter {
     /// One deterministic delta branch and one non-delta branch — the integrator
     /// traces both paths, splitting the path in two at this vertex.
     Split {
-        delta_wi: Vec3,
+        delta_wi: Direction3,
         delta_f_cos: Color3,
         delta_eta: Option<f32>,
         non_delta_pdf_kinds: [Option<PdfKind>; MAX_BSDF_STRATS],
@@ -147,7 +145,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// wi: Incoming direction (surface → light), world space.
     fn scatter(
         &self,
-        wo: Vec3,
+        wo: Direction3,
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter>;
@@ -156,17 +154,17 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// wo: Outgoing direction (surface → camera), world space.
     /// wi: Incoming direction (surface → light), world space.
     /// Should be zero for delta materials, which cannot be evaluated over a distribution.
-    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3;
+    fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3;
 
     /// Evaluate the material's sampling PDF for a given direction pair.
     /// wo: Outgoing direction (surface → camera), world space.
     /// wi: Incoming direction (surface → light), world space.
     /// Should be zero for delta materials, which cannot be evaluated over a distribution.
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32;
+    fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32;
 
     /// Returns the sampling PDF kind for MIS strategy selection.
     ///  wo: Outgoing direction (surface → camera), world space.
-    fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, _wo: Direction3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }
 
@@ -175,7 +173,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// Pass `Vec3::ZERO` as a sentinel when direction is unavailable (e.g., NEE).
     /// Should be zero for non-emissive materials. Emission is not a BSDF property, but this method
     /// is provided for convenience in integrators that treat it as such (e.g., DiffuseLight).
-    fn emitted(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Color3 {
+    fn emitted(&self, _wo: Direction3, _si: &SurfaceInteraction) -> Color3 {
         Color3::ZERO
     }
 
@@ -194,7 +192,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// of 1.0 is a safe upper bound.
     /// wo: Outgoing direction (surface → camera), world space.
     /// Should be zero for delta materials, which cannot be evaluated over a distribution.
-    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, _wo: Direction3, _si: &SurfaceInteraction) -> f32 {
         1.0
     }
 
@@ -246,7 +244,7 @@ impl Material {
     /// Sample this material. Returns `None` for emitters or invalid directions.
     pub fn scatter(
         &self,
-        wo: Vec3,
+        wo: Direction3,
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
@@ -268,7 +266,7 @@ impl Material {
     ///
     /// Called by the integrator when the direction was sampled externally
     /// (e.g., from a light source PDF) and we need the material's response.
-    pub fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+    pub fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         match self {
             Material::Void => Color3::ZERO,
             Material::Lambertian(inner) => inner.eval(wo, wi, si),
@@ -284,7 +282,7 @@ impl Material {
     }
 
     /// Evaluate the material's sampling PDF for a given direction pair.
-    pub fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
+    pub fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
         match self {
             Material::Void => 0.0,
             Material::Lambertian(inner) => inner.pdf(wo, wi, si),
@@ -300,7 +298,7 @@ impl Material {
     }
 
     /// Returns the sampling PDF kind for MIS strategy selection.
-    pub fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+    pub fn pdf_kind(&self, wo: Direction3, si: &SurfaceInteraction) -> Option<PdfKind> {
         match self {
             Material::Void => None,
             Material::Lambertian(inner) => inner.pdf_kind(wo, si),
@@ -318,7 +316,7 @@ impl Material {
     /// Returns emitted light at the hit point. Default: no emission.
     /// `wo` is the outgoing direction (surface → camera), world space.
     /// For Coated materials, computes Beer's law attenuation through the coating layer.
-    pub fn emitted(&self, wo: Vec3, si: &SurfaceInteraction) -> Color3 {
+    pub fn emitted(&self, wo: Direction3, si: &SurfaceInteraction) -> Color3 {
         match self {
             Material::Void => Color3::ZERO,
             Material::Lambertian(inner) => inner.emitted(wo, si),
@@ -347,7 +345,7 @@ impl Material {
     /// Rough estimate of the directional-hemispherical reflectance, averaged
     /// across color channels. Bounded in [0, 1]. Used by layered materials
     /// for the multi-bounce inter-reflection series approximation.
-    pub fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
+    pub fn reflectance_estimate(&self, wo: Direction3, si: &SurfaceInteraction) -> f32 {
         match self {
             Material::Void => 0.0,
             Material::Lambertian(inner) => inner.reflectance_estimate(wo, si),
@@ -380,26 +378,26 @@ impl Material {
 impl Bsdf for Material {
     fn scatter(
         &self,
-        wo: Vec3,
+        wo: Direction3,
         si: &SurfaceInteraction,
         next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
         self.scatter(wo, si, next_dim)
     }
 
-    fn eval(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         self.eval(wo, wi, si)
     }
 
-    fn pdf(&self, wo: Vec3, wi: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
         self.pdf(wo, wi, si)
     }
 
-    fn pdf_kind(&self, wo: Vec3, si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, wo: Direction3, si: &SurfaceInteraction) -> Option<PdfKind> {
         self.pdf_kind(wo, si)
     }
 
-    fn emitted(&self, wo: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn emitted(&self, wo: Direction3, si: &SurfaceInteraction) -> Color3 {
         self.emitted(wo, si)
     }
 
@@ -407,7 +405,7 @@ impl Bsdf for Material {
         Material::is_emissive(self)
     }
 
-    fn reflectance_estimate(&self, wo: Vec3, si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, wo: Direction3, si: &SurfaceInteraction) -> f32 {
         Material::reflectance_estimate(self, wo, si)
     }
 
@@ -604,9 +602,9 @@ impl Material {
         // Clamp coating tint to [0, 1] per component.
         // Values > 1 would amplify via powf (physically invalid Beer's law).
         let coating_tint = Color3::new(
-            coating_tint.x.clamp(0.0, 1.0),
-            coating_tint.y.clamp(0.0, 1.0),
-            coating_tint.z.clamp(0.0, 1.0),
+            coating_tint.x().clamp(0.0, 1.0),
+            coating_tint.y().clamp(0.0, 1.0),
+            coating_tint.z().clamp(0.0, 1.0),
         );
         Material::Coated(CoatedMaterial {
             substrate: Arc::new(self) as Arc<dyn Bsdf>,
@@ -751,16 +749,16 @@ mod tests {
         impl Bsdf for DummyBsdf {
             fn scatter(
                 &self,
-                _wo: Vec3,
+                _wo: Direction3,
                 _si: &SurfaceInteraction,
                 _next_dim: &mut dyn FnMut() -> f32,
             ) -> Option<BsdfScatter> {
                 None
             }
-            fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
+            fn eval(&self, _wo: Direction3, _wi: Direction3, _si: &SurfaceInteraction) -> Color3 {
                 Color3::ZERO
             }
-            fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f32 {
+            fn pdf(&self, _wo: Direction3, _wi: Direction3, _si: &SurfaceInteraction) -> f32 {
                 0.0
             }
         }

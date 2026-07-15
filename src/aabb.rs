@@ -33,6 +33,8 @@ impl Aabb {
     /// Treat the two points a and b as extrema for the bounding box, so we don't require a
     /// particular minimum/maximum coordinate order.
     pub fn from_points(a: &Point3, b: &Point3) -> Self {
+        let a = a.into_inner();
+        let b = b.into_inner();
         let new = Self {
             x: Interval::from(a[0].min(b[0]), a[0].max(b[0])),
             y: Interval::from(a[1].min(b[1]), a[1].max(b[1])),
@@ -130,8 +132,9 @@ impl Aabb {
         for axis in 0..3 {
             let ax = self.axis_interval(axis);
             let inv_d = ray.inverse_direction[axis as usize];
-            let t0 = (ax.min - ray.origin[axis as usize]) * inv_d;
-            let t1 = (ax.max - ray.origin[axis as usize]) * inv_d;
+            let origin = ray.origin[axis as usize];
+            let t0 = (ax.min - origin) * inv_d;
+            let t1 = (ax.max - origin) * inv_d;
 
             ray_t.min = ray_t.min.max(t0.min(t1));
             ray_t.max = ray_t.max.min(t0.max(t1));

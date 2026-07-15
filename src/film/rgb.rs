@@ -238,7 +238,7 @@ impl Film for RgbFilm {
             let variance = self.m_2[idx] / (n as f32 - 1.0);
             // Use max across RGB channels: a single noisy channel should prevent
             // convergence — averaging could hide it and produce visible artifacts.
-            variance.x.max(variance.y).max(variance.z)
+            variance.x().max(variance.y()).max(variance.z())
         }
     }
 
@@ -263,7 +263,7 @@ impl Film for RgbFilm {
                     self.pixels[idx]
                 };
                 let luminance = LUMINANCE * mean;
-                let luminance = luminance.x + luminance.y + luminance.z;
+                let luminance = luminance.x() + luminance.y() + luminance.z();
 
                 sample_count >= min_samples
                     && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel)
@@ -293,7 +293,7 @@ impl Film for RgbFilm {
                 self.pixels[idx]
             };
             let luminance = LUMINANCE * mean;
-            let luminance = luminance.x + luminance.y + luminance.z;
+            let luminance = luminance.x() + luminance.y() + luminance.z();
             let converged = sample_count >= min_samples
                 && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel);
             *entry = converged;

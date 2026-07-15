@@ -24,9 +24,9 @@ fn post_process(color: Color3, exposure: f32, tone_map: bool) -> [u8; 3] {
 
     // Gamma 2: sqrt() converts linear -> sRGB, then scale to [0,255].
     [
-        (256.0 * linear_to_gamma(scaled.x).clamp(0.0, 0.999)) as u8,
-        (256.0 * linear_to_gamma(scaled.y).clamp(0.0, 0.999)) as u8,
-        (256.0 * linear_to_gamma(scaled.z).clamp(0.0, 0.999)) as u8,
+        (256.0 * linear_to_gamma(scaled.x()).clamp(0.0, 0.999)) as u8,
+        (256.0 * linear_to_gamma(scaled.y()).clamp(0.0, 0.999)) as u8,
+        (256.0 * linear_to_gamma(scaled.z()).clamp(0.0, 0.999)) as u8,
     ]
 }
 

@@ -1,7 +1,5 @@
 use std::borrow::Borrow;
 
-use glam::Vec3;
-
 use crate::aabb::Aabb;
 use crate::hittable::{
     Bounded, Hit, Intersectable, LightSample, MaterialHit, Sampleable, SurfaceInteraction,
@@ -38,16 +36,16 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
     /// Sample a point on the surface, returning `(point, unit_normal)`.
     ///
     /// `u` and `v` are uniformly distributed in `[0, 1)`.
-    fn sample(&self, u: f32, v: f32, time: f32) -> (Point3, Vec3);
+    fn sample(&self, u: f32, v: f32, time: f32) -> (Point3, Direction3);
 
     /// Sample a direction toward this shape from `origin`.
     ///
     /// Default fallback: uniform area sampling via [`sample()`]. Non-uniform
     /// direction PDF for most shapes — override with solid-angle-uniform
     /// sampling (less noise for small shapes like spheres).
-    fn sample_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
+    fn sample_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
         let (point, _normal) = self.sample(u, v, time);
-        (point - origin).normalize().into_inner()
+        (point - origin).normalize()
     }
 
     /// Sample a point on the light and return a [`LightSample`] with direction,
@@ -55,7 +53,7 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
     ///
     /// Default fallback: uniform area sampling via [`sample()`]. Override for
     /// solid-angle-uniform sampling (less noise for small shapes like spheres).
-    fn sample_light(&self, origin: Vec3, u: f32, v: f32, time: f32) -> LightSample {
+    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
         let (point, normal) = self.sample(u, v, time);
         let offset = point - origin;
         let distance = offset.length();
@@ -63,7 +61,7 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
         let area_pdf = 1.0 / self.area();
         LightSample {
             direction: Direction3(offset.into_inner()),
-            normal: Direction3(normal),
+            normal,
             distance,
             pdf: area_pdf,
             emission: Color3::ZERO,
@@ -76,13 +74,13 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
     ///   p(ω) = distance² / (area · |cos θ|)
     /// Only accurate for uniform area sampling — override for solid-angle-uniform
     /// PDF (e.g. sphere uniform-cone).
-    fn pdf_direction(&self, origin: Vec3, direction: Vec3, time: f32) -> f32 {
-        let ray = Ray::new_with_time(Point3(origin), Direction3(direction), time);
+    fn pdf_direction(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
+        let ray = Ray::new_with_time(origin, direction, time);
         let ray_t = Interval::from(0.001, f32::INFINITY);
         match self.intersect_shape(&ray, ray_t) {
             Some(hit) => {
                 let dist2 = (hit.point - origin).length_squared();
-                let cos_theta = hit.geometric_normal().dot(-direction).abs();
+                let cos_theta = hit.geometric_normal().dot(-direction.into_inner()).abs();
                 if cos_theta > 0.0 {
                     dist2 / (self.area() * cos_theta)
                 } else {
@@ -150,15 +148,15 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Intersectable for ShapeObje
 }
 
 impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<Sh, M> {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f32) -> f32 {
+    fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
         self.shape.pdf_direction(origin, direction, time)
     }
 
-    fn random_direction(&self, origin: Vec3, u: f32, v: f32, time: f32) -> Vec3 {
+    fn random_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
         self.shape.sample_direction(origin, u, v, time)
     }
 
-    fn sample_light(&self, origin: Vec3, u: f32, v: f32, time: f32) -> LightSample {
+    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
         let mut sample = self.shape.sample_light(origin, u, v, time);
         // Compute the light's emission at the sampled point on the surface.
         // Construct a minimal SurfaceInteraction to call material.emitted().
@@ -168,15 +166,15 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<
         let front_face = sample.normal.dot(-light_unit.into_inner()) > 0.0;
         let hit = Hit::new(
             time,
-            Point3(point),
-            Point3(point),
+            point,
+            point, // mapping point is the same as the hit point for surface sampling.
             sample.normal,
             None,
             None,
         );
         let si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material(), None);
         // Direct call — no sentinel, no overwriting
-        let wo = -light_unit.into_inner();
+        let wo = -light_unit;
         sample.emission = self.material().emitted(wo, &si);
         sample
     }

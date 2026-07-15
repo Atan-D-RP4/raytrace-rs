@@ -10,8 +10,6 @@
 //! The UV generation converts a 3D point in mapping space to UV coordinates, which is useful for
 //! procedural textures that need UVs but the geometry doesn't provide them.
 
-use glam::Vec3;
-
 use crate::texture::TextureCoords;
 use crate::vec3::Point3;
 
@@ -26,7 +24,7 @@ pub enum TextureMapping3D {
     ///
     /// Smaller `scale` values → higher frequency (more detail).
     /// This is equivalent to dividing the point by `scale`.
-    PointScale { inv_scale: Vec3 },
+    PointScale { inv_scale: f32 },
 }
 
 impl TextureMapping3D {
@@ -37,19 +35,17 @@ impl TextureMapping3D {
         assert!(scale > 0.0, "texture scale must be positive");
         let inv_scale = 1.0 / scale;
 
-        Self::PointScale {
-            inv_scale: Vec3::new(inv_scale, inv_scale, inv_scale),
-        }
+        Self::PointScale { inv_scale }
     }
 
     /// Applies this mapping to a texture context and returns the mapped copy.
     pub fn map(&self, coords: TextureCoords) -> TextureCoords {
-        let mapped_point = self.map_point(*coords.tex_points.texture);
-        coords.with_texture_point(Point3(mapped_point))
+        let mapped_point = self.map_point(coords.tex_points.texture);
+        coords.with_texture_point(mapped_point)
     }
 
     /// Applies this mapping to a 3D point and returns the mapped copy.
-    pub fn map_point(&self, point: Vec3) -> Vec3 {
+    pub fn map_point(&self, point: Point3) -> Point3 {
         match self {
             TextureMapping3D::Identity => point,
             TextureMapping3D::PointScale { inv_scale } => point * *inv_scale,
@@ -127,8 +123,8 @@ impl UvGen {
             UvGen::None => None,
             UvGen::Spherical => {
                 let point = point.normalize();
-                let theta = (-point.y).acos();
-                let phi = (-point.z).atan2(point.x) + std::f32::consts::PI;
+                let theta = (-point.y()).acos();
+                let phi = (-point.z()).atan2(point.x()) + std::f32::consts::PI;
                 let u = phi / (2.0 * std::f32::consts::PI);
                 let v = theta / std::f32::consts::PI;
                 Some((u, v))

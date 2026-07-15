@@ -11,14 +11,12 @@
 
 use std::sync::Arc;
 
-use glam::Vec3;
-
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 use crate::pdf::PdfKind;
 use crate::texture::Texture;
-use crate::vec3::Color3;
+use crate::vec3::{Color3, Direction3};
 
 /// Light emitting surface.
 #[derive(Clone)]
@@ -33,7 +31,7 @@ impl Bsdf for DiffuseLightMaterial {
     /// Pure emitter — no scattering, always returns `None`.
     fn scatter(
         &self,
-        _wo: Vec3,
+        _wo: Direction3,
         _si: &SurfaceInteraction,
         _next_dim: &mut dyn FnMut() -> f32,
     ) -> Option<BsdfScatter> {
@@ -41,22 +39,22 @@ impl Bsdf for DiffuseLightMaterial {
     }
 
     /// No reflection — always zero.
-    fn eval(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> Color3 {
+    fn eval(&self, _wo: Direction3, _wi: Direction3, _si: &SurfaceInteraction) -> Color3 {
         Color3::new(0., 0., 0.)
     }
 
     /// No scattering PDF — always zero.
-    fn pdf(&self, _wo: Vec3, _wi: Vec3, _si: &SurfaceInteraction) -> f32 {
+    fn pdf(&self, _wo: Direction3, _wi: Direction3, _si: &SurfaceInteraction) -> f32 {
         0.0
     }
 
     /// No scattering PDF kind — always `None`.
-    fn pdf_kind(&self, _wo: Vec3, _si: &SurfaceInteraction) -> Option<PdfKind> {
+    fn pdf_kind(&self, _wo: Direction3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }
 
     /// Returns the emission color if the hit is on the front face, zero otherwise.
-    fn emitted(&self, _wo: Vec3, si: &SurfaceInteraction) -> Color3 {
+    fn emitted(&self, _wo: Direction3, si: &SurfaceInteraction) -> Color3 {
         if si.front_face() {
             self.tex
                 .as_ref()
@@ -68,14 +66,14 @@ impl Bsdf for DiffuseLightMaterial {
     }
 
     /// No reflection — always zero.
-    fn reflectance_estimate(&self, _wo: Vec3, _si: &SurfaceInteraction) -> f32 {
+    fn reflectance_estimate(&self, _wo: Direction3, _si: &SurfaceInteraction) -> f32 {
         0.0
     }
 }
 
 impl GpuSerializable for DiffuseLightMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![self.emit.x, self.emit.y, self.emit.z];
+        let params = vec![self.emit.x(), self.emit.y(), self.emit.z()];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {
