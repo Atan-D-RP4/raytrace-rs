@@ -1,208 +1,6 @@
-use std::ops::{
-    Add, AddAssign, Div, DivAssign, Index, IndexMut, Mul, MulAssign, Neg, Sub, SubAssign,
-};
-
 use derive_more::{Display, From};
 use rand::RngExt;
 use rand::distr::{Distribution, StandardUniform};
-
-// ── OLD custom Vec3 struct (dead code, kept for compilation of helper fns below) ──
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Vec3 {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
-
-impl Vec3 {
-    pub const fn new(x: f32, y: f32, z: f32) -> Self {
-        Self { x, y, z }
-    }
-    pub const ZERO: Self = Self::new(0., 0., 0.);
-    pub const ONE: Self = Self::new(1., 1., 1.);
-    pub fn random() -> Self {
-        let mut rng = rand::rng();
-        Self::new(rng.random(), rng.random(), rng.random())
-    }
-    pub fn random_range(min: f32, max: f32) -> Self {
-        let mut rng = rand::rng();
-        Self::new(
-            rng.random_range(min..max),
-            rng.random_range(min..max),
-            rng.random_range(min..max),
-        )
-    }
-    pub fn length_squared(&self) -> f32 {
-        self.x * self.x + self.y * self.y + self.z * self.z
-    }
-    pub fn length(&self) -> f32 {
-        self.length_squared().sqrt()
-    }
-    pub fn near_zero(&self) -> bool {
-        self.x.abs() < 1e-8 && self.y.abs() < 1e-8 && self.z.abs() < 1e-8
-    }
-    pub fn dot(&self, other: &Vec3) -> f32 {
-        self.x * other.x + self.y * other.y + self.z * other.z
-    }
-    pub fn cross(&self, other: &Vec3) -> Self {
-        Self {
-            x: self.y * other.z - self.z * other.y,
-            y: self.z * other.x - self.x * other.z,
-            z: self.x * other.y - self.y * other.x,
-        }
-    }
-    pub fn normalize(&self) -> Self {
-        let len = self.length();
-        if len < 1e-12 {
-            Self::ZERO
-        } else {
-            Self::new(self.x / len, self.y / len, self.z / len)
-        }
-    }
-}
-
-impl Add for Vec3 {
-    type Output = Self;
-    fn add(self, other: Self) -> Self {
-        Self::new(self.x + other.x, self.y + other.y, self.z + other.z)
-    }
-}
-impl AddAssign for Vec3 {
-    fn add_assign(&mut self, other: Self) {
-        self.x += other.x;
-        self.y += other.y;
-        self.z += other.z;
-    }
-}
-impl Sub for Vec3 {
-    type Output = Self;
-    fn sub(self, other: Self) -> Self {
-        Self::new(self.x - other.x, self.y - other.y, self.z - other.z)
-    }
-}
-impl SubAssign for Vec3 {
-    fn sub_assign(&mut self, other: Self) {
-        self.x -= other.x;
-        self.y -= other.y;
-        self.z -= other.z;
-    }
-}
-impl Mul for Vec3 {
-    type Output = Self;
-    fn mul(self, other: Self) -> Self {
-        Self::new(self.x * other.x, self.y * other.y, self.z * other.z)
-    }
-}
-impl Mul<f32> for Vec3 {
-    type Output = Self;
-    fn mul(self, t: f32) -> Self {
-        Self::new(self.x * t, self.y * t, self.z * t)
-    }
-}
-impl Mul<Vec3> for f32 {
-    type Output = Vec3;
-    fn mul(self, v: Vec3) -> Vec3 {
-        v * self
-    }
-}
-impl MulAssign<f32> for Vec3 {
-    fn mul_assign(&mut self, t: f32) {
-        self.x *= t;
-        self.y *= t;
-        self.z *= t;
-    }
-}
-impl Div<f32> for Vec3 {
-    type Output = Self;
-    fn div(self, t: f32) -> Self {
-        self * (1.0 / t)
-    }
-}
-impl DivAssign<f32> for Vec3 {
-    fn div_assign(&mut self, t: f32) {
-        self.x /= t;
-        self.y /= t;
-        self.z /= t;
-    }
-}
-impl Neg for Vec3 {
-    type Output = Self;
-    fn neg(self) -> Self {
-        Self::new(-self.x, -self.y, -self.z)
-    }
-}
-impl Index<usize> for Vec3 {
-    type Output = f32;
-    fn index(&self, idx: usize) -> &f32 {
-        match idx {
-            0 => &self.x,
-            1 => &self.y,
-            2 => &self.z,
-            _ => panic!("Vec3 index {idx} out of range"),
-        }
-    }
-}
-impl IndexMut<usize> for Vec3 {
-    fn index_mut(&mut self, idx: usize) -> &mut f32 {
-        match idx {
-            0 => &mut self.x,
-            1 => &mut self.y,
-            2 => &mut self.z,
-            _ => panic!("Vec3 index {idx} out of range"),
-        }
-    }
-}
-
-impl std::fmt::Display for Vec3 {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} {} {}", self.x, self.y, self.z)
-    }
-}
-
-impl From<glam::Vec3> for Vec3 {
-    fn from(v: glam::Vec3) -> Self {
-        Self::new(v.x, v.y, v.z)
-    }
-}
-impl From<Vec3> for glam::Vec3 {
-    fn from(v: Vec3) -> Self {
-        Self::new(v.x, v.y, v.z)
-    }
-}
-
-// ── Helper functions (operate on old Vec3, dead code but kept for now) ─────
-
-pub fn reflect(v: &Vec3, n: &Vec3) -> Vec3 {
-    *v - 2.0 * v.dot(n) * *n
-}
-
-pub fn refract(uv: &Vec3, n: &Vec3, etai_over_etat: f32) -> Vec3 {
-    let cos_theta = (-*uv).dot(n).min(1.0);
-    let r_out_perp = etai_over_etat * (*uv + cos_theta * *n);
-    let r_out_parallel = -(1.0 - r_out_perp.length_squared()).abs().sqrt() * *n;
-    r_out_perp + r_out_parallel
-}
-
-pub fn random_in_unit_disk_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
-    loop {
-        let point = Vec3::new(rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0), 0.);
-        if point.length_squared() < 1.0 {
-            return point;
-        }
-    }
-}
-
-pub fn random_unit_vector_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
-    random_on_sphere_with_rng(rng)
-}
-
-pub fn random_on_sphere_with_rng<R: rand::Rng + ?Sized>(rng: &mut R) -> Vec3 {
-    let y = rng.random_range(-1.0..1.0);
-    let theta = rng.random_range(0.0..std::f32::consts::TAU);
-    let r = (1.0_f32 - y * y).sqrt();
-    Vec3::new(r * theta.cos(), y, r * theta.sin())
-}
 
 /// Shirley concentric disk mapping: maps `(u, v)` in `[0, 1)²` to a point on the
 /// unit disk. Zero rejection, minimal distortion.
@@ -223,15 +21,6 @@ pub fn concentric_disk(u: f32, v: f32) -> (f32, f32) {
         (r * phi.cos(), r * phi.sin())
     };
     (x, y)
-}
-
-pub fn random_on_hemisphere_with_rng<R: rand::Rng + ?Sized>(rng: &mut R, normal: &Vec3) -> Vec3 {
-    let on_unit_sphere = random_unit_vector_with_rng(rng);
-    if on_unit_sphere.dot(normal) > 0.0 {
-        on_unit_sphere
-    } else {
-        -on_unit_sphere
-    }
 }
 
 // ── Newtype wrappers for glam::Vec3 ─────────────────────────────────────────
@@ -293,19 +82,20 @@ impl Default for Direction3 {
 
 // ── Macro helpers ──────────────────────────────────────────────────────────
 
-macro_rules! impl_deref {
+macro_rules! impl_accessors {
     ($ty:ident) => {
-        impl std::ops::Deref for $ty {
-            type Target = glam::Vec3;
+        impl $ty {
             #[inline(always)]
-            fn deref(&self) -> &glam::Vec3 {
-                &self.0
+            pub fn x(self) -> f32 {
+                self.0.x
             }
-        }
-        impl std::ops::DerefMut for $ty {
             #[inline(always)]
-            fn deref_mut(&mut self) -> &mut glam::Vec3 {
-                &mut self.0
+            pub fn y(self) -> f32 {
+                self.0.y
+            }
+            #[inline(always)]
+            pub fn z(self) -> f32 {
+                self.0.z
             }
         }
     };
@@ -411,11 +201,10 @@ macro_rules! impl_vec_methods {
     };
 }
 
-// ── Deref ──────────────────────────────────────────────────────────────────
-
-impl_deref!(Color3);
-impl_deref!(Point3);
-impl_deref!(Direction3);
+// ── Accessor ───────────────────────────────────────────────────────────────
+impl_accessors!(Color3);
+impl_accessors!(Point3);
+impl_accessors!(Direction3);
 
 // ── Constructors & constants ───────────────────────────────────────────────
 
@@ -590,10 +379,10 @@ impl std::ops::SubAssign<glam::Vec3> for Point3 {
     }
 }
 impl std::ops::Sub<Point3> for Point3 {
-    type Output = glam::Vec3;
+    type Output = Direction3;
     #[inline(always)]
-    fn sub(self, rhs: Point3) -> glam::Vec3 {
-        self.0 - rhs.0
+    fn sub(self, rhs: Point3) -> Direction3 {
+        Direction3(self.0 - rhs.0)
     }
 }
 

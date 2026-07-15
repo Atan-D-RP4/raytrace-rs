@@ -2,7 +2,6 @@ use glam::Vec3;
 use rand::RngExt;
 
 use crate::vec3::Point3;
-use crate::vec3::random_unit_vector_with_rng;
 
 #[allow(dead_code)]
 fn trilinear_interp(c: [[[f32; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {
@@ -56,8 +55,14 @@ impl Perlin {
 
     pub fn new() -> Self {
         let mut rng = rand::rng();
+        let randvec = std::array::from_fn(|_| {
+            let y = rng.random_range(-1.0..=1.0);
+            let theta = rng.random_range(0.0..=std::f32::consts::TAU);
+            let r = (1.0_f32 - y * y).sqrt();
+            Vec3::new(r * theta.cos(), r * theta.sin(), y)
+        });
         Self {
-            randvec: std::array::from_fn(|_| random_unit_vector_with_rng(&mut rng).into()),
+            randvec,
             perm_x: Self::generate_perm(),
             perm_y: Self::generate_perm(),
             perm_z: Self::generate_perm(),
