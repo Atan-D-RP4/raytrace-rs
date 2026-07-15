@@ -316,7 +316,8 @@ impl HashRng {
     }
 
     pub fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
-        let seed = pixel_seed(pixel_x, pixel_y).wrapping_add(sample_idx as u64 * GOLDEN_RATIO_HASH);
+        let seed = pixel_seed(pixel_x, pixel_y)
+            .wrapping_add((sample_idx as u64).wrapping_mul(GOLDEN_RATIO_HASH));
         Self { seed, counter: 0 }
     }
 }

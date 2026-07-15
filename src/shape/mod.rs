@@ -161,6 +161,13 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<
         // Compute the light's emission at the sampled point on the surface.
         // Construct a minimal SurfaceInteraction to call material.emitted().
         let point = origin + sample.direction.into_inner();
+        // Ensure normal is unit length — shape implementations may return
+        // non-unit normals in edge cases (e.g. very close light intersections).
+        if sample.normal.length_squared() < 1e-10 {
+            sample.normal = Direction3::ZERO;
+        } else {
+            sample.normal = Direction3(sample.normal.into_inner().normalize());
+        }
         let light_unit = sample.direction.normalize();
         // Front face: light's normal faces toward the shaded surface.
         let front_face = sample.normal.dot(-light_unit.into_inner()) > 0.0;

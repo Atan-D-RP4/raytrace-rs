@@ -63,7 +63,14 @@ impl SphereShape {
         let radius = self.radius;
         let phi = 2.0 * PI * r1;
         let (sin_phi, cos_phi) = phi.sin_cos();
-        let z = 1.0 + r2 * ((1.0 - (radius * radius) / distance_squared).sqrt() - 1.0);
+        // When inside the sphere (d² < r²), the standard cone formula gives
+        // an imaginary cosθ_max (sqrt of negative). Fall back to uniform sphere
+        // sampling: z ∈ [-1, 1] instead of z ∈ [cosθ_max, 1].
+        let z = if distance_squared > radius * radius {
+            1.0 + r2 * ((1.0 - (radius * radius) / distance_squared).sqrt() - 1.0)
+        } else {
+            1.0 - 2.0 * r2
+        };
         let r = (1.0 - z * z).sqrt();
         Direction3::new(r * cos_phi, r * sin_phi, z)
     }
@@ -124,7 +131,14 @@ impl Shape3D for SphereShape {
         }
 
         let point = ray.at(root);
-        let outward_normal = (point - current_center) / self.radius;
+        // FP32 ray-sphere quadratic accumulates error, producing a hit point
+        // that is slightly off the sphere surface.  Normalize to guarantee a
+        // unit-length normal (required by Hit::new / set_face_normal).
+        let outward_normal = Direction3(
+            ((point - current_center) / self.radius)
+                .into_inner()
+                .normalize(),
+        );
         let mapping_point = Point3(outward_normal.into_inner()); // unit-sphere direction for UV mapping
         let (u, v) = Self::get_sphere_uv(&mapping_point);
 
@@ -175,25 +189,47 @@ impl Shape3D for SphereShape {
         let direction = self.sample_direction(origin, u, v, time);
         let center = self.center.at(time);
 
-        // Compute actual ray-sphere intersection along the sampled direction.
-        // The unit direction tells us WHERE to look; the quadratic tells us HOW FAR.
+        // Compute ray-sphere intersection. For an origin OUTSIDE the sphere the
+        // near root (h - sqrtd) is the front-face entry point.  For an origin
+        // INSIDE the sphere the near root is behind the ray — use the far root
+        // (h + sqrtd) instead.
         let oc = center - origin;
         let h = direction.dot(oc.into_inner());
         let c = oc.length_squared() - self.radius * self.radius;
         let discriminant = (h * h - c).max(0.0);
         let sqrtd = discriminant.sqrt();
-        let distance = (h - sqrtd).max(0.001);
+        let near_dist = h - sqrtd;
+        let far_dist = h + sqrtd;
+        // Note: near_dist > 0 when the origin is outside and the ray points
+        // toward the sphere.  When near_dist <= 0 (origin inside or right at
+        // the surface), use the far root instead.
+        let raw_distance = if near_dist > 1e-6 {
+            near_dist
+        } else {
+            far_dist
+        };
+        // Compute the normal from the geometrically correct hit point so that
+        // the distance clamp below does not bias the surface orientation.
+        let true_hit = origin + direction * raw_distance;
+        let normal = Direction3(((true_hit - center) / self.radius).into_inner().normalize());
 
-        let hit_point = origin + direction * distance;
-        let normal = (hit_point - center) / self.radius;
+        // Clamp distance for PDF numerical stability — very close intersections
+        // would otherwise produce extreme area-PDF values.
+        let distance = raw_distance.max(0.001);
 
         // Area PDF: convert from solid-angle PDF (1/Ω) to area measure.
         // p_A(q) = p_ω(ω) · |cos θ_l| / d²
         let cos_theta = normal.dot(-direction.into_inner()).abs();
         let distance_squared = (center - origin).length_squared();
-        let cos_theta_max = (1.0 - (self.radius * self.radius) / distance_squared)
-            .sqrt()
-            .min(1.0);
+        // Inside the sphere: the sphere surface covers all directions (solid angle = 4π).
+        // Outside: cosθ_max = sqrt(1 - r²/d²).
+        let cos_theta_max = if distance_squared > self.radius * self.radius {
+            (1.0 - (self.radius * self.radius) / distance_squared)
+                .sqrt()
+                .min(1.0)
+        } else {
+            -1.0
+        };
         let solid_angle = 2.0 * PI * (1.0 - cos_theta_max);
         let area_pdf = if solid_angle > 1e-20 {
             (cos_theta / (solid_angle * distance * distance)).max(0.0)

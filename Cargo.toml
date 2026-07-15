@@ -1,3 +1,5 @@
+cargo-features = ["codegen-backend"]
+
 [package]
 name = "raytrace-rs"
 version = "0.1.0"
@@ -25,3 +27,11 @@ profile-with-tracing = ["profiling/profile-with-tracing"]
 profile-with-puffin = ["profiling/profile-with-puffin"]
 profile-with-tracy = ["profiling/profile-with-tracy"]
 profile-with-optick = ["profiling/profile-with-optick"]
+
+[profile.dev]
+codegen-backend = "cranelift"
+
+[profile.release]
+codegen-units = 1
+panic = "abort"
+lto = "fat"
