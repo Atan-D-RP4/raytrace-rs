@@ -575,7 +575,7 @@ ______________________________________________________________________
 
 | Doc | Relationship to Mesh | Status |
 |---|---|---|
-| `renderer_arch.md` §2, §9 | `SampleableEnum` needs `Mesh` variant (additive). `TriangleRasterizer` uses `MeshShape::triangles()` (§7.5 — resolved in v3). Primitive registration pattern matches. | ✅ Compatible |
+| `renderer_arch.md` §2, §9 | `LightPrimitive` needs `Mesh` variant (additive). `TriangleRasterizer` uses `MeshShape::triangles()` (§7.5 — resolved in v3). Primitive registration pattern matches. | ✅ Compatible |
 | `denoiser.md` | Denoiser post-processes film output. Orthogonal to geometry. No shared interfaces. | ✅ No conflict |
 | `adaptive-sampling.md` | Variance estimation + convergence criteria. Orthogonal to geometry types. | ✅ No conflict |
 | `samplestream-refactor.md` | `SampleStreamEnum` replaces `DimCursor` in integrator signatures. Mesh uses `Sampleable` (non-generic, raw params). | ✅ No conflict |

@@ -6,40 +6,11 @@ ______________________________________________________________________
 
 ## Changelog
 
-- **v1 (2026-06-27)** — Initial design. Decomposes monolithic `Renderer` into three
-  independent concerns: visibility generation, light transport estimation, and film
-  composition. Enables rasterizer and hybrid renderer without breaking the existing
-  path tracer.
-- **v2 (2026-06-28)** — Three-document audit with `docs/denoiser.md` and
-  `docs/adaptive-sampling.md`. Updated Film trait to acknowledge `apply_denoiser()`
-  extension. Updated CpuRenderer to show denoiser call. Fixed "What Does NOT Change"
-  section. Added cross-document integration table (§10) with GBuffer vs
-  DenoiserFeatures naming distinction and unified dependency order.
-- **v3 (2026-06-28)** — Four-document audit with `docs/samplestream-refactor.md`.
-  Fixed `add_sample` signature (removed phantom `weight` param). Added SampleStream
-  note to Integrator section. Added `docs/samplestream-refactor.md` cross-reference
-  table. Updated unified dependency order to include SampleStream steps 1-4.
-- **v4 (2026-06-28)** — Documented `weight: f64` parameter on `add_sample` as a
-  deferred upgrade with five use cases: MIS, denoiser confidence, adaptive sampling,
-  progressive rendering, and tile merging.
-- **v5 (2026-06-28)** — Static dispatch audit. Added `SampleableEnum` with `From` impls
-  (replaces `Arc<dyn Sampleable>`). Proposed `Integrator<W, S>` generic over world type
-  (aspirational — not yet implemented). Made `VisibilityGenerator<W>` generic. Updated all
-  renderer implementations. Updated "Why generics over dyn T" section with three-strategy
-  approach (generics, enums, trait-bound enums). Updated unified dependency order.
-- **v6 (2026-06-28)** — Applied Niri/Smithay `render_elements!` pattern to all enums:
-  **Descriptor → Concrete → Wrapper**. Added `SampleableKind` descriptor. Updated
-  "Why generics over dyn T" section with three-layer pattern description.
-- **v7 (2026-06-29)** — Updated §10 cross-reference to reflect `DenoiserFeatures` as
-  struct-of-arrays (SoA) following `VarianceEstimator` pattern. Documented SoA vs AoS
-  rationale for cache-friendly denoiser passes.
-- **v8 (2026-06-29)** — Updated §10 to document AOV (Arbitrary Output Variable)
-  relationship. `DenoiserFeatures` is a minimal AOV subset — the four buffers the
-  denoiser needs. Noted that a general `AOVBuffer` system can be added later for
-  compositing.
-- **v9 (2026-06-29)** — Updated §10 to reflect rename from `DenoiserFeatures` to
-  `AOVStorage`. AOVs are the fundamental abstraction: integrator writes, consumers
-  read. `GBuffer` vs `AOVStorage` naming distinction clarified.
+- **v11 (2026-07-16)** — Renamed `SampleableEnum` → `LightPrimitive`, `SampleableKind` →
+  `LightPrimitiveKind`, `IntersectableEnum` → `Primitive`. The enums are geometric
+  primitives (Sphere, Quad, etc.), not capability wrappers. `LightPrimitive` IS-A
+  `Primitive` that can be sampled as a light source, matching PBRT v4's
+  `Primitive` / `LightPrimitive` hierarchy.
 - **v10 (2026-07-13)** — Aligned doc with actual code after SampleStream refactor.
   Removed `SampleStreamEnum<S>` (does not exist — plain `S: SampleStream` generic used).
   Updated `Integrator<W: Intersectable, S: Sampler>` to `Integrator<S: SampleStream, R: SamplerRng>`
@@ -51,6 +22,40 @@ ______________________________________________________________________
   RayVisibilityGenerator, RasterCamera) as "(not yet implemented)". Updated §9
   "Why Integrator is generic over W" to reflect actual `&dyn Intersectable` usage.
   Updated §6 and §10 cross-references.
+- **v9 (2026-06-29)** — Updated §10 to reflect rename from `DenoiserFeatures` to
+  `AOVStorage`. AOVs are the fundamental abstraction: integrator writes, consumers
+  read. `GBuffer` vs `AOVStorage` naming distinction clarified.
+- **v8 (2026-06-29)** — Updated §10 to document AOV (Arbitrary Output Variable)
+  relationship. `DenoiserFeatures` is a minimal AOV subset — the four buffers the
+  denoiser needs. Noted that a general `AOVBuffer` system can be added later for
+  compositing.
+- **v7 (2026-06-29)** — Updated §10 cross-reference to reflect `DenoiserFeatures` as
+  struct-of-arrays (SoA) following `VarianceEstimator` pattern. Documented SoA vs AoS
+  rationale for cache-friendly denoiser passes.
+- **v6 (2026-06-28)** — Applied Niri/Smithay `render_elements!` pattern to all enums:
+  **Descriptor → Concrete → Wrapper**. Added `LightPrimitiveKind` descriptor. Updated
+  "Why generics over dyn T" section with three-layer pattern description.
+- **v5 (2026-06-28)** — Static dispatch audit. Added `LightPrimitive` with `From` impls
+  (replaces `Arc<dyn Sampleable>`). Proposed `Integrator<W, S>` generic over world type
+  (aspirational — not yet implemented). Made `VisibilityGenerator<W>` generic. Updated all
+  renderer implementations. Updated "Why generics over dyn T" section with three-strategy
+  approach (generics, enums, trait-bound enums). Updated unified dependency order.
+- **v4 (2026-06-28)** — Documented `weight: f64` parameter on `add_sample` as a
+  deferred upgrade with five use cases: MIS, denoiser confidence, adaptive sampling,
+  progressive rendering, and tile merging.
+- **v3 (2026-06-28)** — Four-document audit with `docs/samplestream-refactor.md`.
+  Fixed `add_sample` signature (removed phantom `weight` param). Added SampleStream
+  note to Integrator section. Added `docs/samplestream-refactor.md` cross-reference
+  table. Updated unified dependency order to include SampleStream steps 1-4.
+- **v2 (2026-06-28)** — Three-document audit with `docs/denoiser.md` and
+  `docs/adaptive-sampling.md`. Updated Film trait to acknowledge `apply_denoiser()`
+  extension. Updated CpuRenderer to show denoiser call. Fixed "What Does NOT Change"
+  section. Added cross-document integration table (§10) with GBuffer vs
+  DenoiserFeatures naming distinction and unified dependency order.
+- **v1 (2026-06-27)** — Initial design. Decomposes monolithic `Renderer` into three
+  independent concerns: visibility generation, light transport estimation, and film
+  composition. Enables rasterizer and hybrid renderer without breaking the existing
+  path tracer.
 
 ______________________________________________________________________
 
@@ -149,7 +154,7 @@ pub trait Sampleable: Intersectable + Send + Sync {
 }
 ```
 
-#### SampleableEnum (NEW — replaces `Arc<dyn Sampleable>`)
+#### LightPrimitive (NEW — replaces `Arc<dyn Sampleable>`)
 
 Follows the Niri/Smithay `render_elements!` pattern: **Descriptor → Concrete → Wrapper**.
 The wrapper enum delegates the trait via `match`, enabling zero-cost static dispatch.
@@ -157,7 +162,7 @@ The wrapper enum delegates the trait via `match`, enabling zero-cost static disp
 ```rust
 // === Descriptor enum (lightweight, Clone+Copy, describes what to build) ===
 #[derive(Clone, Copy, Debug)]
-pub enum SampleableKind {
+pub enum LightPrimitiveKind {
     Sphere { center: Point3, radius: f64 },
     Quad { Q: Point3, u: Vec3, v: Vec3 },
     MovingSphere { center: Point3, radius: f64, speed: Vec3 },
@@ -165,13 +170,13 @@ pub enum SampleableKind {
 
 // === Wrapper enum (delegates Sampleable via match) ===
 #[derive(Debug)]
-pub enum SampleableEnum {
+pub enum LightPrimitive {
     Sphere(Sphere),
     Quad(Quad),
     MovingSphere(MovingSphere),
 }
 
-impl Sampleable for SampleableEnum {
+impl Sampleable for LightPrimitive {
     fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
         match self {
             Self::Sphere(s) => s.pdf_value(origin, direction, time),
@@ -189,31 +194,31 @@ impl Sampleable for SampleableEnum {
 }
 
 // === From impls for ergonomic construction (Niri/Smithay pattern) ===
-impl From<Sphere> for SampleableEnum { fn from(s: Sphere) -> Self { Self::Sphere(s) } }
-impl From<Quad> for SampleableEnum { fn from(q: Quad) -> Self { Self::Quad(q) } }
-impl From<MovingSphere> for SampleableEnum { fn from(s: MovingSphere) -> Self { Self::MovingSphere(s) } }
+impl From<Sphere> for LightPrimitive { fn from(s: Sphere) -> Self { Self::Sphere(s) } }
+impl From<Quad> for LightPrimitive { fn from(q: Quad) -> Self { Self::Quad(q) } }
+impl From<MovingSphere> for LightPrimitive { fn from(s: MovingSphere) -> Self { Self::MovingSphere(s) } }
 
 // === Construction from descriptor ===
-impl SampleableEnum {
-    pub fn new(kind: &SampleableKind) -> Self {
+impl LightPrimitive {
+    pub fn new(kind: &LightPrimitiveKind) -> Self {
         match kind {
-            SampleableKind::Sphere { center, radius } => Sphere::new(*center, *radius).into(),
-            SampleableKind::Quad { Q, u, v } => Quad::new(*Q, *u, *v).into(),
-            SampleableKind::MovingSphere { center, radius, speed } =>
+            LightPrimitiveKind::Sphere { center, radius } => Sphere::new(*center, *radius).into(),
+            LightPrimitiveKind::Quad { Q, u, v } => Quad::new(*Q, *u, *v).into(),
+            LightPrimitiveKind::MovingSphere { center, radius, speed } =>
                 MovingSphere::new(*center, *radius, *speed).into(),
         }
     }
 }
 
-// Scene stores Vec<SampleableEnum> instead of Vec<Arc<dyn Sampleable>>
+// Scene stores Vec<LightPrimitive> instead of Vec<Arc<dyn Sampleable>>
 pub struct Scene {
-    objects: Vec<IntersectableEnum>,   // also an enum (see CORE_THESIS §2.4)
-    lights: Vec<SampleableEnum>,
+    objects: Vec<Primitive>,   // also an enum (see CORE_THESIS §2.4)
+    lights: Vec<LightPrimitive>,
 }
 ```
 
 **Current state:** `Scene` uses `Vec<Arc<dyn Sampleable>>`.
-**Evolution:** Replace with `Vec<SampleableEnum>`. The `From` impls make
+**Evolution:** Replace with `Vec<LightPrimitive>`. The `From` impls make
 construction ergonomic: `scene.add_light(Sphere::new(...))` auto-converts.
 
 ### Key Types
@@ -775,7 +780,7 @@ are already complete in the current codebase.
 - `Integrator` — add world generic `W: Intersectable` to eliminate `&dyn Intersectable` (from this doc)
 - `Integrator` — `DimCursor<S>` replaced by `&mut S: &mut SampleStream` (from `docs/samplestream-refactor.md`), plus new `&mut R: SamplerRng` parameter
 - `CpuRenderer` — gains `R: SamplerRng`, `SF: SampleStreamFactory`, `RF: RngFactory` generics; creates per-pixel streams/rngs via factories internally (from `docs/samplestream-refactor.md`)
-- `Renderer::render()` — scene parameter changes from `(&W, &[Arc<dyn Sampleable>])` to `(&W, &[SampleableEnum])` (from this doc)
+- `Renderer::render()` — scene parameter changes from `(&W, &[Arc<dyn Sampleable>])` to `(&W, &[LightPrimitive])` (from this doc)
 
 These changes are all additive or backwards-compatible. The `Renderer` trait signature
 is unchanged (only the scene parameter type changes). The denoiser, adaptive sampling,
@@ -917,9 +922,9 @@ following the Niri/Smithay `render_elements!` pattern for enum-based delegation:
    `CpuRenderer<I, S, R, SF, RF>`, `RasterRenderer<V>`, `HybridRenderer<V, I, S>`
    are all generic. Zero-cost monomorphization.
 
-2. **Enums for scene objects** — `SampleableEnum` replaces `Arc<dyn Sampleable>`.
-   `IntersectableEnum` (from CORE_THESIS §2.4) replaces `Arc<dyn Intersectable>`.
-   `From` impls make construction ergonomic. `match` enables type-specific optimization.
+2. **Enums for scene objects** — `LightPrimitive` replaces `Arc<dyn Sampleable>`.
+    `Primitive` (from CORE_THESIS §2.4) replaces `Arc<dyn Intersectable>`.
+    `From` impls make construction ergonomic. `match` enables type-specific optimization.
 
 3. **Generics for trait-object hot paths** — `S: SampleStream` and `R: SamplerRng`
    are generic parameters (not `dyn`), giving zero-cost dispatch. `ConvergenceCriterionEnum`
@@ -928,9 +933,9 @@ following the Niri/Smithay `render_elements!` pattern for enum-based delegation:
 
 Each enum follows the **Descriptor → Concrete → Wrapper** pattern:
 
-- **Descriptor** (e.g., `SampleableKind`): lightweight, Clone+Copy, describes what to build
+- **Descriptor** (e.g., `LightPrimitiveKind`): lightweight, Clone+Copy, describes what to build
 - **Concrete types** (e.g., `Sphere`, `Quad`): implement the trait, hold full state
-- **Wrapper enum** (e.g., `SampleableEnum`): delegates via `match`, enables `From` impls
+- **Wrapper enum** (e.g., `LightPrimitive`): delegates via `match`, enables `From` impls
 
 This matches what `niri_render_elements!` and `smithay::render_elements!` do:
 generate an enum that wraps concrete types, delegate every trait method via `match`,
@@ -1016,7 +1021,7 @@ visibility generator. These are different abstractions at different layers:
 | CpuRenderer\<I, S, R, SF, RF> (§1-2) | §6 — Factory pattern | CpuRenderer gained `R`, `SF`, `RF` generics; creates per-pixel streams/rngs via factories |
 | Renderer\<W, C, F> (§1-2) | Not changed by SampleStream | Renderer trait dropped `S` generic — sampling is internal to CpuRenderer |
 | VisibilityGenerator (§2) | Independent | Visibility decomposition is orthogonal to how integrator gets random numbers |
-| SampleableEnum (§2) | Independent | Scene object enums are orthogonal to sampler abstraction |
+| LightPrimitive (§2) | Independent | Scene object enums are orthogonal to sampler abstraction |
 
 **Compatibility:** The SampleStream refactor is already complete and is fully
 compatible with the hybrid architecture. The visibility/integration/composition
@@ -1030,7 +1035,7 @@ independent randomness (material scattering, path termination).
 
 | Order | What | Source Doc | Breaking? |
 |-------|------|------------|-----------|
-| 1 | SampleableEnum + From impls | renderer_arch.md §2 | No |
+| 1 | LightPrimitive + From impls | renderer_arch.md §2 | No |
 | 2 | Integrator\<S: SampleStream, R: SamplerRng> two-stream refactor | samplestream-refactor.md | No |
 | 3 | SampleStreamFactory + RngFactory traits + Renderer\<W, C, F> (dropped S generic) | samplestream-refactor.md | No |
 | 4 | PdfEnum\<S> (already exists, keep) | pdf.rs | No |
@@ -1043,7 +1048,7 @@ independent randomness (material scattering, path termination).
 | 11 | OIDN integration (optional) | denoiser.md Phase 3 | No |
 
 Steps 1-4 (static dispatch foundation) are partially complete: the two-stream
-refactor (steps 2-3) is done. SampleableEnum (step 1) remains aspirational.
+refactor (steps 2-3) is done. LightPrimitive (step 1) remains aspirational.
 Steps 5-7 (denoiser/adaptive) can proceed in parallel with steps 8-9 (hybrid
 rendering). Step 10 depends on step 6 (needs `RgbFilm<D>` generic).
 Step 11 is independent.
