@@ -35,11 +35,12 @@ pub enum GpuMaterialType {
     Lambertian = 0,
     Metal = 1,
     Dielectric = 2,
-    DiffuseLight = 3,
-    Isotropic = 4,
-    Glossy = 5,
-    Mix = 6,
-    Coated = 7,
+    RoughDielectric = 3,
+    DiffuseLight = 4,
+    Isotropic = 5,
+    Glossy = 6,
+    Mix = 7,
+    Coated = 8,
     /// Marks a node that exists only for its children (no parameters).
     Passthrough = 0xFFFF,
     /// Absence of material — surface contributes nothing.

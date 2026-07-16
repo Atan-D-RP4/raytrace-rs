@@ -278,6 +278,12 @@ impl Scene {
         scene.add_sphere(Point3::new(260., 150., 45.), 50., Material::dielectric(1.5));
 
         scene.add_sphere(
+            Point3::new(0., 250., 165.),
+            50.,
+            Material::rough_dielectric(1.5, 0.3, Color3::new(1.0, 0.5, 0.5)),
+        );
+
+        scene.add_sphere(
             Point3::new(0., 150., 145.),
             50.,
             Material::metal(Color3::new(0.8, 0.8, 0.9), 1.0),
@@ -287,14 +293,14 @@ impl Scene {
             sphere(
                 Point3::new(360., 150., 145.),
                 70.,
-                Material::dielectric(1.5),
+                Material::dielectric(0.9),
             ),
             0.2,
             Color3::new(0.2, 0.4, 0.9).into_inner(),
         )));
 
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
-            sphere(Point3::new(0., 0., 0.), 5000., Material::dielectric(1.5)),
+            sphere(Point3::new(0., 0., 0.), 5000., Material::dielectric(0.9)),
             0.0001,
             // Color3::from(1., 1., 1.), // Pure white
             Color3::new(0.7, 0.1, 0.1).into_inner(), // A faint red tint to visualize the volume better
@@ -315,7 +321,7 @@ impl Scene {
 
         let pertext: Arc<dyn Texture> = Arc::new(
             MappedTexture::new(NoiseTexture::new())
-                .with_mapping3d(TextureMapping3D::point_scale_uniform(0.2)),
+                .with_mapping3d(TextureMapping3D::point_scale_uniform(0.7)),
         );
         scene.add_sphere(
             Point3::new(220., 280., 300.),

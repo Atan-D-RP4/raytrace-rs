@@ -33,7 +33,7 @@ use crate::onb::Onb;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Direction3};
 
-const MIRROR_THRESHOLD: f32 = 0.01;
+use super::MIRROR_THRESHOLD;
 
 /// Microfacet conductor BRDF (GGX).
 #[derive(Clone)]

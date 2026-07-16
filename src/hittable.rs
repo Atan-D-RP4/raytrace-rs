@@ -11,8 +11,7 @@ use crate::vec3::{Color3, Direction3, Point3};
 /// intersection point.
 ///
 /// This is a low-level struct focused on geometric details, used as an intermediate
-/// TODO(type-safety): Point3/Vec3/Color3 are aliases today, so these fields can still be mixed up
-/// accidentally. Typed newtypes would catch that at compile time.
+/// representation.
 pub struct Hit {
     /// Ray parameter `t` at the intersection point.
     pub time: f32,

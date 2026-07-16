@@ -25,12 +25,13 @@ fn phase_tag(m: &Material) -> u8 {
         Material::Lambertian(_) => 0x01,
         Material::Metal(_) => 0x02,
         Material::Dielectric(_) => 0x03,
-        Material::DiffuseLight(_) => 0x04,
-        Material::Isotropic(_) => 0x05,
-        Material::Glossy(_) => 0x06,
-        Material::Mix { .. } => 0x07,
-        Material::Coated { .. } => 0x08,
-        Material::Custom(_) => 0x09,
+        Material::RoughDielectric(_) => 0x04,
+        Material::DiffuseLight(_) => 0x05,
+        Material::Isotropic(_) => 0x06,
+        Material::Glossy(_) => 0x07,
+        Material::Mix { .. } => 0x08,
+        Material::Coated { .. } => 0x09,
+        Material::Custom(_) => 0x0a,
     }
 }
 

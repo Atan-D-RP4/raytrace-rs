@@ -41,6 +41,7 @@ mod isotropic;
 mod lambertian;
 mod metal;
 mod mix;
+mod rough_dielectric;
 
 pub use gpu::{GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 
@@ -52,6 +53,7 @@ pub use isotropic::IsotropicMaterial;
 pub use lambertian::LambertianMaterial;
 pub use metal::MetalMaterial;
 pub use mix::MixMaterial;
+pub use rough_dielectric::RoughDielectricMaterial;
 
 use std::sync::Arc;
 
@@ -63,6 +65,13 @@ use crate::vec3::{Color3, Direction3};
 
 use self::gpu::GpuSerializable;
 use gpu::GPU_NONE;
+
+/// Maximum number of BSDF sampling strategies produced by any material.
+/// Used as the fixed capacity for `BsdfScatter::NonDelta` / `Split`.
+/// Current max ~2 (Mix + Coated); bumped to 4 as safety margin.
+pub const MAX_BSDF_STRATS: usize = 4;
+
+const MIRROR_THRESHOLD: f32 = 0.01;
 
 /// Smith's geometry function (Schlick-GGX approximation).
 ///
@@ -100,11 +109,6 @@ fn blackbody(temp: f32) -> Color3 {
     let b = ((t / 1000.0).powf(1.5) * 1.0).clamp(0., 1.);
     Color3::new(r, g, b)
 }
-
-/// Maximum number of BSDF sampling strategies produced by any material.
-/// Used as the fixed capacity for `BsdfScatter::NonDelta` / `Split`.
-/// Current max ~2 (Mix + Coated); bumped to 4 as safety margin.
-pub const MAX_BSDF_STRATS: usize = 4;
 
 /// Material sample result for one bounce.
 #[derive(Clone, Copy, Debug)]
@@ -226,6 +230,8 @@ pub enum Material {
     Metal(MetalMaterial),
     /// Dielectric transmission/reflection.
     Dielectric(DielectricMaterial),
+    /// Rough dielectric microfacet BTDF (GGX) with Beer's law absorption.
+    RoughDielectric(RoughDielectricMaterial),
     /// Light emitting surface.
     DiffuseLight(DiffuseLightMaterial),
     /// Isotropic scattering medium.
@@ -253,6 +259,7 @@ impl Material {
             Material::Lambertian(inner) => inner.scatter(wo, si, next_dim),
             Material::Metal(inner) => inner.scatter(wo, si, next_dim),
             Material::Dielectric(inner) => inner.scatter(wo, si, next_dim),
+            Material::RoughDielectric(inner) => inner.scatter(wo, si, next_dim),
             Material::DiffuseLight(inner) => inner.scatter(wo, si, next_dim),
             Material::Isotropic(inner) => inner.scatter(wo, si, next_dim),
             Material::Glossy(inner) => inner.scatter(wo, si, next_dim),
@@ -272,6 +279,7 @@ impl Material {
             Material::Lambertian(inner) => inner.eval(wo, wi, si),
             Material::Metal(inner) => inner.eval(wo, wi, si),
             Material::Dielectric(inner) => inner.eval(wo, wi, si),
+            Material::RoughDielectric(inner) => inner.eval(wo, wi, si),
             Material::DiffuseLight(inner) => inner.eval(wo, wi, si),
             Material::Isotropic(inner) => inner.eval(wo, wi, si),
             Material::Glossy(inner) => inner.eval(wo, wi, si),
@@ -288,6 +296,7 @@ impl Material {
             Material::Lambertian(inner) => inner.pdf(wo, wi, si),
             Material::Metal(inner) => inner.pdf(wo, wi, si),
             Material::Dielectric(inner) => inner.pdf(wo, wi, si),
+            Material::RoughDielectric(inner) => inner.pdf(wo, wi, si),
             Material::DiffuseLight(inner) => inner.pdf(wo, wi, si),
             Material::Isotropic(inner) => inner.pdf(wo, wi, si),
             Material::Glossy(inner) => inner.pdf(wo, wi, si),
@@ -304,6 +313,7 @@ impl Material {
             Material::Lambertian(inner) => inner.pdf_kind(wo, si),
             Material::Metal(inner) => inner.pdf_kind(wo, si),
             Material::Dielectric(inner) => inner.pdf_kind(wo, si),
+            Material::RoughDielectric(inner) => inner.pdf_kind(wo, si),
             Material::DiffuseLight(inner) => inner.pdf_kind(wo, si),
             Material::Isotropic(inner) => inner.pdf_kind(wo, si),
             Material::Glossy(inner) => inner.pdf_kind(wo, si),
@@ -322,6 +332,7 @@ impl Material {
             Material::Lambertian(inner) => inner.emitted(wo, si),
             Material::Metal(inner) => inner.emitted(wo, si),
             Material::Dielectric(inner) => inner.emitted(wo, si),
+            Material::RoughDielectric(inner) => inner.emitted(wo, si),
             Material::DiffuseLight(inner) => inner.emitted(wo, si),
             Material::Isotropic(inner) => inner.emitted(wo, si),
             Material::Glossy(inner) => inner.emitted(wo, si),
@@ -351,6 +362,7 @@ impl Material {
             Material::Lambertian(inner) => inner.reflectance_estimate(wo, si),
             Material::Metal(inner) => inner.reflectance_estimate(wo, si),
             Material::Dielectric(inner) => inner.reflectance_estimate(wo, si),
+            Material::RoughDielectric(inner) => inner.reflectance_estimate(wo, si),
             Material::DiffuseLight(inner) => inner.reflectance_estimate(wo, si),
             Material::Isotropic(inner) => inner.reflectance_estimate(wo, si),
             Material::Glossy(inner) => inner.reflectance_estimate(wo, si),
@@ -439,6 +451,7 @@ impl GpuSerializable for Material {
             Material::Lambertian(inner) => inner.serialize_gpu(buf),
             Material::Metal(inner) => inner.serialize_gpu(buf),
             Material::Dielectric(inner) => inner.serialize_gpu(buf),
+            Material::RoughDielectric(inner) => inner.serialize_gpu(buf),
             Material::DiffuseLight(inner) => inner.serialize_gpu(buf),
             Material::Isotropic(inner) => inner.serialize_gpu(buf),
             Material::Glossy(inner) => inner.serialize_gpu(buf),
@@ -506,6 +519,33 @@ impl Material {
     pub fn dielectric_tinted(ior: f32, tint: Color3) -> Self {
         Material::Dielectric(DielectricMaterial {
             ior,
+            tint,
+            r0: fresnel_r0(ior),
+        })
+    }
+
+    pub fn rough_dielectric(ior: f32, roughness: f32, tint: Color3) -> Self {
+        Material::RoughDielectric(RoughDielectricMaterial {
+            ior,
+            roughness,
+            tint,
+            r0: fresnel_r0(ior),
+        })
+    }
+
+    pub fn rough_dielectric_with_roughness(ior: f32, roughness: f32) -> Self {
+        Material::RoughDielectric(RoughDielectricMaterial {
+            ior,
+            roughness,
+            tint: Color3::new(1., 1., 1.),
+            r0: fresnel_r0(ior),
+        })
+    }
+
+    pub fn rough_dielectric_with_tint(ior: f32, tint: Color3) -> Self {
+        Material::RoughDielectric(RoughDielectricMaterial {
+            ior,
+            roughness: 0.1,
             tint,
             r0: fresnel_r0(ior),
         })

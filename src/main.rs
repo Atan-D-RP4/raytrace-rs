@@ -404,11 +404,19 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 /// Returns the shared framebuffer plus image dimensions (for window creation).
 /// The render thread consumes the scene, builds the BVH, and progressively
 /// renders into the returned framebuffer.
-fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, u32, u32) {
-    // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
-    let mut config = *scene.config();
-
+/// Shared scene→pipeline setup used by both the headless and live-preview paths.
+/// Applies env-var overrides, then builds the camera, film, integrator, sampler,
+/// and renderer with convergence thresholds configured.
+/// TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
+fn build_render_context(
+    scene: &Scene,
+) -> (
+    PerspectiveCamera,
+    RgbFilm,
+    CpuRenderer<PathTracingIntegrator, SobolSampler>,
+) {
     // Allow env-var overrides for fast iteration during debugging.
+    let mut config = *scene.config();
     if let Some(width) = std::env::var("RT_WIDTH")
         .ok()
         .and_then(|s| s.parse::<i32>().ok())
@@ -437,15 +445,20 @@ fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, 
     );
     let sampler = SobolSampler::new(config.samples_per_pixel as u32);
     let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler);
-    let (width, height) = camera.image_resolution();
-    let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new_with(width, height)));
 
     renderer.set_threshold_abs(1e-7);
     renderer.set_threshold_rel(1e-5);
-
     // Disable adaptive sampling for headless mode to ensure full sample count is rendered.
     // renderer.set_min_samples_before_adapt(u32::MAX);
     renderer.set_min_samples_before_adapt(128);
+
+    (camera, film, renderer)
+}
+
+fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, u32, u32) {
+    let (camera, mut film, renderer) = build_render_context(&scene);
+    let (width, height) = camera.image_resolution();
+    let framebuffer = Arc::new(std::sync::RwLock::new(Framebuffer::new_with(width, height)));
 
     let fb = framebuffer.clone();
     let sn = scene_name.to_string();
@@ -503,50 +516,12 @@ fn native_live_render(
 
 #[profiling::function]
 fn headless_render(scene: Scene, scene_name: &str) {
-    // TODO(gpu): keep this scene-construction boundary mirrored in future GPU pipeline.
     profiling::scope!("scene_build");
 
     let filename = format!("{}.png", scene_name);
 
-    let mut config = *scene.config();
-
-    // Allow env-var overrides for fast iteration during debugging.
-    if let Some(width) = std::env::var("RT_WIDTH")
-        .ok()
-        .and_then(|s| s.parse::<i32>().ok())
-    {
-        config.image_width = width;
-    }
-    if let Some(spp) = std::env::var("RT_SAMPLES")
-        .ok()
-        .and_then(|s| s.parse::<i32>().ok())
-    {
-        config.samples_per_pixel = spp;
-    }
-    if let Some(depth) = std::env::var("RT_DEPTH")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-    {
-        config.max_depth = depth;
-    }
-
-    let camera = PerspectiveCamera::from_config(&config);
-    let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
-    let integrator = PathTracingIntegrator::new(
-        config.max_depth,
-        config.background,
-        scene.env_map().cloned(),
-    );
-    let sampler = SobolSampler::new(config.samples_per_pixel as u32);
-    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler);
+    let (camera, mut film, renderer) = build_render_context(&scene);
     let (width, height) = camera.image_resolution();
-
-    renderer.set_threshold_abs(1e-7);
-    renderer.set_threshold_rel(1e-5);
-
-    // Disable adaptive sampling for headless mode to ensure full sample count is rendered.
-    // renderer.set_min_samples_before_adapt(u32::MAX);
-    renderer.set_min_samples_before_adapt(128);
 
     let (mut objects, light_objects) = scene.into_objects();
 

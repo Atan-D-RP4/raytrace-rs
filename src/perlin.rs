@@ -55,6 +55,10 @@ impl Perlin {
 
     pub fn new() -> Self {
         let mut rng = rand::rng();
+        // Uniform sphere sampling via cylindrical projection.
+        // Sample y ∈ [-1, 1] uniformly, then place the point on the sphere's
+        // cross-sectional circle at that height: r = √(1 - y²), θ ∈ [0, 2π).
+        // This avoids rejection sampling — constant time, no wasted iterations.
         let randvec = std::array::from_fn(|_| {
             let y = rng.random_range(-1.0..=1.0);
             let theta = rng.random_range(0.0..=std::f32::consts::TAU);
