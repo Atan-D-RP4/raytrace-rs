@@ -6,6 +6,11 @@ ______________________________________________________________________
 
 ## Changelog
 
+- **v12 (2026-07-17)** — Defined `Primitive` enum (replacing implicit `IntersectableEnum`)
+  with Descriptor → Concrete → Wrapper pattern + `Custom(Arc<dyn Intersectable>)` escape
+  hatch. Changed `LightPrimitive` from parallel enum to newtype `LightPrimitive(Primitive)`
+  with concrete `From` impls for sampleable shapes. Updated Scene type, all trait code
+  blocks, Evolution Path, and Dependency Order. See §Primitive vs LightPrimitive.
 - **v11 (2026-07-16)** — Renamed `SampleableEnum` → `LightPrimitive`, `SampleableKind` →
   `LightPrimitiveKind`, `IntersectableEnum` → `Primitive`. The enums are geometric
   primitives (Sphere, Quad, etc.), not capability wrappers. `LightPrimitive` IS-A
@@ -154,7 +159,7 @@ pub trait Sampleable: Intersectable + Send + Sync {
 }
 ```
 
-#### LightPrimitive (NEW — replaces `Arc<dyn Sampleable>`)
+#### Primitive (replaces `Arc<dyn Intersectable>`)
 
 Follows the Niri/Smithay `render_elements!` pattern: **Descriptor → Concrete → Wrapper**.
 The wrapper enum delegates the trait via `match`, enabling zero-cost static dispatch.
@@ -162,64 +167,118 @@ The wrapper enum delegates the trait via `match`, enabling zero-cost static disp
 ```rust
 // === Descriptor enum (lightweight, Clone+Copy, describes what to build) ===
 #[derive(Clone, Copy, Debug)]
-pub enum LightPrimitiveKind {
+pub enum PrimitiveKind {
     Sphere { center: Point3, radius: f64 },
     Quad { Q: Point3, u: Vec3, v: Vec3 },
     MovingSphere { center: Point3, radius: f64, speed: Vec3 },
 }
 
-// === Wrapper enum (delegates Sampleable via match) ===
+// === Wrapper enum (delegates Intersectable via match) ===
 #[derive(Debug)]
-pub enum LightPrimitive {
-    Sphere(Sphere),
-    Quad(Quad),
-    MovingSphere(MovingSphere),
+pub enum Primitive {
+    Sphere(ShapeObject<SphereShape, Arc<Material>>),
+    Quad(ShapeObject<QuadShape, Arc<Material>>),
+    MovingSphere(ShapeObject<MovingSphereShape, Arc<Material>>),
+    /// User-custom geometry. The wrapped type is responsible for implementing
+    /// both `Intersectable` and `Bounded`.
+    Custom(Arc<dyn Intersectable>),
+}
+
+impl Intersectable for Primitive {
+    fn intersect(&self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit> {
+        match self {
+            Self::Sphere(s) => s.intersect(ray, ray_t),
+            Self::Quad(q) => q.intersect(ray, ray_t),
+            Self::MovingSphere(m) => m.intersect(ray, ray_t),
+            Self::Custom(c) => c.intersect(ray, ray_t),
+        }
+    }
+}
+
+// === From impls for ergonomic construction ===
+impl From<ShapeObject<SphereShape, Arc<Material>>> for Primitive { ... }
+impl From<ShapeObject<QuadShape, Arc<Material>>> for Primitive { ... }
+impl From<ShapeObject<MovingSphereShape, Arc<Material>>> for Primitive { ... }
+impl<T: Intersectable + 'static> From<Arc<T>> for Primitive { ... }
+```
+
+> **Note:** The `Sphere` variant wraps the concrete type, not the raw shape.
+> `ShapeObject<SphereShape, Arc<Material>>` combines geometry + material +
+> bounding box into a single `Intersectable` value. The `From` impls make
+> construction ergonomic: `scene.add_object(SphereShape::new(center, r), mat)`.
+
+The `Custom` variant follows the same escape-hatch pattern as `Material::Custom(Arc<dyn Bsdf>)`.
+It enables pluggable geometry from library consumers without modifying the enum.
+
+#### LightPrimitive (subset that can be sampled as a light source)
+
+`LightPrimitive` is a newtype over `Primitive` that only accepts shapes which
+implement `Sampleable`. This avoids duplicating variants and makes the
+subset relationship explicit in the type system:
+
+```rust
+/// A primitive that can be sampled as a light source.
+/// Only primitives implementing `Sampleable` can be constructed.
+pub struct LightPrimitive(Primitive);
+
+// === Concrete From impls for shapes known to be sampleable ===
+impl From<ShapeObject<SphereShape, Arc<Material>>> for LightPrimitive {
+    fn from(s: ShapeObject<SphereShape, Arc<Material>>) -> Self {
+        Self(Primitive::Sphere(s))
+    }
+}
+impl From<ShapeObject<QuadShape, Arc<Material>>> for LightPrimitive {
+    fn from(q: ShapeObject<QuadShape, Arc<Material>>) -> Self {
+        Self(Primitive::Quad(q))
+    }
+}
+impl From<ShapeObject<MovingSphereShape, Arc<Material>>> for LightPrimitive {
+    fn from(m: ShapeObject<MovingSphereShape, Arc<Material>>) -> Self {
+        Self(Primitive::MovingSphere(m))
+    }
+}
+
+// === Fallible conversion from generic Primitive ===
+impl TryFrom<Primitive> for LightPrimitive {
+    type Error = Primitive;
+    fn try_from(p: Primitive) -> Result<Self, Self::Error> {
+        match &p {
+            Primitive::Sphere(_) | Primitive::Quad(_) | Primitive::MovingSphere(_) => Ok(Self(p)),
+            Primitive::Custom(_) => Err(p), // not guaranteed sampleable
+        }
+    }
 }
 
 impl Sampleable for LightPrimitive {
-    fn pdf_value(&self, origin: Vec3, direction: Vec3, time: f64) -> f64 {
-        match self {
-            Self::Sphere(s) => s.pdf_value(origin, direction, time),
-            Self::Quad(q) => q.pdf_value(origin, direction, time),
-            Self::MovingSphere(s) => s.pdf_value(origin, direction, time),
+    fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
+        // Match-delegate to the inner type's Sampleable impl
+        match &self.0 {
+            Primitive::Sphere(s) => s.pdf_value(origin, direction, time),
+            Primitive::Quad(q) => q.pdf_value(origin, direction, time),
+            Primitive::MovingSphere(m) => m.pdf_value(origin, direction, time),
+            Primitive::Custom(_) => unreachable!("Custom primitives can't be LightPrimitives"),
         }
     }
-    fn random_direction(&self, origin: Vec3, u: f64, v: f64, time: f64) -> Vec3 {
-        match self {
-            Self::Sphere(s) => s.random_direction(origin, u, v, time),
-            Self::Quad(q) => q.random_direction(origin, u, v, time),
-            Self::MovingSphere(s) => s.random_direction(origin, u, v, time),
-        }
-    }
+    fn random_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 { ... }
+    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample { ... }
 }
 
-// === From impls for ergonomic construction (Niri/Smithay pattern) ===
-impl From<Sphere> for LightPrimitive { fn from(s: Sphere) -> Self { Self::Sphere(s) } }
-impl From<Quad> for LightPrimitive { fn from(q: Quad) -> Self { Self::Quad(q) } }
-impl From<MovingSphere> for LightPrimitive { fn from(s: MovingSphere) -> Self { Self::MovingSphere(s) } }
-
-// === Construction from descriptor ===
-impl LightPrimitive {
-    pub fn new(kind: &LightPrimitiveKind) -> Self {
-        match kind {
-            LightPrimitiveKind::Sphere { center, radius } => Sphere::new(*center, *radius).into(),
-            LightPrimitiveKind::Quad { Q, u, v } => Quad::new(*Q, *u, *v).into(),
-            LightPrimitiveKind::MovingSphere { center, radius, speed } =>
-                MovingSphere::new(*center, *radius, *speed).into(),
-        }
-    }
-}
-
-// Scene stores Vec<LightPrimitive> instead of Vec<Arc<dyn Sampleable>>
-pub struct Scene {
-    objects: Vec<Primitive>,   // also an enum (see CORE_THESIS §2.4)
-    lights: Vec<LightPrimitive>,
+// === Automatic conversion from LightPrimitive to Primitive ===
+// Every light emitter is also visible geometry.
+impl From<LightPrimitive> for Primitive {
+    fn from(lp: LightPrimitive) -> Self { lp.0 }
 }
 ```
 
+**Relationship to Primitive:**
+- `LightPrimitive` IS-A `Primitive` (wraps it, converts via `From`)
+- Every light emitter goes into both `scene.objects` (as `Primitive`) and `scene.lights` (as `LightPrimitive`)
+- Concrete `From` impls enforce at compile time which shapes can be light sources
+- `TryFrom<Primitive>` provides a fallible path for runtime scenarios (e.g., deserialization)
+
 **Current state:** `Scene` uses `Vec<Arc<dyn Sampleable>>`.
-**Evolution:** Replace with `Vec<LightPrimitive>`. The `From` impls make
-construction ergonomic: `scene.add_light(Sphere::new(...))` auto-converts.
+**Evolution:** Replace with `(Vec<Primitive>, Vec<LightPrimitive>)`. The `From` impls make
+construction ergonomic: `scene.add_light(SphereShape::new(...), mat)` auto-converts.
 
 ### Key Types
 
@@ -356,12 +415,11 @@ pub trait Integrator<S: SampleStream, R: SamplerRng>: Send + Sync {
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
-        lights: &[Arc<dyn Sampleable>],
+        lights: &[LightPrimitive],
         stream: &mut S,
         rng: &mut R,
     ) -> Color3;
 }
-```
 
 **Current state:** Already matches the two-stream design above. The world is passed as
 `&dyn Intersectable` at the method level (NOT a generic on the trait). The `SampleStream`
@@ -453,7 +511,7 @@ where
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &[Arc<dyn Sampleable>]),
+        scene: (&W, &[LightPrimitive]),
         framebuffer: Option<SharedFramebuffer>,
     );
 
@@ -747,6 +805,7 @@ ______________________________________________________________________
 
 | Step | What Changes | Breaking? | Files Affected |
 |------|-------------|-----------|----------------|
+| 0 | Create `Primitive` enum + `LightPrimitive` newtype + `From`/`TryFrom` impls | **Yes — Scene type change** | `src/primitive.rs` (new), `src/scene.rs` |
 | 1 | Add `RasterCamera` trait | No | `src/camera/mod.rs` |
 | 2 | Add `view_projection()` to `PerspectiveCamera` | No | `src/camera/perspective.rs` |
 | 3 | Create `GBuffer<'a>` type | No | `src/gbuffer.rs` (new) |
@@ -756,10 +815,9 @@ ______________________________________________________________________
 | 7 | Create `RasterRenderer` | No | `src/renderer/raster.rs` (new) |
 | 8 | Create `HybridRenderer` | No | `src/renderer/hybrid.rs` (new) |
 
-Steps 1–8 are all additive — no existing code breaks. The `CpuRenderer` and
-`Renderer` trait are unchanged. The two-stream refactor (`Sampler` → `SampleStream` +
-`SamplerRng`) and the `Renderer<W, C, F>` simplification (removed `S` generic)
-are already complete in the current codebase.
+Step 0 is a **breaking change** — the Scene type changes from `(W, &[Arc<dyn Sampleable>])`
+to `(&[Primitive], &[LightPrimitive])`. All renderers, integrators, and scene construction
+code must update. Steps 1-8 are additive and can proceed independently.
 
 ### What Does NOT Change
 
@@ -781,8 +839,10 @@ are already complete in the current codebase.
 - `Integrator` — `DimCursor<S>` replaced by `&mut S: &mut SampleStream` (from `docs/samplestream-refactor.md`), plus new `&mut R: SamplerRng` parameter
 - `CpuRenderer` — gains `R: SamplerRng`, `SF: SampleStreamFactory`, `RF: RngFactory` generics; creates per-pixel streams/rngs via factories internally (from `docs/samplestream-refactor.md`)
 - `Renderer::render()` — scene parameter changes from `(&W, &[Arc<dyn Sampleable>])` to `(&W, &[LightPrimitive])` (from this doc)
+- `Scene` type — stores `Vec<Primitive>` (all geometry) and `Vec<LightPrimitive>` (emitters) instead of `Box<dyn Intersectable>` and `Vec<Arc<dyn Sampleable>>`
 
-These changes are all additive or backwards-compatible. The `Renderer` trait signature
+These changes are all additive or backwards-compatible, except for the Scene type (Step 0)
+which is a breaking change. The `Renderer` trait signature
 is unchanged (only the scene parameter type changes). The denoiser, adaptive sampling,
 and samplestream changes affect `Film`/`RgbFilm`/`Integrator` internals, not the
 renderer abstraction layer.
