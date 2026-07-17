@@ -1,13 +1,9 @@
-// ================================================================
-// § Sample1D — sum type for continuous vs discrete sampling results
-//
-// Reference: luxrays/mcdistribution.h lines 105-135
-// ================================================================
-
 /// Result of sampling a 1D distribution.
 ///
 /// Explicitly distinguishes continuous from discrete sampling,
 /// eliminating the out-parameter pattern.
+///
+/// Reference: luxrays/mcdistribution.h lines 105-135
 #[derive(Clone, Copy, Debug)]
 pub enum Sample1D {
     /// Continuous sample at position `x` ∈ [0, 1), its PDF, and the bucket index.
@@ -23,35 +19,272 @@ impl Sample1D {
             Sample1D::Continuous { pdf, .. } | Sample1D::Discrete { pdf, .. } => *pdf,
         }
     }
+
+    /// Extract the bucket index (continuous offset or discrete index).
+    pub fn index(&self) -> usize {
+        match self {
+            Sample1D::Continuous { offset, .. } => *offset,
+            Sample1D::Discrete { index, .. } => *index,
+        }
+    }
 }
 
-/// 1D piecewise-constant distribution with CDF-based sampling.
-/// Used internally by Dist2D for the marginal and conditional distributions.
+/// Stack-allocated 1D piecewise-constant distribution with `N` bins known at compile time.
+/// Reference: luxrays Distribution1DFixed, pbrt-v4
+#[derive(Clone, Debug)]
+pub struct FixedDist1D<const N: usize> {
+    /// Raw function values (clamped to ≥ 0).  Un-normalized.
+    func: [f32; N],
+    /// Cumulative distribution: `cdf[i]` = sum of normalized func for [0..=i].
+    cdf: [f32; N],
+    /// Sum of raw input weights.  Zero-total triggers uniform fallback.
+    func_int: f32,
+    /// 1 / N — precomputed.
+    inv_count: f32,
+}
+
+impl<const N: usize> FixedDist1D<N> {
+    /// Build from raw weight values.  Non-positive weights are clamped to zero.
+    pub fn new(f: &[f32; N]) -> Self {
+        let inv_count = 1.0 / N as f32;
+        let mut func = [0.0f32; N];
+        let mut total = 0.0f32;
+        for (i, &v) in f.iter().enumerate() {
+            let w = v.max(0.0);
+            func[i] = w;
+            total += w;
+        }
+
+        let mut cdf = [0.0f32; N];
+        if total > 0.0 {
+            let inv_total = 1.0 / total;
+            let mut running = 0.0f32;
+            for i in 0..N {
+                running += func[i] * inv_total;
+                cdf[i] = running;
+            }
+        } else {
+            // Uniform fallback
+            for i in 0..N {
+                func[i] = 1.0;
+                cdf[i] = (i + 1) as f32 * inv_count;
+            }
+        }
+
+        FixedDist1D {
+            func,
+            cdf,
+            func_int: total,
+            inv_count,
+        }
+    }
+
+    /// Integral of the original function over [0, 1).
+    #[inline]
+    pub fn integral(&self) -> f32 {
+        self.func_int
+    }
+
+    /// Bucket index for `u` ∈ [0, 1).
+    #[inline]
+    pub fn offset(&self, u: f32) -> usize {
+        ((u * N as f32) as usize).min(N - 1)
+    }
+
+    /// Continuous PDF at position `u` ∈ [0, 1) — the density of the piecewise-constant
+    /// distribution, which integrates to 1 over [0, 1).
+    ///
+    /// For a uniform (zero-total) distribution returns 1.0.
+    #[inline]
+    pub fn pdf_continuous(&self, u: f32) -> f32 {
+        self.pdf_discrete(self.offset(u))
+    }
+
+    /// PDF (continuous density) for bucket at `offset`.
+    ///
+    /// Returns the same value as [`pdf_continuous`](Self::pdf_continuous) for any position inside
+    /// the same bucket — the piecewise-constant value of the density over that bin.
+    ///
+    /// For a uniform (zero-total) distribution returns 1.0.
+    #[inline]
+    pub fn pdf_discrete(&self, offset: usize) -> f32 {
+        if self.func_int == 0.0 {
+            1.0
+        } else {
+            self.func[offset] * (N as f32) / self.func_int
+        }
+    }
+
+    /// Sample a continuous position `x` ∈ [0, 1) from this distribution.
+    pub fn sample_continuous(&self, u: f32) -> Sample1D {
+        let n = N;
+        if u <= 0.0 {
+            return Sample1D::Continuous {
+                x: 0.0,
+                pdf: self.pdf_discrete(0),
+                offset: 0,
+            };
+        }
+        if u >= 1.0 {
+            return Sample1D::Continuous {
+                x: 1.0 - 1e-15,
+                pdf: self.pdf_discrete(n - 1),
+                offset: n - 1,
+            };
+        }
+        let pos = self
+            .cdf
+            .partition_point(|&c| c <= u)
+            .saturating_sub(1)
+            .min(n - 1);
+        let cdf_low = if pos == 0 { 0.0 } else { self.cdf[pos - 1] };
+        let cdf_high = self.cdf[pos];
+        let du = if cdf_high > cdf_low {
+            ((u - cdf_low) / (cdf_high - cdf_low)).min(1.0 - 1e-15)
+        } else {
+            0.0
+        };
+        let x = ((pos as f32 + du) * self.inv_count).min(1.0 - 1e-15);
+        Sample1D::Continuous {
+            x,
+            pdf: self.pdf_discrete(pos),
+            offset: pos,
+        }
+    }
+
+    /// Sample a discrete bucket index from this distribution.
+    pub fn sample_discrete(&self, u: f32) -> Sample1D {
+        let n = N;
+        if u <= 0.0 {
+            return Sample1D::Discrete {
+                index: 0,
+                pdf: self.pdf_discrete(0),
+                du: 0.0,
+            };
+        }
+        if u >= 1.0 {
+            return Sample1D::Discrete {
+                index: n - 1,
+                pdf: self.pdf_discrete(n - 1),
+                du: 1.0,
+            };
+        }
+        let pos = self
+            .cdf
+            .partition_point(|&c| c <= u)
+            .saturating_sub(1)
+            .min(n - 1);
+        let cdf_low = if pos == 0 { 0.0 } else { self.cdf[pos - 1] };
+        let cdf_high = self.cdf[pos];
+        let du = if cdf_high > cdf_low {
+            ((u - cdf_low) / (cdf_high - cdf_low)).min(1.0)
+        } else {
+            0.0
+        };
+        Sample1D::Discrete {
+            index: pos,
+            pdf: self.pdf_discrete(pos),
+            du,
+        }
+    }
+}
+
+// ================================================================
+
+/// Stack-allocated 2D piecewise-constant distribution with `NU × NV`
+/// bins known at compile time.
+/// Composed of a marginal `FixedDist1D<NV>` (rows) and NV conditional
+/// `FixedDist1D<NU>` (columns within each row).
+///
+/// Reference: luxrays Distribution2D, pbrt-v4
+#[derive(Clone, Debug)]
+pub struct FixedDist2D<const NU: usize, const NV: usize> {
+    /// Marginal distribution over rows (v-axis).
+    marginal: FixedDist1D<NV>,
+    /// Per-row conditional distributions over columns (u-axis).
+    conditional: [FixedDist1D<NU>; NV],
+}
+
+impl<const NU: usize, const NV: usize> FixedDist2D<NU, NV> {
+    /// Build from a flat array of shape `(NV, NU)` in row-major order.
+    ///
+    /// # Panics Panics if `values.len() != NU * NV`.
+    pub fn new(values: &[f32]) -> Self {
+        assert_eq!(values.len(), NU * NV);
+        // Row sums for the marginal (NV rows)
+        let row_sums: [f32; NV] = core::array::from_fn(|j| {
+            let start = j * NU;
+            values[start..start + NU].iter().sum()
+        });
+        let marginal = FixedDist1D::<NV>::new(&row_sums);
+
+        // Per-row conditional distributions (NU columns each)
+        let conditional: [FixedDist1D<NU>; NV] = core::array::from_fn(|j| {
+            let start = j * NU;
+            let mut row = [0.0f32; NU];
+            row.copy_from_slice(&values[start..start + NU]);
+            FixedDist1D::<NU>::new(&row)
+        });
+
+        FixedDist2D {
+            marginal,
+            conditional,
+        }
+    }
+
+    /// Joint PDF (continuous density) at pixel `(col, row)`.
+    ///
+    /// This is the value of the 2D piecewise-constant density over [0, 1)² — the product of
+    /// marginal and conditional densities, integrating to 1 over the unit square.
+    pub fn pdf(&self, col: usize, row: usize) -> f32 {
+        self.marginal.pdf_discrete(row) * self.conditional[row].pdf_discrete(col)
+    }
+
+    /// Sample a pixel index `(col, row)` from the distribution.
+    ///
+    /// Returns `(col, row, pdf)` where `pdf` is the continuous density value for the sampled pixel.
+    pub fn sample(&self, u: f32, v: f32) -> (usize, usize, f32) {
+        let row_sample = self.marginal.sample_discrete(v);
+        let col_sample = self.conditional[row_sample.index()].sample_discrete(u);
+        (
+            col_sample.index(),
+            row_sample.index(),
+            row_sample.pdf() * col_sample.pdf(),
+        )
+    }
+}
+
+// ================================================================
+
+/// Heap-allocated 1D piecewise-constant distribution with runtime-sized
+/// bins. Use [`FixedDist1D`] when N is known at compile time.
+///
+/// Reference: luxrays Distribution1D, pbrt-v4
 pub struct Dist1D {
-    /// Cumulative distribution function (CDF) values, length n+1.
+    /// Cumulative distribution function (CDF) values, length n + 1.
     cdfs: Vec<f32>,
-    /// Normalized function values (weights ≥ 0).
+    /// Raw function values (weights ≥ 0).  Un-normalized.
     funcs: Vec<f32>,
-    /// Sum of all function values. Zero if all weights are zero (uniform fallback).
+    /// Sum of all function values.  Zero-total triggers uniform fallback.
     total: f32,
 }
 
 impl Dist1D {
-    /// Build a 1D distribution from raw weight values.
-    /// Non-positive values are clamped to zero; a zero-total distribution samples uniformly.
+    /// Build from raw weight values.  Non-positive values are clamped to zero; a zero-total
+    /// distribution samples uniformly.
     pub fn new(values: &[f32]) -> Self {
         let n = values.len();
         let mut funcs = values.to_vec();
 
-        let total = funcs.iter_mut().fold(0., |mut acc, value| {
+        let total = funcs.iter_mut().fold(0.0, |mut acc, value| {
             let weight = value.max(0.0);
             *value = weight;
             acc += weight;
             acc
         });
 
-        let mut cdfs = vec![0.; n + 1];
-        if total == 0. {
+        let mut cdfs = vec![0.0; n + 1];
+        if total == 0.0 {
             (0..=n).for_each(|i| {
                 cdfs[i] = i as f32 / n as f32;
             })
@@ -65,16 +298,99 @@ impl Dist1D {
         Self { cdfs, funcs, total }
     }
 
-    /// Sample the distribution with a unit-random value `u` ∈ [0, 1).
-    /// Returns (index, PDF_value) where PDF_value uses the [0, 1] sample-space measure.
-    pub fn sample(&self, u: f32) -> (usize, f32) {
+    /// Integral of the original function over [0, 1).
+    pub fn integral(&self) -> f32 {
+        self.total
+    }
+
+    /// Number of bins in the distribution.
+    pub fn count(&self) -> usize {
+        self.funcs.len()
+    }
+
+    /// Continuous PDF value (density) for bin `index`.
+    ///
+    /// This is the value of the piecewise-constant density for any point inside bin `index`, such
+    /// that `∫₀¹ p(x) dx = 1`. For a uniform (zero-total) distribution returns 1.0.
+    #[inline]
+    pub fn pdf_discrete(&self, index: usize) -> f32 {
+        if self.total == 0.0 {
+            return 1.0;
+        }
+        (self.funcs[index] * self.count() as f32) / self.total
+    }
+
+    /// Continuous PDF at position `u` ∈ [0, 1).
+    #[inline]
+    pub fn pdf_continuous(&self, u: f32) -> f32 {
+        let n = self.count();
+        let idx = (u * n as f32).min((n - 1) as f32) as usize;
+        self.pdf_discrete(idx)
+    }
+
+    /// Sample a discrete bucket from the distribution.
+    ///
+    /// Returns `Sample1D::Discrete` with the bucket index and the continuous PDF value for any
+    /// point in that bucket.
+    pub fn sample_discrete(&self, u: f32) -> Sample1D {
+        let (index, pdf) = self.sample_internal(u);
+        Sample1D::Discrete {
+            index,
+            pdf,
+            du: 0.0,
+        }
+    }
+
+    /// Sample a continuous position in [0, 1), returning `Sample1D::Continuous`.
+    pub fn sample_continuous(&self, u: f32) -> Sample1D {
+        let n = self.count();
+        if u <= 0.0 {
+            return Sample1D::Continuous {
+                x: 0.0,
+                pdf: self.pdf_discrete(0),
+                offset: 0,
+            };
+        }
+        if u >= 1.0 - 1e-15 {
+            return Sample1D::Continuous {
+                x: 1.0 - 1e-15,
+                pdf: self.pdf_discrete(n - 1),
+                offset: n - 1,
+            };
+        }
+        // f32 1e-10 rounds to 1.0, so clamp strictly below 1.0.
+        let u_clamp = u.clamp(0.0, 1.0 - f32::EPSILON);
+        let pos = self
+            .cdfs
+            .binary_search_by(|&val| {
+                if val <= u_clamp {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                }
+            })
+            .unwrap_or_else(|idx| idx.saturating_sub(1))
+            .min(n - 1);
+        let du = if self.cdfs[pos + 1] > self.cdfs[pos] {
+            ((u_clamp - self.cdfs[pos]) / (self.cdfs[pos + 1] - self.cdfs[pos])).min(1.0 - 1e-15)
+        } else {
+            0.0
+        };
+        let x = ((pos as f32 + du) / n as f32).min(1.0 - 1e-15);
+        Sample1D::Continuous {
+            x,
+            pdf: self.pdf_discrete(pos),
+            offset: pos,
+        }
+    }
+
+    /// Internal: sample a bucket, returning `(index, pdf)`.
+    #[inline]
+    fn sample_internal(&self, u: f32) -> (usize, f32) {
         if self.funcs.is_empty() {
             return (0, 1.0);
         }
-        // NOTE: `1.0 - 1e-10` rounds back to exactly 1.0 in f32 (1e-10 is far below
-        // f32's epsilon near 1.0), so a u >= 1.0 would clamp to 1.0 and push the
-        // binary search past the last valid index. Use a bound strictly below 1.0.
-        let u_clamp = u.clamp(0., 1.0 - f32::EPSILON);
+        let u_clamp = u.clamp(0.0, 1.0 - f32::EPSILON);
         let offset = self.cdfs.binary_search_by(|&val| {
             if val <= u_clamp {
                 std::cmp::Ordering::Less
@@ -85,100 +401,33 @@ impl Dist1D {
         let index = offset
             .unwrap_or_else(|idx| idx.saturating_sub(1))
             .min(self.funcs.len() - 1);
-        (index, self.pdf(index))
-    }
-
-    /// Evaluate the PDF at a given index. Returns 1.0 for the uniform fallback (zero total).
-    pub fn pdf(&self, index: usize) -> f32 {
-        if self.total == 0. {
-            return 1.0;
-        }
-
-        (self.funcs[index] * self.count() as f32) / self.total
-    }
-
-    /// Number of bins in the distribution.
-    pub fn count(&self) -> usize {
-        self.funcs.len()
-    }
-
-    /// Sample a discrete bucket, returning a `Sample1D::Discrete`.
-    pub fn sample_discrete(&self, u: f32) -> Sample1D {
-        let (index, pdf) = self.sample(u);
-        Sample1D::Discrete {
-            index,
-            pdf,
-            du: 0.0,
-        }
-    }
-
-    /// Sample a continuous position in [0, 1), returning a `Sample1D::Continuous`.
-    ///
-    /// Uses the same CDF as [`sample()`](Self::sample) but returns the
-    /// interpolated continuous position within the bucket.
-    pub fn sample_continuous(&self, u: f32) -> Sample1D {
-        let n = self.count();
-        if u <= 0.0 {
-            return Sample1D::Continuous {
-                x: 0.0,
-                pdf: self.pdf(0),
-                offset: 0,
-            };
-        }
-        if u >= 1.0 - 1e-15 {
-            return Sample1D::Continuous {
-                x: 1.0 - 1e-15,
-                pdf: self.pdf(n - 1),
-                offset: n - 1,
-            };
-        }
-        let pos = self
-            .cdfs
-            .binary_search_by(|&val| {
-                if val <= u {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Greater
-                }
-            })
-            .unwrap_or_else(|idx| idx - 1)
-            .min(n - 1);
-        let du = if self.cdfs[pos + 1] > self.cdfs[pos] {
-            ((u - self.cdfs[pos]) / (self.cdfs[pos + 1] - self.cdfs[pos])).min(1.0 - 1e-15)
-        } else {
-            0.0
-        };
-        let x = ((pos as f32 + du) / n as f32).min(1.0 - 1e-15);
-        let pdf = if self.total == 0.0 {
-            1.0
-        } else {
-            (self.funcs[pos] * n as f32) / self.total
-        };
-        Sample1D::Continuous {
-            x,
-            pdf,
-            offset: pos,
-        }
+        (index, self.pdf_discrete(index))
     }
 }
 
-/// 2D piecewise-constant distribution using a product of marginal + conditional 1D distributions.
-/// Samples from the 2D CDF are drawn by first sampling the marginal (rows), then the conditional
-/// (columns within the chosen row).
+/// Heap-allocated 2D piecewise-constant distribution with runtime-sized bins.
+///
+/// Use [`FixedDist2D`] when NU, NV are known at compile time.
+///
+/// Composed of a marginal `Dist1D` (rows) and per-row conditional `Dist1D` (columns within each
+/// row), matching the luxrays / pbrt-v4 design: marginal selects the row, then the conditional for
+/// that row selects the column.
 pub struct Dist2D {
+    /// Marginal distribution over rows (v-axis).
     marginal: Dist1D,
+    /// Per-row conditional distributions over columns (u-axis).
     conditional: Vec<Dist1D>,
 }
 
 impl Dist2D {
-    /// Build a 2D distribution from a flat array of shape (nv, nu) in row-major order.
+    /// Build from a flat array of shape `(nv, nu)` in row-major order.
     /// `nu` = columns (u-axis), `nv` = rows (v-axis).
     pub fn new(values: &[f32], nu: usize, nv: usize) -> Self {
-        let mut row_sums = vec![0.; nv];
+        let mut row_sums = vec![0.0; nv];
         for j in 0..nv {
-            (0..nu).for_each(|i| {
+            for i in 0..nu {
                 row_sums[j] += values[j * nu + i];
-            });
+            }
         }
         let marginal = Dist1D::new(&row_sums);
         let conditional = (0..nv)
@@ -195,22 +444,24 @@ impl Dist2D {
         }
     }
 
-    /// Sample the 2D distribution with two unit-random values (u, v).
-    /// Returns (column, row, PDF_value). `u` selects the column within the row,
-    /// `v` selects the row from the marginal distribution.
-    pub fn sample(&self, u: f32, v: f32) -> (usize, usize, f32) {
-        let (row, marginal_pdf) = self.marginal.sample(v);
-
-        let (col, conditional_pdf) = self.conditional[row].sample(u);
-
-        let pdf = marginal_pdf * conditional_pdf;
-
-        (col, row, pdf)
+    /// Joint PDF (continuous density) at pixel `(col, row)`.
+    ///
+    /// Product of marginal and conditional densities, integrating to 1 over [0, 1)².
+    pub fn pdf(&self, col: usize, row: usize) -> f32 {
+        self.marginal.pdf_discrete(row) * self.conditional[row].pdf_discrete(col)
     }
 
-    /// Evaluate the PDF at pixel (i, j) in the [0, 1]² sample-space measure.
-    pub fn pdf(&self, i: usize, j: usize) -> f32 {
-        self.marginal.pdf(j) * self.conditional[j].pdf(i)
+    /// Sample a pixel index from the distribution.
+    ///
+    /// Returns `(col, row, pdf)` where `pdf` is the continuous density value for the sampled pixel.
+    pub fn sample(&self, u: f32, v: f32) -> (usize, usize, f32) {
+        let row_sample = self.marginal.sample_discrete(v);
+        let col_sample = self.conditional[row_sample.index()].sample_discrete(u);
+        (
+            col_sample.index(),
+            row_sample.index(),
+            row_sample.pdf() * col_sample.pdf(),
+        )
     }
 }
 
@@ -219,35 +470,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dist1d_sample_u_at_one_does_not_panic() {
-        // Regression: `1.0 - 1e-10` rounds to 1.0 in f32, so a u >= 1.0 clamped to
-        // 1.0 pushed the binary search past the last valid index (index == n).
+    fn dist1d_boundaries_do_not_panic() {
         let values: Vec<f32> = (0..2048)
             .map(|i| (i as f32 + 1.0).sin().abs() + 0.001)
             .collect();
         let dist = Dist1D::new(&values);
         for u in [0.0f32, 0.5, 1.0 - f32::EPSILON, 1.0, 1.5] {
-            let (idx, pdf) = dist.sample(u);
+            let s = dist.sample_discrete(u);
             assert!(
-                idx < dist.funcs.len(),
-                "index {idx} out of bounds for u={u}"
+                s.index() < dist.count(),
+                "index {} out of bounds",
+                s.index()
             );
-            assert!(pdf.is_finite() && pdf >= 0.0, "bad pdf {pdf} for u={u}");
+            assert!(s.pdf().is_finite() && s.pdf() >= 0.0, "bad pdf");
+            let s = dist.sample_continuous(u);
+            assert!(
+                s.index() < dist.count(),
+                "index {} out of bounds",
+                s.index()
+            );
+            assert!(s.pdf().is_finite() && s.pdf() >= 0.0, "bad pdf");
         }
     }
 
     #[test]
-    fn dist2d_sample_u_at_one_does_not_panic() {
-        let nu = 2048;
-        let nv = 1024;
+    fn dist2d_boundaries_do_not_panic() {
+        let nu = 128;
+        let nv = 64;
         let data: Vec<f32> = (0..nv * nu)
             .map(|k| ((k % nu) as f32 + 1.0).sin().abs() + 0.001)
             .collect();
         let dist = Dist2D::new(&data, nu, nv);
         for (u, v) in [(0.0f32, 0.0f32), (1.0, 1.0), (1.5, 0.7), (0.3, 1.5)] {
-            let (i, j, pdf) = dist.sample(u, v);
-            assert!(i < nu, "col {i} out of bounds for u={u}");
-            assert!(j < nv, "row {j} out of bounds for v={v}");
+            let (col, row, pdf) = dist.sample(u, v);
+            assert!(col < nu, "col {col} out of bounds");
+            assert!(row < nv, "row {row} out of bounds");
             assert!(pdf.is_finite() && pdf >= 0.0, "bad pdf {pdf}");
         }
     }

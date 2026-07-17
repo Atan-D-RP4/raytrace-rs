@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use glam::Vec3;
 
-use crate::distributions::Sample1D;
 use crate::environment::EnvironmentMap;
 use crate::hittable::Sampleable;
 use crate::onb::Onb;
@@ -73,81 +72,29 @@ pub enum MisHeuristic {
 }
 
 impl MisHeuristic {
-    /// Two-technique MIS weight w(f_pdf, g_pdf).
+    /// N-strategy MIS weight for the selected strategy.
     ///
-    /// `f_pdf` is the PDF of the strategy that generated the sample;
-    /// `g_pdf` is the PDF of the other strategy.
+    /// `sel_idx` is the index of the strategy that generated the sample.
+    /// `pdfs` is the array of all strategy PDFs.
+    /// Returns 0 when the PDF sum is degenerate.
     #[inline]
-    pub fn weight(self, f_pdf: f32, g_pdf: f32) -> f32 {
+    pub fn weight<const N: usize>(&self, sel_idx: usize, pdfs: &[f32; N]) -> f32 {
+        let sel = pdfs[sel_idx];
         match self {
             MisHeuristic::Balance => {
-                let denom = f_pdf + g_pdf;
-                if denom <= 0.0 { 0.0 } else { f_pdf / denom }
+                let sum: f32 = pdfs.iter().sum();
+                if sum <= 0.0 { 0.0 } else { sel / sum }
             }
             MisHeuristic::Power => {
-                let denom = f_pdf * f_pdf + g_pdf * g_pdf;
-                if denom <= 0.0 {
+                let sum_sq: f32 = pdfs.iter().map(|p| p * p).sum();
+                if sum_sq <= 0.0 {
                     0.0
                 } else {
-                    f_pdf * f_pdf / denom
+                    sel * sel / sum_sq
                 }
             }
         }
     }
-
-    /// Weighted variant with strategy counts: `w(nf·f, ng·g)`.
-    #[inline]
-    pub fn weight_n(self, nf: u32, f_pdf: f32, ng: u32, g_pdf: f32) -> f32 {
-        self.weight(nf as f32 * f_pdf, ng as f32 * g_pdf)
-    }
-
-    /// Scalar squaring helper used in VCM-style MIS accumulators.
-    #[inline(always)]
-    pub fn vcm_term(a: f32) -> f32 {
-        a * a
-    }
-}
-
-/// Power-heuristic MIS weight: `p_i² / Σ(p_j²)`.
-///
-/// `pdf_sum_sq` must be the sum of squared PDF values (Σ p_j²).
-/// Power-heuristic MIS weight (β=2) for N strategies.
-///
-/// Returns `p_i² / Σ(p_j²)`, the N-strategy form of the power heuristic.
-/// `pdf_sum_sq` must be the sum of squared PDF values (Σ p_j²).
-/// Returns 0 when the denominator is near-zero (degenerate PDF).
-#[inline(always)]
-pub fn power_heuristic(pdf_i: f32, pdf_sum_sq: f32) -> f32 {
-    if pdf_sum_sq <= 1e-20 {
-        return 0.0;
-    }
-    (pdf_i * pdf_i / pdf_sum_sq).max(0.0)
-}
-
-/// Balance-heuristic MIS weight: `p_i / Σ(p_j)`.
-///
-/// `pdf_sum` must be the sum of PDF values (Σ p_j).
-/// Returns 0 when the denominator is near-zero (degenerate PDF).
-///
-/// This is the N-strategy form: `w_i = p_i / Σ(p_j)`.
-#[inline(always)]
-pub fn balance_heuristic(pdf_i: f32, pdf_sum: f32) -> f32 {
-    if pdf_sum <= 1e-20 {
-        return 0.0;
-    }
-    (pdf_i / pdf_sum).max(0.0)
-}
-
-/// Two-strategy power heuristic (pbrt-v4 style).
-#[inline]
-pub fn power_heuristic_2(nf: u32, f_pdf: f32, ng: u32, g_pdf: f32) -> f32 {
-    MisHeuristic::Power.weight_n(nf, f_pdf, ng, g_pdf)
-}
-
-/// Two-strategy balance heuristic (pbrt-v4 style).
-#[inline]
-pub fn balance_heuristic_2(nf: u32, f_pdf: f32, ng: u32, g_pdf: f32) -> f32 {
-    MisHeuristic::Balance.weight_n(nf, f_pdf, ng, g_pdf)
 }
 
 // ================================================================
@@ -225,163 +172,6 @@ pub fn sample_discrete(weights: &[f32], u: f32) -> Option<(usize, f32, f32)> {
         0.0
     };
     Some((offset, pmf, u_remapped))
-}
-
-// ================================================================
-// § Distribution1DFixed — stack-allocated fixed-size 1D distribution
-//
-// Useful for small compile-time-known tables such as per-material
-// lobe weights.
-//
-// Reference: luxrays Distribution1DFixed, pbrt-v4
-// ================================================================
-
-/// Stack-allocated 1D piecewise-constant distribution with `N` bins
-/// known at compile time.
-#[derive(Clone, Debug)]
-pub struct Distribution1DFixed<const N: usize> {
-    /// Normalized function values: `func[i] = w_i / total`.
-    func: [f32; N],
-    /// Cumulative distribution: `cdf[i]` = sum of func[0..=i].
-    cdf: [f32; N],
-    /// Total sum of raw input weights.
-    func_int: f32,
-    /// 1 / N — precomputed for speed.
-    inv_count: f32,
-}
-
-impl<const N: usize> Distribution1DFixed<N> {
-    /// Build from raw weight values. Non-positive weights are clamped to zero.
-    /// A zero-total distribution falls back to uniform sampling.
-    pub fn new(f: &[f32; N]) -> Self {
-        let inv_count = 1.0 / N as f32;
-        let mut func = [0.0f32; N];
-        let mut total = 0.0f32;
-        for (i, &v) in f.iter().enumerate() {
-            let w = v.max(0.0);
-            func[i] = w;
-            total += w;
-        }
-
-        let mut cdf = [0.0f32; N];
-        if total > 0.0 {
-            let inv_total = 1.0 / total;
-            let mut running = 0.0f32;
-            for i in 0..N {
-                running += func[i] * inv_total;
-                cdf[i] = running;
-            }
-        } else {
-            // Uniform fallback
-            for i in 0..N {
-                func[i] = 1.0;
-                cdf[i] = (i + 1) as f32 * inv_count;
-            }
-        }
-
-        Distribution1DFixed {
-            func,
-            cdf,
-            func_int: total,
-            inv_count,
-        }
-    }
-
-    /// Integral of the original function over [0, 1).
-    pub fn integral(&self) -> f32 {
-        self.func_int
-    }
-
-    /// Bucket index for `u ∈ [0, 1)`.
-    #[inline]
-    pub fn offset(&self, u: f32) -> usize {
-        ((u * N as f32) as usize).min(N - 1)
-    }
-
-    /// Continuous PDF at `u`.
-    #[inline]
-    pub fn pdf_continuous(&self, u: f32) -> f32 {
-        self.func[self.offset(u)]
-    }
-
-    /// Discrete PDF for bucket at `offset`.
-    #[inline]
-    pub fn pdf_discrete(&self, offset: usize) -> f32 {
-        self.func[offset] * self.inv_count
-    }
-
-    /// Sample a continuous position.
-    pub fn sample_continuous(&self, u: f32) -> Sample1D {
-        let n = N;
-        if u <= 0.0 {
-            return Sample1D::Continuous {
-                x: 0.0,
-                pdf: self.func[0],
-                offset: 0,
-            };
-        }
-        if u >= 1.0 {
-            return Sample1D::Continuous {
-                x: 1.0 - 1e-15,
-                pdf: self.func[n - 1],
-                offset: n - 1,
-            };
-        }
-        let pos = self
-            .cdf
-            .partition_point(|&c| c <= u)
-            .saturating_sub(1)
-            .min(n - 1);
-        let cdf_low = if pos == 0 { 0.0 } else { self.cdf[pos - 1] };
-        let cdf_high = self.cdf[pos];
-        let du = if cdf_high > cdf_low {
-            ((u - cdf_low) / (cdf_high - cdf_low)).min(1.0 - 1e-15)
-        } else {
-            0.0
-        };
-        let x = ((pos as f32 + du) * self.inv_count).min(1.0 - 1e-15);
-        Sample1D::Continuous {
-            x,
-            pdf: self.func[pos],
-            offset: pos,
-        }
-    }
-
-    /// Sample a discrete bucket.
-    pub fn sample_discrete(&self, u: f32) -> Sample1D {
-        let n = N;
-        if u <= 0.0 {
-            return Sample1D::Discrete {
-                index: 0,
-                pdf: self.func[0] * self.inv_count,
-                du: 0.0,
-            };
-        }
-        if u >= 1.0 {
-            return Sample1D::Discrete {
-                index: n - 1,
-                pdf: self.func[n - 1] * self.inv_count,
-                du: 1.0,
-            };
-        }
-        let pos = self
-            .cdf
-            .partition_point(|&c| c <= u)
-            .saturating_sub(1)
-            .min(n - 1);
-        let cdf_low = if pos == 0 { 0.0 } else { self.cdf[pos - 1] };
-        let cdf_high = self.cdf[pos];
-        let du = if cdf_high > cdf_low {
-            ((u - cdf_low) / (cdf_high - cdf_low)).min(1.0)
-        } else {
-            0.0
-        };
-        Sample1D::Discrete {
-            index: pos,
-            pdf: self.func[pos] * self.inv_count,
-            du,
-        }
-    }
 }
 
 /// Cosine-weighted hemisphere direction via concentric disk mapping.

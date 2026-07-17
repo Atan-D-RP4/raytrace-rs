@@ -14,7 +14,7 @@ use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
 use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
-use crate::pdf::{EmitterPDF, EnvPdf, PDF, PdfKind, power_heuristic};
+use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
 use crate::ray::Ray;
 use crate::sampler::{Sampler, SamplingSession};
 
@@ -65,21 +65,19 @@ fn mis_sample<const N: usize>(
 
     // 2. Evaluate ALL PDFs at the sampled direction, compute sum of squares.
     //    Only count entries are populated — remaining N-count are stale.
-    let mut pdf_sum_sq = 0.0;
     let mut pdf_sum = 0.0;
     let mut pdf_vals = [0.0f32; N];
     for (i, pdf) in pdfs.iter().enumerate().take(count) {
         let v = pdf.value(direction);
         pdf_vals[i] = v;
-        pdf_sum_sq += v * v;
         pdf_sum += v;
     }
 
     // 3. Compute MIS weight: w_sel = p_sel² / Σ(p_j²)
-    let p_sel = pdf_vals[sel_idx];
-    let mis_weight = power_heuristic(p_sel, pdf_sum_sq);
+    let mis_weight = MisHeuristic::Power.weight::<N>(sel_idx, &pdf_vals);
 
     // 4. Compute contribution: N * w_sel * f / p_sel
+    let p_sel = pdf_vals[sel_idx];
     let f = eval_fn(direction);
     let contribution = if p_sel > 1e-10 {
         f * (count as f32 * mis_weight / p_sel)
@@ -217,8 +215,8 @@ impl PathTracingIntegrator {
                 } else {
                     // Compute the light's solid-angle PDF for the continuation direction.
                     let light_pdf_emit = light_pdf;
-                    let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + light_pdf_emit * light_pdf_emit;
-                    let w_emit = power_heuristic(prev_bsdf_pdf, sum_sq);
+                    let w_emit =
+                        MisHeuristic::Power.weight::<2>(0, &[prev_bsdf_pdf, light_pdf_emit]);
                     accumulated_color += w_emit * accumulated_attenuation * emission;
                 }
 
@@ -275,9 +273,8 @@ impl PathTracingIntegrator {
                             self.env_map.as_ref(),
                             is_volume,
                         );
-                        let sum_sq_nee =
-                            light_pdf_at_nee * light_pdf_at_nee + bsdf_pdf_at_nee * bsdf_pdf_at_nee;
-                        let w_nee = power_heuristic(light_pdf_at_nee, sum_sq_nee);
+                        let w_nee = MisHeuristic::Power
+                            .weight::<2>(0, &[light_pdf_at_nee, bsdf_pdf_at_nee]);
 
                         let f = material.eval(wo, light_unit, &si);
                         let cos_light = sample.normal.dot((-light_unit).into_inner()).abs();
@@ -435,8 +432,7 @@ impl PathTracingIntegrator {
                     Some(env_map) => env_map.to_solid_angle_pdf(direction),
                     None => 1.0 / (4.0 * PI),
                 };
-                let sum_sq = prev_bsdf_pdf * prev_bsdf_pdf + env_pdf * env_pdf;
-                let w_miss = power_heuristic(prev_bsdf_pdf, sum_sq);
+                let w_miss = MisHeuristic::Power.weight::<2>(0, &[prev_bsdf_pdf, env_pdf]);
                 return accumulated_color + w_miss * accumulated_attenuation * background_color;
             }
         }
