@@ -8,15 +8,17 @@
 //! Key parameters: `coating_ior` (Fresnel), `coating_tint` (absorption color),
 //! `thickness` (path length through the coating).
 
+use std::f32::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
-    MAX_BSDF_STRATS, PdfKind, fresnel_r0, fresnel_schlick, ggx_sample_h,
+    fresnel_r0, fresnel_schlick, ggx_sample_h, Bsdf, BsdfScatter, GpuMaterialBuffer,
+    GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE, MAX_BSDF_STRATS,
 };
 use crate::onb::Onb;
+use crate::pdf::cosine_hemisphere_direction;
 use crate::vec3::{Color3, Direction3};
 
 /// Maximum number of internal bounces for a Coated material. Each bounce
@@ -464,9 +466,42 @@ impl Bsdf for CoatedMaterial {
                         return Some(BsdfScatter::NonDelta { pdf_kinds: pk });
                     }
 
-                    let mut pk = [None; MAX_BSDF_STRATS];
-                    pk[0] = Some(PdfKind::Cosine { normal: sn });
-                    return Some(BsdfScatter::NonDelta { pdf_kinds: pk });
+                    // Internal-frame sampling: generate the direction in the
+                    // substrate's internal coordinate frame (refracted through
+                    // the coating), then refract to the global frame. Returning
+                    // Delta avoids the frame mismatch that the former Cosine
+                    // NonDelta fallback had between global-frame PDF and
+                    // internal-frame eval.
+                    let sn_inner = Direction3(-sn.into_inner());
+                    let internal_onb = Onb::build_from_normal(sn_inner);
+                    let (u, v) = (next_dim(), next_dim());
+                    let wi_local = cosine_hemisphere_direction(u, v);
+                    let wi_internal = internal_onb.local_to_world(wi_local);
+
+                    // Refract coating → air at the top interface.
+                    let wi_global = wi_internal.refract(-sn_inner.into_inner(), self.coating_ior);
+                    if wi_global.length_squared() > 0.0 {
+                        // Global-frame PDF: internal Cosine PDF transformed by
+                        // the Jacobian dω_ext/dω_int = η²×cos_θ_int / cos_θ_ext
+                        //   p_global = cos_θ_int/π * cos_θ_ext / (η² × cos_θ_int)
+                        //            = cos_θ_ext / (π × η²)
+                        let cos_wi_ext = wi_global.dot(sn.into_inner()).abs().max(1e-10);
+                        let p_global = cos_wi_ext / (PI * self.coating_ior * self.coating_ior);
+                        let eval = self.eval(wo, wi_global, si);
+                        let raw_f_cos = eval * cos_wi_ext / p_global;
+                        let bounded_f_cos = Color3::new(
+                            raw_f_cos.x().min(COATED_FIRE_FLY_LIMIT),
+                            raw_f_cos.y().min(COATED_FIRE_FLY_LIMIT),
+                            raw_f_cos.z().min(COATED_FIRE_FLY_LIMIT),
+                        );
+                        return Some(BsdfScatter::Delta {
+                            wi: wi_global,
+                            f_cos: bounded_f_cos,
+                            eta: Some(self.coating_ior),
+                        });
+                    }
+                    // TIR: no valid exit direction — terminate path
+                    return None;
                 }
 
                 BsdfScatter::Split {
