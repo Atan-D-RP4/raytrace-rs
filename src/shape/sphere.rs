@@ -142,14 +142,16 @@ impl Shape3D for SphereShape {
         let mapping_point = Point3(outward_normal.into_inner()); // unit-sphere direction for UV mapping
         let (u, v) = Self::get_sphere_uv(&mapping_point);
 
-        Some(Hit::new(
+        let mut hit = Hit::new(
             root,
             point,
             mapping_point,
             outward_normal,
             Some((u, v)),
             None,
-        ))
+        );
+        hit.curvature = 1.0 / self.radius; // Igehy curvature term for ray differential propagation
+        Some(hit)
     }
 
     fn bounding_box(&self) -> Aabb {

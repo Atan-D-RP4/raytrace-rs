@@ -437,7 +437,7 @@ fn build_render_context(
     }
 
     let camera = PerspectiveCamera::from_config(&config);
-    let mut film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
+    let film = RgbFilm::new(camera.image_resolution(), config.exposure, config.tone_map);
     let integrator = PathTracingIntegrator::new(
         config.max_depth,
         config.background,

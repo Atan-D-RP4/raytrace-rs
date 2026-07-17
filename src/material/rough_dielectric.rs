@@ -11,10 +11,10 @@
 //! PDF: reflection `D(ω_h)·|ω_h·n| / (4·|wo·ω_h|)`, transmission Eq. 33.
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::gpu::{GpuSerializable, GPU_NONE};
+use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
-    fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h, Bsdf, BsdfScatter,
-    GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::pdf::PdfKind;

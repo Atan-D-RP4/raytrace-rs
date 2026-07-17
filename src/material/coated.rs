@@ -114,8 +114,6 @@ struct DeltaSubstrateParams {
     shading_normal: Direction3,
     /// Current throughput of the path (accumulated color).
     throughput: Color3,
-    /// Optional eta for the internal direction (None if no eta change).
-    eta: Option<f32>,
     /// Current internal dimension for the Fresnel split at the coating-air boundary.
     internal_dim: f32,
 }
@@ -175,7 +173,6 @@ impl CoatedMaterial {
             f_cos_internal,
             shading_normal,
             throughput,
-            eta,
             internal_dim,
         } = params;
         // Beer's law for the upward crossing through the coating layer
@@ -212,7 +209,7 @@ impl CoatedMaterial {
             ScatterInternalResult::Exited {
                 wi: exit_dir,
                 f_cos: bounded_f_cos,
-                eta,
+                eta: Some(self.coating_ior),
             }
         }
     }
@@ -290,7 +287,7 @@ impl CoatedMaterial {
             Some(ScatterInternalResult::Exited {
                 wi: exit_dir,
                 f_cos: bounded_f_cos,
-                eta: None,
+                eta: Some(self.coating_ior),
             })
         }
     }
@@ -362,14 +359,13 @@ impl Bsdf for CoatedMaterial {
                 BsdfScatter::Delta {
                     wi: wi_internal,
                     f_cos: f_cos_internal,
-                    eta,
+                    ..
                 } => match self.scatter_delta_substrate(DeltaSubstrateParams {
                     coating_tint,
                     wi_internal,
                     f_cos_internal,
                     shading_normal: sn,
                     throughput,
-                    eta,
                     internal_dim,
                 }) {
                     ScatterInternalResult::Exited {
@@ -476,7 +472,6 @@ impl Bsdf for CoatedMaterial {
                 BsdfScatter::Split {
                     delta_wi,
                     delta_f_cos,
-                    delta_eta,
                     ..
                 } => {
                     // Handle the delta component as above
@@ -486,7 +481,6 @@ impl Bsdf for CoatedMaterial {
                         f_cos_internal: delta_f_cos,
                         shading_normal: sn,
                         throughput,
-                        eta: delta_eta,
                         internal_dim,
                     }) {
                         ScatterInternalResult::Exited {

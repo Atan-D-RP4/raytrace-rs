@@ -30,6 +30,11 @@ pub struct Hit {
     // Optional UV gradient for texture filtering. `None` if not computed.
     pub uv_gradients: Option<(Direction3, Direction3)>,
 
+    /// Local surface curvature: how fast the surface normal changes per unit distance
+    /// in the tangent plane. For spheres: `1/radius`. For flat surfaces (quads, planes): `0`.
+    /// Used by ray differential propagation (Igehy curvature term for curved specular reflection).
+    pub curvature: f32,
+
     /// Outward geometric normal before face-orientation or shading adjustments.
     /// Must be unit length — set_face_normal depends on it.
     geometric_normal: Direction3,
@@ -63,6 +68,7 @@ impl Hit {
             mapping_point,
             uv,
             uv_gradients,
+            curvature: 0.0, // default: flat — override in curved shapes (sphere: 1/radius)
             geometric_normal,
         }
     }
@@ -133,23 +139,19 @@ impl<'si> SurfaceInteraction<'si> {
         {
             let t_hit = mat_hit.hit.time;
             let p = ray.at(t_hit);
-            let dpdx = Ray::differential_footprint(
+            let dpdx = ray.differential_footprint(
                 rd.rx_origin,
                 rd.rx_direction,
                 p,
                 geometric_normal,
                 t_hit,
-                ray.origin,
-                ray.direction,
             );
-            let dpdy = Ray::differential_footprint(
+            let dpdy = ray.differential_footprint(
                 rd.ry_origin,
                 rd.ry_direction,
                 p,
                 geometric_normal,
                 t_hit,
-                ray.origin,
-                ray.direction,
             );
             let (du_dp, dv_dp) = gradients;
             Some(TextureDerivatives::from_surface(dpdx, dpdy, du_dp, dv_dp))

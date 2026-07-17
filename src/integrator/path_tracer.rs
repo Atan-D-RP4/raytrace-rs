@@ -26,6 +26,12 @@ use crate::vec3::{Color3, Direction3};
 /// `MAX_INTERNAL_BOUNCES` in Coated material.
 const SPLIT_MAX_DEPTH: u32 = 5;
 
+/// Per-bounce throughput clamp to prevent fireflies from high-variance paths.
+/// MIS-weighted contributions (e.g. from coated material NonDelta fallback) can
+/// amplify `accumulated_attenuation` well beyond physical range; capping it here
+/// stops the amplification from propagating to downstream bounces.
+const PATH_THROUGHPUT_LIMIT: f32 = 10.0;
+
 /// One-sample MIS estimator with power heuristic (β=2).
 ///
 /// Selects one strategy uniformly at random (probability 1/count), generates a
@@ -337,7 +343,13 @@ impl PathTracingIntegrator {
                                 si.point(),
                                 delta_wi,
                                 ray.time,
-                                ray.propagate_differentials(normal, hit_time, delta_eta, hit_point),
+                                ray.propagate_differentials(
+                                    normal,
+                                    hit_time,
+                                    delta_eta,
+                                    hit_point,
+                                    si.hit().curvature,
+                                ),
                             );
                             let mut delta_ray_mut = delta_ray;
                             let delta_li = self.li_inner::<S>(
@@ -368,6 +380,18 @@ impl PathTracingIntegrator {
                     prev_was_delta = new_prev_was_delta;
                     prev_bsdf_pdf = new_prev_bsdf_pdf;
                     accumulated_attenuation *= bias;
+                    // Clamp per-bounce throughput to prevent fireflies from
+                    // high-variance paths (e.g. coated material NonDelta fallback
+                    // where the global-frame PDF and internal-frame eval mismatch
+                    // produces large MIS-weighted contributions that would
+                    // otherwise amplify all subsequent bounces).
+                    let max_att = accumulated_attenuation
+                        .x()
+                        .max(accumulated_attenuation.y())
+                        .max(accumulated_attenuation.z());
+                    if max_att > PATH_THROUGHPUT_LIMIT {
+                        accumulated_attenuation *= PATH_THROUGHPUT_LIMIT / max_att;
+                    }
 
                     // Update the ray for the next bounce, preserving and regenerating
                     // ray differentials so texture filtering survives indirect bounces.
@@ -375,7 +399,13 @@ impl PathTracingIntegrator {
                         si.point(),
                         direction,
                         ray.time,
-                        ray.propagate_differentials(normal, hit_time, eta, hit_point),
+                        ray.propagate_differentials(
+                            normal,
+                            hit_time,
+                            eta,
+                            hit_point,
+                            si.hit().curvature,
+                        ),
                     );
                     ray = new_ray;
                 } else {
