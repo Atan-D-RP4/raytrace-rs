@@ -8,13 +8,12 @@ use crate::film::{Film, FilmTile, SharedFramebuffer, rgb::FILTER_RADIUS};
 use crate::hittable::{Intersectable, Sampleable};
 use crate::integrator::Integrator;
 use crate::renderer::Renderer;
-use crate::sampler::{self, Sampler};
+use crate::sampler::{HashRng, SampleStreamWriter};
 use crate::vec3::Color3;
 
-pub struct CpuRenderer<I, S>
+pub struct CpuRenderer<I>
 where
-    I: Integrator<S>,
-    S: Sampler + Sync,
+    I: Integrator,
 {
     /// Number of samples to take per pixel. Higher values yield better quality but take longer.
     samples_per_pixel: u32,
@@ -31,23 +30,19 @@ where
     min_samples_before_adapt: u32,
     /// The integrator used to compute radiance along rays.
     integrator: I,
-    /// Prototype sampler — cloned once per rayon thread via `ThreadLocal`.
-    sampler_prototype: S,
 }
 
-impl<I, S> CpuRenderer<I, S>
+impl<I> CpuRenderer<I>
 where
-    I: Integrator<S>,
-    S: Sampler + Sync,
+    I: Integrator,
 {
-    pub fn new(samples_per_pixel: u32, integrator: I, sampler_prototype: S) -> Self {
+    pub fn new(samples_per_pixel: u32, integrator: I) -> Self {
         Self {
             samples_per_pixel,
             threshold_abs: 1e-4,
             threshold_rel: 0.02,
             min_samples_before_adapt: 64,
             integrator,
-            sampler_prototype,
         }
     }
 
@@ -64,13 +59,12 @@ where
     }
 }
 
-impl<W, I, C, F, S> Renderer<W, C, F> for CpuRenderer<I, S>
+impl<W, I, C, F> Renderer<W, C, F> for CpuRenderer<I>
 where
     W: Intersectable,
-    I: Integrator<S>,
+    I: Integrator,
     C: Camera,
     F: Film,
-    S: Sampler + Sync,
 {
     fn render(
         &self,
@@ -128,6 +122,19 @@ where
         // Ring buffer for rolling average of last 8 pass durations.
         let mut pass_times = [0.0f32; 8];
         let mut pass_count: usize = 0;
+
+        // Per-thread sampler pairs — allocate once per thread, reuse across sample
+        // passes.  The initial values are overwritten per-pixel so the seed
+        // doesn't matter.
+        let num_threads = rayon::current_num_threads();
+        let samplers: Vec<std::sync::Mutex<(SampleStreamWriter, HashRng)>> = (0..num_threads)
+            .map(|_| {
+                std::sync::Mutex::new((
+                    SampleStreamWriter::new(crate::sampler::SobolQmcSampler::with_seed(0), 0),
+                    HashRng::new(0),
+                ))
+            })
+            .collect();
 
         for sample_idx in 0..self.samples_per_pixel {
             let pass_start = std::time::Instant::now();
@@ -193,25 +200,16 @@ where
                 }
             }
 
-            // Per-thread sampler instances — clone-once reuse via thread index.
-            // This replaces the old per-pixel `for_pixel()` factory allocation.
-            let num_threads = rayon::current_num_threads();
-            let samplers: Vec<std::sync::Mutex<S>> = (0..num_threads)
-                .map(|_| std::sync::Mutex::new(self.sampler_prototype.clone()))
-                .collect();
-
-            // Parallelly Iterate over tiles — each thread produces its own FilmTile,
-            // then we merge sequentially to avoid contention on the film.
             tile_pool
                 .par_iter_mut()
                 .enumerate()
                 .for_each(|(_tile_idx, tile)| {
-                    // Bounds were set at pool creation time; read them from the tile.
                     let [x_start, x_end, y_start, y_end] = tile.bounds;
 
                     let thread_idx = rayon::current_thread_index()
                         .expect("tile processing always runs inside rayon thread pool");
-                    let mut sampler_guard = samplers[thread_idx].lock().unwrap();
+                    let mut guard = samplers[thread_idx].lock().unwrap();
+                    let (ref mut stream, ref mut rng) = *guard;
 
                     for (y, x) in
                         (y_start..y_end).flat_map(|y| (x_start..x_end).map(move |x| (y, x)))
@@ -220,18 +218,12 @@ where
                             continue; // Skip pixels that have already converged
                         }
 
-                        // Start a new pixel-session — reinitialises per-pixel state
-                        // (Sobol seed) from `(x, y, sample_idx)`.
-                        let mut session = sampler_guard.begin_pixel(
-                            sampler::Point2i {
-                                x: x as i32,
-                                y: y as i32,
-                            },
-                            sample_idx,
-                        );
+                        // Reset per-pixel Sobol state from pixel coordinates.
+                        *stream = SampleStreamWriter::for_pixel(x as i32, y as i32, sample_idx);
+                        *rng = HashRng::for_pixel(x as i32, y as i32, sample_idx);
 
-                        // Generate a camera sample from session (AA jitter, lens, time)
-                        let camera_sampler = get_camera_sample((x, y), &mut session);
+                        // Generate a camera sample from the stream & rng.
+                        let camera_sampler = get_camera_sample((x, y), stream, rng);
 
                         let cam_ray = camera
                             .generate_ray_differential(&camera_sampler)
@@ -239,16 +231,14 @@ where
                         if let Some(mut cam_ray) = cam_ray {
                             let radiance =
                                 self.integrator
-                                    .li(&mut cam_ray.ray, world, lights, &mut session);
+                                    .li(&mut cam_ray.ray, world, lights, stream, rng);
                             let sample = radiance * cam_ray.weight;
                             // Guard against NaN/Inf poisoning the accumulation buffer.
                             if sample.into_inner().is_finite() {
                                 tile.add_sample(x, y, sample);
                             }
                         }
-                        // `session` dropped here — releases the per-pixel borrow
                     }
-                    // `sampler_guard` dropped here — releases the per-thread lock
                 });
 
             // Merge only dirty tiles — skip fully-converged tiles (no new samples).

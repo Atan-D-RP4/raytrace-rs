@@ -3,13 +3,13 @@ use std::sync::Arc;
 use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::ray::Ray;
-pub use crate::sampler::Sampler;
+pub use crate::sampler::{SampleStream, SamplerRng};
 use crate::vec3::{Color3, Direction3};
 
 pub mod path_tracer;
 pub use path_tracer::PathTracingIntegrator;
 
-pub trait Integrator<S: Sampler>: Send + Sync {
+pub trait Integrator: Send + Sync {
     /// Default background radiance for a ray that missed all geometry.
     fn background(&self, direction: Direction3) -> Color3 {
         match self.env_map() {
@@ -27,12 +27,13 @@ pub trait Integrator<S: Sampler>: Send + Sync {
 
     // Computes the radiance along a ray by tracing it through the scene, accounting for light
     // interactions with surfaces and materials.
-    fn li(
+    fn li<S: SampleStream, R: SamplerRng>(
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
         lights: &[Arc<dyn Sampleable>],
-        session: &mut S::Session<'_>,
+        stream: &mut S,
+        rng: &mut R,
     ) -> Color3;
 }
 
@@ -44,13 +45,9 @@ mod tests {
     use crate::flat_bvh::FlatBvh;
     use crate::material::Material;
     use crate::planar::quad;
-    use crate::sampler::{NaiveRandomSampler, Point2i, Sampler, StreamRngPair};
-
+    use crate::sampler::NaiveRandomSampler;
     use crate::vec3::{Color3, Direction3, Point3};
     use glam::Vec3;
-
-    /// Type shortcut for the concrete sampler used in tests.
-    type TestSampler = StreamRngPair<NaiveRandomSampler, NaiveRandomSampler>;
 
     /// Minimal integration test: render a 4×4 image of a lit Cornell-box-like
     /// scene and verify the output is non-zero and finite.
@@ -85,11 +82,8 @@ mod tests {
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::ZERO, None);
-        let mut sampler = StreamRngPair::new(
-            NaiveRandomSampler::with_seed(42),
-            NaiveRandomSampler::with_seed(43),
-            1,
-        );
+        let mut stream = NaiveRandomSampler::with_seed(42);
+        let mut rng = NaiveRandomSampler::with_seed(43);
         let mut film = RgbFilm::new((4, 4), 1.0, false);
 
         // Trace a few rays from a fixed origin.
@@ -102,20 +96,7 @@ mod tests {
                 let mut ray =
                     Ray::new_with_time(Point3(Vec3::new(0., 0., 4.)), Direction3(direction), 0.0);
 
-                let mut session = sampler.begin_pixel(
-                    Point2i {
-                        x: x as i32,
-                        y: y as i32,
-                    },
-                    0,
-                );
-                let color = <PathTracingIntegrator as Integrator<TestSampler>>::li(
-                    &integrator,
-                    &mut ray,
-                    &world,
-                    &lights,
-                    &mut session,
-                );
+                let color = integrator.li(&mut ray, &world, &lights, &mut stream, &mut rng);
                 film.add_sample(x, y, color);
             }
         }
@@ -166,22 +147,12 @@ mod tests {
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::ZERO, None);
-        let mut sampler = StreamRngPair::new(
-            NaiveRandomSampler::with_seed(42),
-            NaiveRandomSampler::with_seed(43),
-            1,
-        );
+        let mut stream = NaiveRandomSampler::with_seed(42);
+        let mut rng = NaiveRandomSampler::with_seed(43);
 
         let dir = Vec3::new(0.0, -1.0, -1.0).normalize();
         let mut ray = Ray::new_with_time(Point3(Vec3::new(0., 1.5, 4.)), Direction3(dir), 0.0);
-        let mut session = sampler.begin_pixel(Point2i { x: 0, y: 0 }, 0);
-        let color = <PathTracingIntegrator as Integrator<TestSampler>>::li(
-            &integrator,
-            &mut ray,
-            &world,
-            &lights,
-            &mut session,
-        );
+        let color = integrator.li(&mut ray, &world, &lights, &mut stream, &mut rng);
         assert!(color.x().is_finite() && color.y().is_finite() && color.z().is_finite());
     }
 }

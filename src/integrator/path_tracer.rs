@@ -16,7 +16,7 @@ use crate::interval::Interval;
 use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
 use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
 use crate::ray::Ray;
-use crate::sampler::{Sampler, SamplingSession};
+use crate::sampler::{SampleStream, SamplerRng};
 
 use crate::vec3::{Color3, Direction3};
 
@@ -154,7 +154,7 @@ impl PathTracingIntegrator {
     }
 }
 
-impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
+impl Integrator for PathTracingIntegrator {
     fn env_map(&self) -> Option<&Arc<EnvironmentMap>> {
         self.env_map.as_ref()
     }
@@ -163,24 +163,26 @@ impl<S: Sampler> Integrator<S> for PathTracingIntegrator {
         self.background
     }
 
-    fn li(
+    fn li<S: SampleStream, R: SamplerRng>(
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
         lights: &[Arc<dyn Sampleable>],
-        session: &mut S::Session<'_>,
+        stream: &mut S,
+        rng: &mut R,
     ) -> Color3 {
-        self.li_inner::<S>(initial_ray, world, lights, session, self.max_depth)
+        self.li_inner::<S, R>(initial_ray, world, lights, stream, rng, self.max_depth)
     }
 }
 
 impl PathTracingIntegrator {
-    fn li_inner<S: Sampler>(
+    fn li_inner<S: SampleStream, R: SamplerRng>(
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
         lights: &[Arc<dyn Sampleable>],
-        session: &mut S::Session<'_>,
+        stream: &mut S,
+        rng: &mut R,
         remaining_depth: u32,
     ) -> Color3 {
         let mut accumulated_attenuation = Color3::ONE;
@@ -238,11 +240,11 @@ impl PathTracingIntegrator {
                 // direction that doesn't match the single specular direction.
                 if !lights.is_empty() && !material.is_delta() {
                     // Pick a random light source to sample from the list
-                    let light_idx = (session.next_1d() * lights.len() as f32) as usize;
+                    let light_idx = (rng.next() * lights.len() as f32) as usize;
                     let light = &lights[light_idx % lights.len()];
 
                     // Sample a point on the light source — returns direction, normal, distance, and area PDF
-                    let (u, v) = session.next_2d();
+                    let (u, v) = stream.next_2d();
                     let sample = light.sample_light(si.point(), u, v, ray.time);
                     let light_unit = sample.direction.normalize();
                     let light_emission = sample.emission;
@@ -295,7 +297,7 @@ impl PathTracingIntegrator {
                 }
 
                 // Sample a random number for Russian Roulette
-                let rr = session.next_1d();
+                let rr = rng.next();
 
                 // Russian Roulette: survival probability proportional to current
                 // path throughput.  The 0.05 floor bounds variance from low-throughput paths.
@@ -309,7 +311,7 @@ impl PathTracingIntegrator {
 
                 // Scope-limited next_dim to release session borrow before Split recursion.
                 let scatter_result = {
-                    let mut next_mat_dim = || -> f32 { session.next_1d() };
+                    let mut next_mat_dim = || -> f32 { rng.next() };
                     material.scatter(wo, &si, &mut next_mat_dim)
                 };
 
@@ -323,8 +325,8 @@ impl PathTracingIntegrator {
                             (wi, f_cos, eta)
                         }
                         BsdfScatter::NonDelta { pdf_kinds } => {
-                            let (d, c, p) = self.mis_sample_continuation::<S>(
-                                pdf_kinds, wo, &si, material, normal, session,
+                            let (d, c, p) = self.mis_sample_continuation::<S, R>(
+                                pdf_kinds, wo, &si, material, normal, stream, rng,
                             );
                             new_prev_bsdf_pdf = p;
                             (d, c, None)
@@ -349,11 +351,12 @@ impl PathTracingIntegrator {
                                 ),
                             );
                             let mut delta_ray_mut = delta_ray;
-                            let delta_li = self.li_inner::<S>(
+                            let delta_li = self.li_inner::<S, R>(
                                 &mut delta_ray_mut,
                                 world,
                                 lights,
-                                session,
+                                stream,
+                                rng,
                                 remaining_depth
                                     .saturating_sub(bounce + 1)
                                     .min(SPLIT_MAX_DEPTH),
@@ -361,13 +364,14 @@ impl PathTracingIntegrator {
                             accumulated_color += accumulated_attenuation * delta_f_cos * delta_li;
 
                             // Continue with the non-delta child's MIS continuation.
-                            let (d, c, p) = self.mis_sample_continuation::<S>(
+                            let (d, c, p) = self.mis_sample_continuation::<S, R>(
                                 non_delta_pdf_kinds,
                                 wo,
                                 &si,
                                 material,
                                 normal,
-                                session,
+                                stream,
+                                rng,
                             );
                             new_prev_bsdf_pdf = p;
                             (d, c, None)
@@ -456,14 +460,15 @@ impl PathTracingIntegrator {
     /// - Indices 1..N are the material strategies from `pdf_kinds`.
     /// - The light PDF (`light_pdf`) is excluded — NEE already handles
     ///   light sampling with its own dedicated MIS weight.
-    fn mis_sample_continuation<S: Sampler>(
+    fn mis_sample_continuation<S: SampleStream, R: SamplerRng>(
         &self,
         pdf_kinds: [Option<PdfKind>; MAX_BSDF_STRATS],
         wo: Direction3,
         si: &SurfaceInteraction,
         material: &Material,
         normal: Direction3,
-        session: &mut S::Session<'_>,
+        stream: &mut S,
+        rng: &mut R,
     ) -> (Direction3, Color3, f32) {
         let eval = |d: Direction3| material.eval(wo, d, si);
 
@@ -501,10 +506,10 @@ impl PathTracingIntegrator {
         });
 
         // Selection: independent random from RNG
-        let sel_idx_raw = session.next_1d();
+        let sel_idx_raw = rng.next();
         let sel_idx = (sel_idx_raw * n as f32).min(n as f32 - 1e-15) as usize;
-        // Direction: correlated 2D from session
-        let (pdf_u, pdf_v) = session.next_2d();
+        // Direction: correlated 2D from stream
+        let (pdf_u, pdf_v) = stream.next_2d();
 
         let (direction, contribution, p_mix) = mis_sample(pdf_refs, n, eval, sel_idx, pdf_u, pdf_v);
         (direction, contribution, p_mix)

@@ -20,7 +20,6 @@ use raytrace_rs::flat_bvh::FlatBvh;
 use raytrace_rs::integrator::PathTracingIntegrator;
 use raytrace_rs::renderer::CpuRenderer;
 use raytrace_rs::renderer::Renderer;
-use raytrace_rs::sampler::SobolSampler;
 use raytrace_rs::scene::Scene;
 
 struct WindowState {
@@ -413,7 +412,7 @@ fn build_render_context(
 ) -> (
     PerspectiveCamera,
     RgbFilm,
-    CpuRenderer<PathTracingIntegrator, SobolSampler>,
+    CpuRenderer<PathTracingIntegrator>,
 ) {
     // Allow env-var overrides for fast iteration during debugging.
     let mut config = *scene.config();
@@ -443,8 +442,7 @@ fn build_render_context(
         config.background,
         scene.env_map().cloned(),
     );
-    let sampler = SobolSampler::new(config.samples_per_pixel as u32);
-    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator, sampler);
+    let mut renderer = CpuRenderer::new(config.samples_per_pixel as u32, integrator);
 
     renderer.set_threshold_abs(1e-7);
     renderer.set_threshold_rel(1e-5);

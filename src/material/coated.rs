@@ -14,8 +14,8 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    fresnel_r0, fresnel_schlick, ggx_sample_h, Bsdf, BsdfScatter, GpuMaterialBuffer,
-    GpuMaterialNode, GpuMaterialType, PdfKind, GPU_NONE, MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
+    MAX_BSDF_STRATS, PdfKind, fresnel_r0, fresnel_schlick, ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::pdf::cosine_hemisphere_direction;
