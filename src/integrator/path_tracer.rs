@@ -13,8 +13,8 @@ use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
-use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
+use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
+use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PdfKind, PDF};
 use crate::ray::Ray;
 use crate::sampler::{SampleStream, SamplerRng};
 
@@ -326,7 +326,12 @@ impl PathTracingIntegrator {
                         }
                         BsdfScatter::NonDelta { pdf_kinds } => {
                             let (d, c, p) = self.mis_sample_continuation::<S, R>(
-                                pdf_kinds, wo, &si, material, normal, stream, rng,
+                                pdf_kinds,
+                                wo,
+                                &si,
+                                material,
+                                normal,
+                                (stream, rng),
                             );
                             new_prev_bsdf_pdf = p;
                             (d, c, None)
@@ -370,8 +375,7 @@ impl PathTracingIntegrator {
                                 &si,
                                 material,
                                 normal,
-                                stream,
-                                rng,
+                                (stream, rng),
                             );
                             new_prev_bsdf_pdf = p;
                             (d, c, None)
@@ -467,8 +471,7 @@ impl PathTracingIntegrator {
         si: &SurfaceInteraction,
         material: &Material,
         normal: Direction3,
-        stream: &mut S,
-        rng: &mut R,
+        (stream, rng): (&mut S, &mut R),
     ) -> (Direction3, Color3, f32) {
         let eval = |d: Direction3| material.eval(wo, d, si);
 

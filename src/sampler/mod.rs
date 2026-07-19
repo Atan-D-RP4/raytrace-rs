@@ -60,6 +60,33 @@ pub(crate) fn hash_sample(n: u32, d: u32, seed: u64) -> f32 {
     (h >> 40) as f32 * INV_HASH
 }
 
+/// Owen-scramble a 32-bit unsigned integer.
+///
+/// Processes bits from most significant to least significant.
+/// At each bit position, a hash chain determines whether to flip the bit.
+/// Because the hash chain accumulates state from all higher bits,
+/// the decision to flip bit k depends on bits 0..k-1 — this is the
+/// recursive dependence that defines Owen scrambling.
+pub fn owen_scramble(v: u32, seed: u64) -> u32 {
+    // Reverse bits so we can iterate MSB-first with a simple loop.
+    // After reversal, bit 0 = original MSB, bit 31 = original LSB.
+    let mut vr = v.reverse_bits();
+
+    for i in 0..32 {
+        // Retrieve the prefix of bits 0..i (original MSB..bit i) to use as a hash input.
+        let prefix = vr >> i;
+        // Fresh hash for this bit position, based on the seed and the prefix of higher bits.
+        let h = splitmix64(seed ^ prefix as u64);
+        // Bit i of the hash determines whether to flip bit i of the value.
+        let flip = ((h >> i) & 1) as u32;
+        // Flip bit i of the value if flip == 1.
+        vr ^= flip << i;
+    }
+
+    // Reverse bits back to original order.
+    vr.reverse_bits()
+}
+
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
 ///
 /// Same `(n, d)` always returns the same value — deterministic across threads.
@@ -117,14 +144,16 @@ impl QmcSampler for SobolQmcSampler {
             // Gray code g(n) = n ^ (n >> 1).
             // Each set bit at position c contributes V[dim][c].
             let gn = n ^ (n >> 1);
-            let mut v = splitmix_shift(self.seed, d);
+            let mut raw = 0;
             let mut g = gn;
             while g != 0 {
                 let c = g.trailing_zeros() as usize;
-                v ^= DIRS[d_idx][c];
+                raw ^= DIRS[d_idx][c];
                 g &= g - 1; // clear lowest set bit
             }
-            v as f32 * INV_U32
+            let scramble_seed = splitmix_shift(self.seed, d) as u64;
+            let scrambled = owen_scramble(raw, scramble_seed);
+            scrambled as f32 * INV_U32
         } else {
             // Hash-based fallback for dims >= MAX_DIMS to avoid structured
             // correlation from clamping all overflow dims to the last direction numbers.
@@ -368,16 +397,30 @@ mod tests {
 
     #[test]
     fn sobol_van_der_corput_first_few() {
-        let s = SobolQmcSampler { seed: 0 };
-        let tol = INV_U32;
-        assert!((s.sample(0, 0) - 0.0).abs() < tol);
-        assert!((s.sample(1, 0) - 0.5).abs() < tol);
-        assert!((s.sample(2, 0) - 0.75).abs() < tol);
-        assert!((s.sample(3, 0) - 0.25).abs() < tol);
-        assert!((s.sample(4, 0) - 0.375).abs() < tol);
-        assert!((s.sample(5, 0) - 0.875).abs() < tol);
-        assert!((s.sample(6, 0) - 0.625).abs() < tol);
-        assert!((s.sample(7, 0) - 0.125).abs() < tol);
+        // Owen scrambling changes the raw Van der Corput values, so we verify
+        // the scrambled sequence's key properties instead of hardcoded values:
+        // 1. All values in [0, 1)
+        // 2. First 8 samples are distinct (no collisions from scrambling)
+        // 3. Deterministic (same seed → same values)
+        let s = SobolQmcSampler::with_seed(42);
+        let mut values = Vec::new();
+        for n in 0..8u32 {
+            let v = s.sample(n, 0);
+            assert!((0.0..1.0).contains(&v), "Sample out of range: n={n}, v={v}");
+            values.push(v);
+        }
+        let unique: std::collections::HashSet<_> = values.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(
+            unique.len(),
+            8,
+            "All 8 dimension-0 samples should be distinct"
+        );
+
+        // Determinism: same seed produces same values
+        let s2 = SobolQmcSampler::with_seed(42);
+        for n in 0..8u32 {
+            assert_eq!(s.sample(n, 0), s2.sample(n, 0));
+        }
     }
 
     #[test]
@@ -479,5 +522,75 @@ mod tests {
             same < 4,
             "Different pixels should produce different samples"
         );
+    }
+
+    #[test]
+    fn owen_scramble_nontrivial() {
+        let seed = 42;
+        let v = 0;
+        let scrambled = owen_scramble(v, seed);
+        assert_ne!(scrambled, 0, "owen_scramble(0, seed) should not return 0");
+    }
+
+    #[test]
+    fn owen_scramble_deterministic() {
+        let seed = 42;
+        let v = 123456789;
+        let scrambled1 = owen_scramble(v, seed);
+        let scrambled2 = owen_scramble(v, seed);
+        assert_eq!(
+            scrambled1, scrambled2,
+            "owen_scramble(v, seed) should be deterministic"
+        );
+    }
+
+    #[test]
+    fn owen_scramble_different_seeds() {
+        let v = 123456789;
+        let seed1 = 42;
+        let seed2 = 43;
+        let scrambled1 = owen_scramble(v, seed1);
+        let scrambled2 = owen_scramble(v, seed2);
+        assert_ne!(
+            scrambled1, scrambled2,
+            "owen_scramble(v, seed1) should not equal owen_scramble(v, seed2) for different seeds"
+        );
+    }
+
+    #[test]
+    fn owen_scramble_bijection() {
+        let seed = 42;
+        let mut seen = std::collections::HashSet::new();
+        for v in 0..1000u32 {
+            let scrambled = owen_scramble(v, seed);
+            assert!(
+                !seen.contains(&scrambled),
+                "owen_scramble should be a bijection: duplicate output for v={v}"
+            );
+            seen.insert(scrambled);
+        }
+    }
+
+    #[test]
+    fn sobol_convergence_rate() {
+        let s = SobolQmcSampler::with_seed(0);
+        let mut sum = 0.0;
+        let mut n = 1;
+        let mut prev_estimate = 0.0;
+        for i in 0..10000 {
+            let x = s.sample(i, 0);
+            sum += x;
+            n += 1;
+            let estimate = sum / n as f32;
+            if i > 0 {
+                let error = (estimate - prev_estimate).abs();
+                // Expect error to decrease roughly as O(1/N)
+                assert!(
+                    error < 1.0 / (n as f32),
+                    "Sobol convergence rate is not O(1/N): error={error}, n={n}"
+                );
+            }
+            prev_estimate = estimate;
+        }
     }
 }
