@@ -12,6 +12,7 @@ use crate::vec3::{Color3, Direction3, Point3};
 ///
 /// This is a low-level struct focused on geometric details, used as an intermediate
 /// representation.
+#[derive(Default)]
 pub struct Hit {
     /// Ray parameter `t` at the intersection point.
     pub time: f32,
@@ -359,5 +360,26 @@ impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
 
     fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
         (**self).sample_light(origin, u, v, time)
+    }
+}
+
+/// Construct a minimal [`SurfaceInteraction`] for unit tests.
+///
+/// The geometry is a trivial default (position at origin, zero curvature, no UV
+/// gradients). Only `material` and `shading_normal` are meaningful — set them
+/// to control what the BSDF code path sees.
+#[cfg(test)]
+impl<'a> SurfaceInteraction<'a> {
+    pub fn test_surface(
+        material: &'a Material,
+        shading_normal: Direction3,
+    ) -> SurfaceInteraction<'_> {
+        SurfaceInteraction::new(
+            Hit::new(0.0, Point3::ZERO, Point3::ZERO, shading_normal, None, None),
+            shading_normal,
+            true,
+            material,
+            None,
+        )
     }
 }

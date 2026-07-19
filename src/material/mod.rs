@@ -218,10 +218,11 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
 ///
 /// Wraps concrete structs for built-in materials and delegates to their
 /// [`Bsdf`] implementations. Library consumers use [`Material::Custom`].
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum Material {
     /// Absence of material — all BSDF methods return zero/None.
     /// Used for importance targets where only geometry matters for sampling.
+    #[default]
     Void,
     /// Diffuse (Lambertian) surface.
     Lambertian(LambertianMaterial),

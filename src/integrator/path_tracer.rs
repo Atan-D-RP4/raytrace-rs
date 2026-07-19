@@ -31,7 +31,7 @@ const SPLIT_MAX_DEPTH: u32 = 5;
 /// amplify `accumulated_attenuation` well beyond physical range; capping it here
 /// stops the amplification from propagating to downstream bounces.
 /// Currently set to `f32::MAX` to avoid clamping, but can be reduced if fireflies are observed.
-const PATH_THROUGHPUT_LIMIT: f32 = f32::MAX;
+const PATH_THROUGHPUT_LIMIT: f32 = f32::MAX - f32::EPSILON;
 
 /// One-sample MIS estimator with power heuristic (β=2).
 ///

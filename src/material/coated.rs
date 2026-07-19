@@ -32,7 +32,7 @@ const MAX_INTERNAL_BOUNCES: usize = 5;
 /// Safety net: clamp BSDF × cosine to prevent fireflies from extreme grazing angles.
 /// This is NOT a physically derived limit — it's a heuristic backstop.
 /// Currently set to f32::MAX, but can be reduced if fireflies are observed in practice.
-const COATED_FIRE_FLY_LIMIT: f32 = f32::MAX;
+const COATED_FIRE_FLY_LIMIT: f32 = f32::MAX - f32::EPSILON;
 
 fn beers_absorption(throughput: Color3, tint: Color3, path_len: f32) -> Color3 {
     throughput
@@ -578,10 +578,15 @@ impl Bsdf for CoatedMaterial {
 
     fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
         let sn = si.shading_normal().into_inner();
+        // Both wo and wi must be in the front-facing hemisphere.
+        // Back-side directions are not reachable for a reflective coating BSDF.
+        if wo.dot(sn) <= 0.0 || wi.dot(sn) <= 0.0 {
+            return Color3::ZERO;
+        }
         // Compute the cosine of the angle between the outgoing/incoming directions and the
         // shading normal.
-        let cos_wo = wo.dot(sn).abs();
-        let cos_wi = wi.dot(sn).abs();
+        let cos_wo = wo.dot(sn);
+        let cos_wi = wi.dot(sn);
         // Precompute Fresnel reflectance at normal incidence for the coating layer.
         let r0 = fresnel_r0(self.coating_ior);
 
@@ -594,7 +599,12 @@ impl Bsdf for CoatedMaterial {
         let fresnel_i = self.fresnel_transmittance(cos_wi);
 
         // Refract global incoming direction into the coating's internal frame.
+        // If TIR occurs at the incoming direction, only the coating reflection
+        // contributes — the substrate path is physically unreachable.
         let wi_internal = (-wi).refract(sn, 1.0 / self.coating_ior);
+        if wi_internal.length_squared() <= 0.0 {
+            return direct_coat;
+        }
 
         // Compute internal frame: direction inside coating that refracts to wo_global.
         let wo_frame = match self.snell_internal_frame(wo, sn.into()) {
@@ -657,13 +667,22 @@ impl Bsdf for CoatedMaterial {
 
     fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
         let sn = si.shading_normal();
-        let cos_wo = wo.dot(sn.into_inner()).abs();
-        let cos_wi = wi.dot(sn.into_inner()).abs();
+        // Both wo and wi must be in the front-facing (shading) hemisphere.
+        // Back-side directions are physically unreachable as BSDF exits.
+        if wo.dot(sn.into_inner()) <= 0.0 || wi.dot(sn.into_inner()) <= 0.0 {
+            return 0.0;
+        }
+        let cos_wo = wo.dot(sn.into_inner());
+        let cos_wi = wi.dot(sn.into_inner());
         // Fresnel transmittance at top interface for outgoing direction
         let fresnel_t = self.fresnel_transmittance(cos_wo);
 
-        // Refract global incoming direction into internal frame (same as eval)
-        let wi_internal = -wi.refract(sn.into_inner(), 1.0 / self.coating_ior);
+        // Refract global incoming direction into internal frame (same as eval).
+        // The Bsdf convention has wi pointing away from the surface, so -wi is the
+        // incident direction for Snell's law. Unary - has lower precedence than method
+        // call — (-wi).refract(...) negates the input; -wi.refract(...) would negate
+        // the result, producing a direction with the wrong sign for cos_int.
+        let wi_internal = (-wi).refract(sn.into_inner(), 1.0 / self.coating_ior);
 
         // Compute internal frame: direction inside coating that refracts to wo_global.
         let wo_frame = match self.snell_internal_frame(wo, sn) {
@@ -753,5 +772,72 @@ impl GpuSerializable for CoatedMaterial {
         });
 
         buf.nodes.len() as u32 - 1
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::f32::consts::PI;
+    use std::sync::Arc;
+
+    use crate::hittable::SurfaceInteraction;
+    use crate::material::{Bsdf, CoatedMaterial, DielectricMaterial, Material, MetalMaterial};
+    use crate::vec3::{Color3, Direction3};
+
+    /// Uniform sphere direction via spherical coordinates.
+    #[inline(always)]
+    pub fn uniform_sphere_sample() -> Direction3 {
+        let u = rand::random::<f32>();
+        let v = rand::random::<f32>();
+        let phi = 2.0 * PI * u;
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        let z = 1.0 - 2.0 * v;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        Direction3::new(r * cos_phi, r * sin_phi, z)
+    }
+
+    /// PDF for uniform sphere sampling.
+    #[inline(always)]
+    pub fn uniform_sphere_pdf(_wi: Direction3) -> f32 {
+        1.0 / (4.0 * PI)
+    }
+
+    #[test]
+    fn coated_pdf_substrate_integrates_to_fresnel_t() {
+        // Thick, high-IOR coating over a reflective substrate. The pdf() method
+        // only returns the substrate-path component (fresnel_t(wo) * p_sub(wi_int) *
+        // dω_int/dω_ext). The coating reflection component fresnel_r(wo) is handled
+        // through PdfKind separately, so the total BSDF sampling PDF integrates to 1.
+        // This test checks that the substrate-path component integrates to fresnel_t(wo).
+        let material = CoatedMaterial::new(
+            Arc::new(MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.1)),
+            Arc::new(DielectricMaterial::tinted(1.5, Color3::new(1.0, 1.0, 1.0))),
+            1.5,
+            Color3::new(0.8, 0.8, 0.8),
+            0.01,
+        );
+        // Fixed near-normal incident direction.
+        let wo = Direction3::new(0.0, 0.1, 1.0).normalize();
+        let mut sum = 0.0;
+        let n = 500_000;
+
+        let sn = Direction3::new(0.0, 0.0, 1.0);
+        let si = SurfaceInteraction::test_surface(&Material::Void, sn);
+
+        for _ in 0..n {
+            let wi = uniform_sphere_sample();
+            sum += material.pdf(wo, wi, &si) / uniform_sphere_pdf(wi);
+        }
+        let integral = sum / n as f32;
+
+        // Expected integral = fresnel_t(wo) = 1 - fresnel_r(wo).
+        let cos_wo = wo.dot(sn.into_inner()).max(0.0);
+        let r0 = ((1.0f32 - 1.5) / (1.0 + 1.5)).powi(2); // ≈ 0.04
+        let fresnel_r = r0 + (1.0 - r0) * (1.0 - cos_wo).powi(5);
+        let expected = 1.0 - fresnel_r; // ≈ 0.96
+        assert!(
+            (integral - expected).abs() < 0.1,
+            "substrate-path PDF integrates to {integral}, expected ~{expected} (fresnel_t at wo)"
+        );
     }
 }
