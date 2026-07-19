@@ -29,7 +29,8 @@ const MAX_INTERNAL_BOUNCES: usize = 5;
 
 /// Safety net: clamp BSDF × cosine to prevent fireflies from extreme grazing angles.
 /// This is NOT a physically derived limit — it's a heuristic backstop.
-const COATED_FIRE_FLY_LIMIT: f32 = 2.0;
+/// Currently set to f32::MAX, but can be reduced if fireflies are observed in practice.
+const COATED_FIRE_FLY_LIMIT: f32 = f32::MAX;
 
 fn beers_absorption(throughput: Color3, tint: Color3, path_len: f32) -> Color3 {
     throughput

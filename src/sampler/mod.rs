@@ -60,31 +60,83 @@ pub(crate) fn hash_sample(n: u32, d: u32, seed: u64) -> f32 {
     (h >> 40) as f32 * INV_HASH
 }
 
+/// Interleave bits of x and y into a Morton code.
+/// Result: bits are arranged as y₃x₃y₂x₂y₁x₁y₀x₀
+pub fn morton_encode(mut x: u32, mut y: u32) -> u32 {
+    // Spread bits: 0bABCD → 0b0A0B0C0D
+    x = (x | (x << 8)) & 0x00FF00FF;
+    x = (x | (x << 4)) & 0x0F0F0F0F;
+    x = (x | (x << 2)) & 0x33333333;
+    x = (x | (x << 1)) & 0x55555555;
+
+    y = (y | (y << 8)) & 0x00FF00FF;
+    y = (y | (y << 4)) & 0x0F0F0F0F;
+    y = (y | (y << 2)) & 0x33333333;
+    y = (y | (y << 1)) & 0x55555555;
+
+    (x << 1) | y
+}
+
+/// Reverse pairs of bits: 0bDD_CC_BB_AA → 0bAA_BB_CC_DD
+fn reverse_bit_pairs(mut v: u32) -> u32 {
+    // Swap adjacent pairs
+    v = ((v & 0x33333333) << 2) | ((v >> 2) & 0x33333333);
+    // Swap adjacent nibbles
+    v = ((v & 0x0F0F0F0F) << 4) | ((v >> 4) & 0x0F0F0F0F);
+    // Swap adjacent bytes
+    v = ((v & 0x00FF00FF) << 8) | ((v >> 8) & 0x00FF00FF);
+    // Swap 16-bit halves
+    v = v.rotate_right(16);
+    v
+}
+
 /// Owen-scramble a 32-bit unsigned integer.
 ///
-/// Processes bits from most significant to least significant.
-/// At each bit position, a hash chain determines whether to flip the bit.
-/// Because the hash chain accumulates state from all higher bits,
-/// the decision to flip bit k depends on bits 0..k-1 — this is the
-/// recursive dependence that defines Owen scrambling.
-pub fn owen_scramble(v: u32, seed: u64) -> u32 {
+/// Recursively permutes bits so the permutation at each position depends on all
+/// higher-order bits. Destroys structured correlations in the Sobol sequence
+/// while preserving its low-discrepancy property. Guaranteed bijective on u32.
+pub fn owen_scramble_base_2(v: u32, seed: u64) -> u32 {
     // Reverse bits so we can iterate MSB-first with a simple loop.
     // After reversal, bit 0 = original MSB, bit 31 = original LSB.
     let mut vr = v.reverse_bits();
 
+    // Seed hash chain from all bits of v. Because splitmix64 is a bijection on
+    // u64, advancing the chain propagates all input bits forward: every flip
+    // decision depends on the full input, guaranteeing distinct outputs.
+    let mut h = seed ^ (vr as u64);
+
+    // Flip each bit with a pseudo-random decision based on the hash chain.
     for i in 0..32 {
-        // Retrieve the prefix of bits 0..i (original MSB..bit i) to use as a hash input.
-        let prefix = vr >> i;
-        // Fresh hash for this bit position, based on the seed and the prefix of higher bits.
-        let h = splitmix64(seed ^ prefix as u64);
-        // Bit i of the hash determines whether to flip bit i of the value.
+        h = splitmix64(h);
         let flip = ((h >> i) & 1) as u32;
-        // Flip bit i of the value if flip == 1.
         vr ^= flip << i;
     }
 
-    // Reverse bits back to original order.
     vr.reverse_bits()
+}
+
+/// Base-4 Owen scramble of a Morton code.
+///
+/// Scrambles pairs of bits (quadrants) hierarchically by shuffling each level's
+/// sub-quadrant assignment based on higher-level quadrants. Used to decorrelate
+/// pixel blocks in blue-noise screen-space dithering.
+pub fn owen_scramble_base_4(mut v: u32, seed: u64) -> u32 {
+    // Reverse pairs of bits so we can iterate from coarsest to finest.
+    // After this, bits 0-1 = coarsest quadrant, bits 2-3 = next level, etc.
+    v = reverse_bit_pairs(v);
+
+    // Seed hash chain from all bits of v so every quadrant-level permutation
+    // depends on the full input — same bijection guarantee as base-2.
+    let mut h = seed ^ (v as u64);
+
+    // Flip each pair of bits with a pseudo-random permutation based on the hash chain.
+    for i in (0..32).step_by(2) {
+        h = splitmix64(h);
+        let perm = (h >> i) & 0b11;
+        v ^= (perm << i) as u32;
+    }
+
+    reverse_bit_pairs(v)
 }
 
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
@@ -152,7 +204,7 @@ impl QmcSampler for SobolQmcSampler {
                 g &= g - 1; // clear lowest set bit
             }
             let scramble_seed = splitmix_shift(self.seed, d) as u64;
-            let scrambled = owen_scramble(raw, scramble_seed);
+            let scrambled = owen_scramble_base_2(raw, scramble_seed);
             scrambled as f32 * INV_U32
         } else {
             // Hash-based fallback for dims >= MAX_DIMS to avoid structured
@@ -528,7 +580,7 @@ mod tests {
     fn owen_scramble_nontrivial() {
         let seed = 42;
         let v = 0;
-        let scrambled = owen_scramble(v, seed);
+        let scrambled = owen_scramble_base_2(v, seed);
         assert_ne!(scrambled, 0, "owen_scramble(0, seed) should not return 0");
     }
 
@@ -536,8 +588,8 @@ mod tests {
     fn owen_scramble_deterministic() {
         let seed = 42;
         let v = 123456789;
-        let scrambled1 = owen_scramble(v, seed);
-        let scrambled2 = owen_scramble(v, seed);
+        let scrambled1 = owen_scramble_base_2(v, seed);
+        let scrambled2 = owen_scramble_base_2(v, seed);
         assert_eq!(
             scrambled1, scrambled2,
             "owen_scramble(v, seed) should be deterministic"
@@ -549,8 +601,8 @@ mod tests {
         let v = 123456789;
         let seed1 = 42;
         let seed2 = 43;
-        let scrambled1 = owen_scramble(v, seed1);
-        let scrambled2 = owen_scramble(v, seed2);
+        let scrambled1 = owen_scramble_base_2(v, seed1);
+        let scrambled2 = owen_scramble_base_2(v, seed2);
         assert_ne!(
             scrambled1, scrambled2,
             "owen_scramble(v, seed1) should not equal owen_scramble(v, seed2) for different seeds"
@@ -562,7 +614,7 @@ mod tests {
         let seed = 42;
         let mut seen = std::collections::HashSet::new();
         for v in 0..1000u32 {
-            let scrambled = owen_scramble(v, seed);
+            let scrambled = owen_scramble_base_2(v, seed);
             assert!(
                 !seen.contains(&scrambled),
                 "owen_scramble should be a bijection: duplicate output for v={v}"

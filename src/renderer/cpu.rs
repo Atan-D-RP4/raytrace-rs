@@ -8,7 +8,10 @@ use crate::film::{Film, FilmTile, SharedFramebuffer, rgb::FILTER_RADIUS};
 use crate::hittable::{Intersectable, Sampleable};
 use crate::integrator::Integrator;
 use crate::renderer::Renderer;
-use crate::sampler::{HashRng, SampleStreamWriter};
+use crate::sampler::{
+    HashRng, SampleStreamWriter, morton_encode, owen_scramble_base_2, owen_scramble_base_4,
+    pixel_seed,
+};
 use crate::vec3::Color3;
 
 pub struct CpuRenderer<I>
@@ -136,6 +139,8 @@ where
             })
             .collect();
 
+        let dither_seed = 0x12345678u64; // Arbitrary seed for dithering
+
         for sample_idx in 0..self.samples_per_pixel {
             let pass_start = std::time::Instant::now();
             let _sample_span =
@@ -219,8 +224,28 @@ where
                         }
 
                         // Reset per-pixel Sobol state from pixel coordinates.
-                        *stream = SampleStreamWriter::for_pixel(x as i32, y as i32, sample_idx);
-                        *rng = HashRng::for_pixel(x as i32, y as i32, sample_idx);
+                        {
+                            let morton_idx = morton_encode(x, y);
+
+                            // Owen-scramble the Morton code (base-4) to shuffle
+                            // which pixel gets which block of samples.
+                            let scrambled_pixel = owen_scramble_base_4(morton_idx, dither_seed);
+                            // Each pixel gets a contiguous block of `spp` Sobol samples.
+                            let pixel_base =
+                                (scrambled_pixel as u64 * self.samples_per_pixel as u64) as u32;
+
+                            // Owen-scramble the sample index within the pixel (base-2)
+                            // This supports progressive rendering (non-power-of-two sample counts)
+                            let seed = pixel_seed(x as i32, y as i32);
+                            let scrambled_sample = owen_scramble_base_2(sample_idx, seed);
+
+                            // Compute the actual Sobol index for this pixel-sample
+                            let actual_idx = pixel_base + scrambled_sample;
+
+                            // Reset the stream & rng for this pixel-sample.
+                            *stream = SampleStreamWriter::for_pixel(x as i32, y as i32, actual_idx);
+                            *rng = HashRng::for_pixel(x as i32, y as i32, actual_idx);
+                        }
 
                         // Generate a camera sample from the stream & rng.
                         let camera_sampler = get_camera_sample((x, y), stream, rng);

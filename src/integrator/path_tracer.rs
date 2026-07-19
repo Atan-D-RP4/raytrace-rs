@@ -13,8 +13,8 @@ use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
-use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PdfKind, PDF};
+use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
+use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
 use crate::ray::Ray;
 use crate::sampler::{SampleStream, SamplerRng};
 
@@ -30,7 +30,8 @@ const SPLIT_MAX_DEPTH: u32 = 5;
 /// MIS-weighted contributions (e.g. from coated material NonDelta fallback) can
 /// amplify `accumulated_attenuation` well beyond physical range; capping it here
 /// stops the amplification from propagating to downstream bounces.
-const PATH_THROUGHPUT_LIMIT: f32 = 10.0;
+/// Currently set to `f32::MAX` to avoid clamping, but can be reduced if fireflies are observed.
+const PATH_THROUGHPUT_LIMIT: f32 = f32::MAX;
 
 /// One-sample MIS estimator with power heuristic (β=2).
 ///
