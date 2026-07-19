@@ -33,7 +33,8 @@ use crate::onb::Onb;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Direction3};
 
-use super::MIRROR_THRESHOLD;
+use super::{MIRROR_THRESHOLD, fresnel_r0};
+use crate::material::Material;
 
 /// Microfacet conductor BRDF (GGX).
 #[derive(Clone)]
@@ -49,6 +50,60 @@ pub struct MetalMaterial {
     pub ior: f32,
     /// Precomputed Fresnel reflectance at normal incidence.
     pub r0: f32,
+}
+
+impl MetalMaterial {
+    /// Create a metal with default IOR of 2.5.
+    pub fn new(albedo: Color3, roughness: f32) -> Self {
+        let ior = 2.5;
+        Self {
+            albedo,
+            tex: None,
+            roughness,
+            ior,
+            r0: fresnel_r0(ior),
+        }
+    }
+
+    /// Create a metal with a custom IOR.
+    pub fn with_ior(albedo: Color3, roughness: f32, ior: f32) -> Self {
+        Self {
+            albedo,
+            tex: None,
+            roughness,
+            ior,
+            r0: fresnel_r0(ior),
+        }
+    }
+
+    /// Create a metal with a texture and default IOR.
+    pub fn textured(tex: Arc<dyn Texture>, roughness: f32) -> Self {
+        let ior = 2.5;
+        Self {
+            albedo: Color3::ZERO,
+            tex: Some(tex),
+            roughness,
+            ior,
+            r0: fresnel_r0(ior),
+        }
+    }
+
+    /// Create a metal with a texture and custom IOR.
+    pub fn textured_with_ior(tex: Arc<dyn Texture>, roughness: f32, ior: f32) -> Self {
+        Self {
+            albedo: Color3::ZERO,
+            tex: Some(tex),
+            roughness,
+            ior,
+            r0: fresnel_r0(ior),
+        }
+    }
+}
+
+impl From<MetalMaterial> for Material {
+    fn from(m: MetalMaterial) -> Self {
+        Material::Metal(m)
+    }
 }
 
 impl Bsdf for MetalMaterial {

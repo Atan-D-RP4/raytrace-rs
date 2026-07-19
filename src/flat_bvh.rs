@@ -462,9 +462,9 @@ impl Bounded for FlatBvh {
 mod tests {
     use super::*;
     use crate::hittable::{Bounded, Intersectable};
-    use crate::material::Material;
+    use crate::material::{LambertianMaterial, Material};
     use crate::shape::sphere;
-    use crate::vec3::{Direction3, Point3};
+    use crate::vec3::{Color3, Direction3, Point3};
     use glam::Vec3;
 
     /// Number of bytes per flat BVH node. Currently 40B (fields + 3-byte pad
@@ -493,7 +493,7 @@ mod tests {
         let sphere: Arc<dyn Intersectable> = Arc::new(sphere(
             Point3(Vec3::new(0., 0., -2.)),
             0.5,
-            Material::lambertian_color(0.8, 0.2, 0.2),
+            Material::from(LambertianMaterial::new(Color3::new(0.8, 0.2, 0.2))),
         ));
         let bbox = sphere.bounding_box();
         let bvh: BvhNode = BvhNode::Leaf {
@@ -524,12 +524,12 @@ mod tests {
         let s1: Arc<dyn Intersectable> = Arc::new(sphere(
             Point3(Vec3::new(-1., 0., -2.)),
             0.5,
-            Material::lambertian_color(1.0, 0.0, 0.0),
+            Material::from(LambertianMaterial::new(Color3::new(1.0, 0.0, 0.0))),
         ));
         let s2: Arc<dyn Intersectable> = Arc::new(sphere(
             Point3(Vec3::new(1., 0., -2.)),
             0.5,
-            Material::lambertian_color(0.0, 1.0, 0.0),
+            Material::from(LambertianMaterial::new(Color3::new(0.0, 1.0, 0.0))),
         ));
 
         let bbox1 = s1.bounding_box();
@@ -592,23 +592,23 @@ mod tests {
         let s1: Arc<dyn Intersectable> = Arc::new(sphere(
             Point3(Vec3::new(-2., 0., -3.)),
             0.5,
-            Material::lambertian_color(1.0, 0.0, 0.0),
+            Material::from(LambertianMaterial::new(Color3::new(1.0, 0.0, 0.0))),
         ));
         let s2: Arc<dyn Intersectable> = Arc::new(sphere(
             Point3(Vec3::new(0., 0., -3.)),
             0.5,
-            Material::lambertian_color(0.0, 1.0, 0.0),
+            Material::from(LambertianMaterial::new(Color3::new(0.0, 1.0, 0.0))),
         ));
         let s3: Arc<dyn Intersectable> = Arc::new(sphere(
             Point3(Vec3::new(2., 0., -3.)),
             0.5,
-            Material::lambertian_color(0.0, 0.0, 1.0),
+            Material::from(LambertianMaterial::new(Color3::new(0.0, 0.0, 1.0))),
         ));
         let s4: Arc<dyn Intersectable> = Arc::new(quad(
             Point3(Vec3::new(-3., -1., -5.)),
             Vec3::new(6., 0., 0.),
             Vec3::new(0., 2., 0.),
-            Material::lambertian_color(0.5, 0.5, 0.5),
+            Material::from(LambertianMaterial::new(Color3::new(0.5, 0.5, 0.5))),
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];

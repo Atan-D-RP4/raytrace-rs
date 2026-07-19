@@ -15,6 +15,8 @@ use crate::material::{
 };
 use crate::vec3::{Color3, Direction3};
 
+use crate::material::Material;
+
 /// Stochastic mix of two materials. `weight` is the probability of choosing `b`.
 #[derive(Clone)]
 pub struct MixMaterial {
@@ -204,6 +206,23 @@ impl Bsdf for MixMaterial {
 
     fn is_delta(&self) -> bool {
         self.a.is_delta() && self.b.is_delta()
+    }
+}
+
+impl MixMaterial {
+    /// Create a stochastic mix of two materials. `weight` is the probability of choosing `b`.
+    pub fn new(a: Arc<dyn Bsdf>, b: Arc<dyn Bsdf>, weight: f32) -> Self {
+        Self {
+            a,
+            b,
+            weight: weight.clamp(0.0, 1.0),
+        }
+    }
+}
+
+impl From<MixMaterial> for Material {
+    fn from(m: MixMaterial) -> Self {
+        Material::Mix(m)
     }
 }
 

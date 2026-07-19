@@ -22,6 +22,8 @@ use crate::vec3::{Color3, Direction3};
 
 use super::MIRROR_THRESHOLD;
 
+use crate::material::Material;
+
 /// Rough dielectric material with microfacet-based reflection and refraction.
 #[derive(Clone)]
 pub struct RoughDielectricMaterial {
@@ -262,6 +264,34 @@ impl Bsdf for RoughDielectricMaterial {
         } else {
             Some((self.roughness * self.roughness).clamp(0.001, 1.0))
         }
+    }
+}
+
+impl RoughDielectricMaterial {
+    /// Create a rough dielectric. Tint defaults to white.
+    pub fn new(ior: f32, roughness: f32) -> Self {
+        Self {
+            ior,
+            roughness,
+            tint: Color3::new(1.0, 1.0, 1.0),
+            r0: super::fresnel_r0(ior),
+        }
+    }
+
+    /// Create a tinted rough dielectric.
+    pub fn tinted(ior: f32, roughness: f32, tint: Color3) -> Self {
+        Self {
+            ior,
+            roughness,
+            tint,
+            r0: super::fresnel_r0(ior),
+        }
+    }
+}
+
+impl From<RoughDielectricMaterial> for Material {
+    fn from(m: RoughDielectricMaterial) -> Self {
+        Material::RoughDielectric(m)
     }
 }
 

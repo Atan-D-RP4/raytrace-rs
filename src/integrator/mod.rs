@@ -43,7 +43,7 @@ mod tests {
     use crate::bvh::BvhNode;
     use crate::film::{Film, RgbFilm};
     use crate::flat_bvh::FlatBvh;
-    use crate::material::Material;
+    use crate::material::{DiffuseLightMaterial, LambertianMaterial, Material};
     use crate::planar::quad;
     use crate::sampler::NaiveRandomSampler;
     use crate::vec3::{Color3, Direction3, Point3};
@@ -54,8 +54,8 @@ mod tests {
     #[test]
     fn render_4x4_minimal_scene() {
         // Build a tiny scene: a light quad and a floor quad.
-        let light_mat = Material::light(Color3::new(8.0, 8.0, 8.0));
-        let floor_mat = Material::lambertian_color(0.7, 0.7, 0.7);
+        let light_mat: Material = DiffuseLightMaterial::new(Color3::new(8.0, 8.0, 8.0)).into();
+        let floor_mat: Material = LambertianMaterial::new(Color3::new(0.7, 0.7, 0.7)).into();
 
         let light: Arc<dyn Intersectable> = Arc::new(quad(
             Point3::new(-1., 2., -2.),
@@ -74,7 +74,7 @@ mod tests {
             Point3::new(-1., 2., -2.),
             Vec3::new(2., 0., 0.),
             Vec3::new(0., 0., 2.),
-            Material::light(Color3::new(8.0, 8.0, 8.0)),
+            Material::from(DiffuseLightMaterial::new(Color3::new(8.0, 8.0, 8.0))),
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![light, floor];
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn integrator_smoke_test() {
         // Scene: a Lambertian floor and a light quad.
-        let floor_mat = Material::lambertian_color(0.7, 0.7, 0.7);
+        let floor_mat: Material = LambertianMaterial::new(Color3::new(0.7, 0.7, 0.7)).into();
 
         let floor: Arc<dyn Intersectable> = Arc::new(quad(
             Point3::new(-3., -1., -3.),
@@ -132,14 +132,14 @@ mod tests {
             Point3::new(-1., 2., -2.),
             Vec3::new(2., 0., 0.),
             Vec3::new(0., 0., 2.),
-            Material::light(Color3(Vec3::new(8.0, 8.0, 8.0))),
+            Material::from(DiffuseLightMaterial::new(Color3(Vec3::new(8.0, 8.0, 8.0)))),
         ));
 
         let light_sample: Arc<dyn Sampleable> = Arc::new(quad(
             Point3::new(-1., 2., -2.),
             Vec3::new(2., 0., 0.),
             Vec3::new(0., 0., 2.),
-            Material::light(Color3(Vec3::new(8.0, 8.0, 8.0))),
+            Material::from(DiffuseLightMaterial::new(Color3(Vec3::new(8.0, 8.0, 8.0)))),
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![floor, light_quad];

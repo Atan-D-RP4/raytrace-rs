@@ -8,7 +8,8 @@ use crate::planar::quad;
 
 use crate::vec3::Point3;
 
-pub fn box3d(a: Point3, b: Point3, material: Material) -> Vec<Arc<dyn Intersectable>> {
+pub fn box3d(a: Point3, b: Point3, material: impl Into<Material>) -> Vec<Arc<dyn Intersectable>> {
+    let material: Material = material.into();
     let mut sides: Vec<Arc<dyn Intersectable>> = Vec::with_capacity(6);
 
     let min = Point3::new(a.x().min(b.x()), a.y().min(b.y()), a.z().min(b.z()));

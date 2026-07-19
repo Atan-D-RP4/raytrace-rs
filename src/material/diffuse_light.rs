@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
-use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
+use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, blackbody};
 use crate::pdf::PdfKind;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Direction3};
@@ -25,6 +25,29 @@ pub struct DiffuseLightMaterial {
     pub emit: Color3,
     /// Optional texture for spatial emission variation. CPU-only.
     pub tex: Option<Arc<dyn Texture>>,
+}
+
+use crate::material::Material;
+
+impl DiffuseLightMaterial {
+    /// Create an emissive material from a solid color.
+    pub fn new(emit: Color3) -> Self {
+        Self { emit, tex: None }
+    }
+
+    /// Create an emissive material from a texture.
+    pub fn textured(tex: Arc<dyn Texture>) -> Self {
+        Self {
+            emit: blackbody(6500.0), // Default to white light
+            tex: Some(tex),
+        }
+    }
+}
+
+impl From<DiffuseLightMaterial> for Material {
+    fn from(m: DiffuseLightMaterial) -> Self {
+        Material::DiffuseLight(m)
+    }
 }
 
 impl Bsdf for DiffuseLightMaterial {

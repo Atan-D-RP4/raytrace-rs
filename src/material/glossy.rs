@@ -29,6 +29,8 @@ use crate::vec3::{Color3, Direction3};
 
 use super::MIRROR_THRESHOLD;
 
+use crate::material::Material;
+
 /// Glossy microfacet BSDF (GGX).
 #[derive(Clone)]
 pub struct GlossyMaterial {
@@ -191,6 +193,36 @@ impl Bsdf for GlossyMaterial {
         } else {
             Some((self.roughness * self.roughness).clamp(0.001, 1.0))
         }
+    }
+}
+
+impl GlossyMaterial {
+    /// Create a glossy material.
+    pub fn new(albedo: Color3, roughness: f32, ior: f32) -> Self {
+        Self {
+            albedo,
+            tex: None,
+            roughness,
+            ior,
+            r0: super::fresnel_r0(ior),
+        }
+    }
+
+    /// Create a glossy material with a texture.
+    pub fn textured(tex: Arc<dyn Texture>, roughness: f32, ior: f32) -> Self {
+        Self {
+            albedo: Color3::ZERO,
+            tex: Some(tex),
+            roughness,
+            ior,
+            r0: super::fresnel_r0(ior),
+        }
+    }
+}
+
+impl From<GlossyMaterial> for Material {
+    fn from(m: GlossyMaterial) -> Self {
+        Material::Glossy(m)
     }
 }
 

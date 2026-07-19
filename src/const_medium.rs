@@ -5,7 +5,7 @@ use glam::Vec3;
 use crate::aabb::Aabb;
 use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit};
 use crate::interval::Interval;
-use crate::material::Material;
+use crate::material::{IsotropicMaterial, Material};
 use crate::ray::Ray;
 use crate::sampler;
 use crate::texture::Texture;
@@ -90,7 +90,7 @@ impl<T: Intersectable> ConstantMedium<T> {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
-            phase_fn: Material::isotropic_texture(tex),
+            phase_fn: IsotropicMaterial::textured(tex).into(),
             vol_seed: seed,
         }
     }
@@ -105,7 +105,7 @@ impl<T: Intersectable> ConstantMedium<T> {
         Self {
             boundary,
             neg_inv_density: -1.0 / density,
-            phase_fn: Material::isotropic(Color3(albedo)),
+            phase_fn: IsotropicMaterial::new(Color3(albedo)).into(),
             vol_seed: seed,
         }
     }
@@ -188,7 +188,7 @@ impl<T: Intersectable, const SURFACE: bool> Bounded for ConstantMedium<T, SURFAC
 mod tests {
     use super::*;
     use crate::interval::Interval;
-    use crate::material::Material;
+    use crate::material::{DielectricMaterial, Material};
     use crate::ray::Ray;
     use crate::shape::{ShapeObject, SphereShape};
 
@@ -199,7 +199,11 @@ mod tests {
     type TestSphere = ShapeObject<SphereShape, Material>;
 
     fn make_sphere(center: Point3, radius: f32) -> TestSphere {
-        crate::shape::sphere(center, radius, Material::dielectric(1.5))
+        crate::shape::sphere(
+            center,
+            radius,
+            Material::Dielectric(DielectricMaterial::new(1.5)),
+        )
     }
 
     /// Helper: build a volume-only ConstantMedium (SURFACE=false) so the
@@ -209,7 +213,7 @@ mod tests {
         density: f32,
         albedo: Color3,
     ) -> ConstantMedium<TestSphere, false> {
-        ConstantMedium::with_surface(boundary, density, Material::isotropic(albedo))
+        ConstantMedium::with_surface(boundary, density, IsotropicMaterial::new(albedo).into())
     }
 
     /// A ray through a dense medium should terminate (scatter) before

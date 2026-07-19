@@ -356,13 +356,14 @@ fn main() -> Result<(), winit::error::EventLoopError> {
         "random_world" => Scene::random_world(),
         "composition_demo" => Scene::composition_demo(),
         "coated_balls" => Scene::coated_balls(),
+        "glass_box" => Scene::glass_box(),
         other => {
             error!(scene = %other, "unknown scene");
             eprintln!("Available scenes:");
             eprintln!("  cornell_box, cornell_box_const_meds, complex_scene,");
             eprintln!("  simple_light, simple_world, earth_sphere, noisy_spheres,");
             eprintln!("  checkered_spheres, quads, random_world, composition_demo");
-            eprintln!("  coated_balls");
+            eprintln!("  coated_balls, glass_box");
             std::process::exit(1);
         }
     };

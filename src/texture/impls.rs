@@ -127,6 +127,14 @@ impl CheckerTexture {
             odd: Arc::new(SolidColor::new(c2)),
         }
     }
+
+    /// Creates a checkerboard texture with a 3D scale mapping.
+    /// This is the most common pattern: a two-color checker scaled in world space.
+    pub fn with_scale(scale: f32, even: Color3, odd: Color3) -> Arc<dyn Texture> {
+        let mapped_tex = MappedTexture::new(CheckerTexture::from_color(even, odd));
+        let mapped_tex = mapped_tex.with_mapping3d(TextureMapping3D::point_scale_uniform(scale));
+        Arc::new(mapped_tex)
+    }
 }
 
 impl Texture for CheckerTexture {
@@ -170,6 +178,13 @@ impl ImageTexture {
         }
 
         Ok(tex)
+    }
+
+    /// Loads an image and wraps it in a MappedTexture then Arc.
+    /// Returns Err from the underlying image loader if the file can't be opened.
+    pub fn load_arc<P: AsRef<Path>>(filename: P) -> image::ImageResult<Arc<dyn Texture>> {
+        let tex = ImageTexture::new(filename)?;
+        Ok(Arc::new(MappedTexture::new(tex)))
     }
 
     pub fn image(&self) -> &Rgba32FImage {
@@ -354,6 +369,14 @@ impl NoiseTexture {
         Self {
             noise: Perlin::new(),
         }
+    }
+
+    /// Creates a Perlin noise texture with a world-space scale.
+    pub fn with_scale(scale: f32) -> Arc<dyn Texture> {
+        Arc::new(
+            MappedTexture::new(NoiseTexture::new())
+                .with_mapping3d(TextureMapping3D::point_scale_uniform(scale)),
+        )
     }
 }
 

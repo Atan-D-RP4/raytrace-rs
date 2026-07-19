@@ -23,6 +23,8 @@ use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, Gpu
 use crate::pdf::PdfKind;
 use crate::vec3::{Color3, Direction3};
 
+use crate::material::Material;
+
 /// Dielectric transmission/reflection controlled by refractive index.
 #[derive(Clone)]
 pub struct DielectricMaterial {
@@ -99,6 +101,32 @@ impl Bsdf for DielectricMaterial {
     /// Delta material
     fn is_delta(&self) -> bool {
         true
+    }
+}
+
+impl DielectricMaterial {
+    /// Create a dielectric (clear) with the given IOR. Tint defaults to white.
+    pub fn new(ior: f32) -> Self {
+        Self {
+            ior,
+            tint: Color3::new(1.0, 1.0, 1.0),
+            r0: super::fresnel_r0(ior),
+        }
+    }
+
+    /// Create a tinted dielectric (colored glass).
+    pub fn tinted(ior: f32, tint: Color3) -> Self {
+        Self {
+            ior,
+            tint,
+            r0: super::fresnel_r0(ior),
+        }
+    }
+}
+
+impl From<DielectricMaterial> for Material {
+    fn from(m: DielectricMaterial) -> Self {
+        Material::Dielectric(m)
     }
 }
 

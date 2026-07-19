@@ -60,7 +60,6 @@ use std::sync::Arc;
 pub use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
 
 use crate::hittable::SurfaceInteraction;
-use crate::texture::Texture;
 use crate::vec3::{Color3, Direction3};
 
 use self::gpu::GpuSerializable;
@@ -99,7 +98,7 @@ pub(super) fn fresnel_schlick(cos_theta: f32, r0: f32) -> f32 {
     r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
 }
 
-fn blackbody(temp: f32) -> Color3 {
+pub(super) fn blackbody(temp: f32) -> Color3 {
     // Planck's law: spectral radiance of a blackbody at temperature T.
     // This is a simplified approximation for RGB color. For more accurate
     // rendering, use spectral rendering or a proper color matching function.
@@ -468,159 +467,6 @@ impl Material {
         Material::Void
     }
 
-    /// Lambertian diffuse material from a solid color.
-    pub fn lambertian_color(r: f32, g: f32, b: f32) -> Self {
-        Material::Lambertian(LambertianMaterial {
-            albedo: Color3::new(r, g, b),
-            tex: None,
-        })
-    }
-
-    /// Lambertian diffuse material with a texture for spatial variation.
-    pub fn lambertian(tex: Arc<dyn Texture>) -> Self {
-        Material::Lambertian(LambertianMaterial {
-            albedo: Color3::ZERO,
-            tex: Some(tex),
-        })
-    }
-
-    /// Microfacet conductor (GGX). `fuzz` ∈ [0, 1] controls roughness.
-    pub fn metal(albedo: Color3, fuzz: f32) -> Self {
-        Material::Metal(MetalMaterial {
-            albedo,
-            tex: None,
-            roughness: fuzz,
-            ior: 2.5,
-            r0: fresnel_r0(2.5),
-        })
-    }
-
-    /// Microfacet conductor with an explicit IOR for the Fresnel term.
-    pub fn metal_with_ior(albedo: Color3, fuzz: f32, ior: f32) -> Self {
-        Material::Metal(MetalMaterial {
-            albedo,
-            tex: None,
-            roughness: fuzz,
-            ior,
-            r0: fresnel_r0(ior),
-        })
-    }
-
-    /// Glass / dielectric material with refractive index.
-    pub fn dielectric(ior: f32) -> Self {
-        Material::Dielectric(DielectricMaterial {
-            ior,
-            tint: Color3::new(1., 1., 1.),
-            r0: fresnel_r0(ior),
-        })
-    }
-
-    /// Dielectric with a colored tint (absorption per channel).
-    pub fn dielectric_tinted(ior: f32, tint: Color3) -> Self {
-        Material::Dielectric(DielectricMaterial {
-            ior,
-            tint,
-            r0: fresnel_r0(ior),
-        })
-    }
-
-    pub fn rough_dielectric(ior: f32, roughness: f32, tint: Color3) -> Self {
-        Material::RoughDielectric(RoughDielectricMaterial {
-            ior,
-            roughness,
-            tint,
-            r0: fresnel_r0(ior),
-        })
-    }
-
-    pub fn rough_dielectric_with_roughness(ior: f32, roughness: f32) -> Self {
-        Material::RoughDielectric(RoughDielectricMaterial {
-            ior,
-            roughness,
-            tint: Color3::new(1., 1., 1.),
-            r0: fresnel_r0(ior),
-        })
-    }
-
-    pub fn rough_dielectric_with_tint(ior: f32, tint: Color3) -> Self {
-        Material::RoughDielectric(RoughDielectricMaterial {
-            ior,
-            roughness: 0.1,
-            tint,
-            r0: fresnel_r0(ior),
-        })
-    }
-
-    /// Area light emitting a constant color.
-    pub fn light(emit: Color3) -> Self {
-        Material::DiffuseLight(DiffuseLightMaterial { emit, tex: None })
-    }
-
-    /// Area light with a texture for spatial emission variation.
-    pub fn light_textured(tex: Arc<dyn Texture>) -> Self {
-        Material::DiffuseLight(DiffuseLightMaterial {
-            emit: blackbody(6500.0), // default white light
-            tex: Some(tex),
-        })
-    }
-
-    /// Isotropic scattering medium with a uniform albedo.
-    pub fn isotropic(albedo: Color3) -> Self {
-        Material::Isotropic(IsotropicMaterial { albedo, tex: None })
-    }
-
-    /// Isotropic scattering medium with a textured albedo.
-    pub fn isotropic_texture(tex: Arc<dyn Texture>) -> Self {
-        Material::Isotropic(IsotropicMaterial {
-            albedo: Color3::ZERO,
-            tex: Some(tex),
-        })
-    }
-
-    /// Glossy microfacet BSDF (GGX).
-    pub fn glossy(albedo: Color3, roughness: f32, ior: f32) -> Self {
-        Material::Glossy(GlossyMaterial {
-            albedo,
-            tex: None,
-            roughness,
-            ior,
-            r0: fresnel_r0(ior),
-        })
-    }
-
-    /// Microfacet conductor with a textured albedo.
-    pub fn metal_textured(tex: Arc<dyn Texture>, fuzz: f32) -> Self {
-        Material::Metal(MetalMaterial {
-            albedo: Color3::ZERO,
-            tex: Some(tex),
-            roughness: fuzz,
-            ior: 2.5,
-            r0: fresnel_r0(2.5),
-        })
-    }
-
-    /// Microfacet conductor with a textured albedo and explicit IOR.
-    pub fn metal_textured_with_ior(tex: Arc<dyn Texture>, fuzz: f32, ior: f32) -> Self {
-        Material::Metal(MetalMaterial {
-            albedo: Color3::ZERO,
-            tex: Some(tex),
-            roughness: fuzz,
-            ior,
-            r0: fresnel_r0(ior),
-        })
-    }
-
-    /// Glossy microfacet BSDF with a textured albedo.
-    pub fn glossy_textured(tex: Arc<dyn Texture>, roughness: f32, ior: f32) -> Self {
-        Material::Glossy(GlossyMaterial {
-            albedo: Color3::ZERO,
-            tex: Some(tex),
-            roughness,
-            ior,
-            r0: fresnel_r0(ior),
-        })
-    }
-
     /// Stochastic mix of two materials. `weight` ∈ [0, 1] is the probability
     /// of choosing `b`.
     pub fn mix(self, other: Material, weight: f32) -> Self {
@@ -678,7 +524,7 @@ mod tests {
     /// Smoke test: GPU buffer generation for a flat material.
     #[test]
     fn gpu_buffer_lambertian() {
-        let mat = Material::lambertian_color(0.5, 0.3, 0.1);
+        let mat = Material::from(LambertianMaterial::new(Color3::new(0.5, 0.3, 0.1)));
         let buf = mat.to_gpu_buffer();
         assert_eq!(buf.nodes.len(), 1);
         assert_eq!(
@@ -695,8 +541,10 @@ mod tests {
     /// children) with the mix node pointing to both children.
     #[test]
     fn gpu_buffer_mix() {
-        let mat = Material::lambertian_color(0.5, 0.3, 0.1)
-            .mix(Material::metal(Color3::new(0.9, 0.9, 0.9), 0.0), 0.5);
+        let mat = Material::from(LambertianMaterial::new(Color3::new(0.5, 0.3, 0.1))).mix(
+            Material::from(MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.0)),
+            0.5,
+        );
         let buf = mat.to_gpu_buffer();
         assert_eq!(buf.nodes.len(), 3);
         // Last node is the mix itself.
@@ -715,7 +563,8 @@ mod tests {
     /// GPU buffer for a Coated material: coating first, then substrate.
     #[test]
     fn gpu_buffer_coated() {
-        let mat = Material::lambertian_color(0.7, 0.2, 0.2).coated(Material::dielectric(1.5));
+        let mat = Material::from(LambertianMaterial::new(Color3::new(0.7, 0.2, 0.2)))
+            .coated(DielectricMaterial::new(1.5).into());
         let buf = mat.to_gpu_buffer();
         assert_eq!(buf.nodes.len(), 3);
         // Last node is the coat.
@@ -728,9 +577,11 @@ mod tests {
     /// Nested composition: a mixed material that's also coated.
     #[test]
     fn gpu_buffer_nested() {
-        let inner = Material::lambertian_color(0.5, 0.5, 0.5)
-            .mix(Material::metal(Color3::new(0.9, 0.9, 0.9), 0.5), 0.5);
-        let mat = inner.coated(Material::dielectric_tinted(1.5, Color3::new(1.0, 0.8, 0.8)));
+        let inner = Material::from(LambertianMaterial::new(Color3::new(0.5, 0.5, 0.5))).mix(
+            Material::from(MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.5)),
+            0.5,
+        );
+        let mat = inner.coated(DielectricMaterial::tinted(1.5, Color3::new(1.0, 0.8, 0.8)).into());
         let buf = mat.to_gpu_buffer();
         // Serialization order: coating (dielectric=1 node) → substrate (mix=3
         // nodes) → coated node = 5 total.
@@ -752,13 +603,13 @@ mod tests {
     /// All built-in material types should produce GPU buffers.
     #[test]
     fn gpu_buffer_all_types() {
-        let materials = vec![
-            Material::lambertian_color(0.5, 0.5, 0.5),
-            Material::metal(Color3::new(0.9, 0.9, 0.9), 0.0),
-            Material::dielectric(1.5),
-            Material::light(Color3::new(4.0, 4.0, 4.0)),
-            Material::isotropic(Color3::new(0.5, 0.5, 0.5)),
-            Material::glossy(Color3::new(0.9, 0.9, 0.9), 0.3, 1.5),
+        let materials: Vec<Material> = vec![
+            LambertianMaterial::new(Color3::new(0.5, 0.5, 0.5)).into(),
+            MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.0).into(),
+            DielectricMaterial::new(1.5).into(),
+            DiffuseLightMaterial::new(Color3::new(4.0, 4.0, 4.0)).into(),
+            IsotropicMaterial::new(Color3::new(0.5, 0.5, 0.5)).into(),
+            GlossyMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.3, 1.5).into(),
         ];
         for mat in &materials {
             let buf = mat.to_gpu_buffer();
@@ -770,10 +621,11 @@ mod tests {
     /// fallback albedo).
     #[test]
     fn gpu_buffer_lambertian_textured() {
-        let mat = Material::Lambertian(LambertianMaterial {
-            albedo: Color3::new(0.5, 0.5, 0.5),
-            tex: Some(Arc::new(SolidColor::new(Color3::new(0.7, 0.3, 0.1)))),
-        });
+        let mat = LambertianMaterial::with_texture(
+            Color3::new(0.5, 0.5, 0.5),
+            Arc::new(SolidColor::new(Color3::new(0.7, 0.3, 0.1))),
+        );
+        let mat = Material::from(mat);
         let buf = mat.to_gpu_buffer();
         assert_eq!(buf.nodes.len(), 1);
         // The GPU buffer should use the fallback albedo, not the texture's

@@ -24,6 +24,8 @@ use crate::material::{
 use crate::texture::Texture;
 use crate::vec3::{Color3, Direction3};
 
+use crate::material::Material;
+
 /// Diffuse (Lambertian) surface.
 #[derive(Clone)]
 pub struct LambertianMaterial {
@@ -89,6 +91,28 @@ impl Bsdf for LambertianMaterial {
         // Lambertian directional-hemispherical reflectance = albedo (exact:
         // ∫ (albedo/π) * cos θ dω = albedo). Average across RGB channels.
         (albedo.x() + albedo.y() + albedo.z()) / 3.0
+    }
+}
+
+impl LambertianMaterial {
+    /// Create a lambertian material from a solid color.
+    pub fn new(albedo: Color3) -> Self {
+        Self { albedo, tex: None }
+    }
+
+    /// Create a lambertian material with a texture. `albedo` is used as
+    /// fallback when tex is None (e.g., GPU serialization).
+    pub fn with_texture(albedo: Color3, tex: Arc<dyn Texture>) -> Self {
+        Self {
+            albedo,
+            tex: Some(tex),
+        }
+    }
+}
+
+impl From<LambertianMaterial> for Material {
+    fn from(m: LambertianMaterial) -> Self {
+        Material::Lambertian(m)
     }
 }
 

@@ -22,6 +22,8 @@ use crate::material::{
 use crate::texture::Texture;
 use crate::vec3::{Color3, Direction3};
 
+use crate::material::Material;
+
 /// Isotropic scattering medium (volumes).
 #[derive(Clone)]
 pub struct IsotropicMaterial {
@@ -65,6 +67,27 @@ impl Bsdf for IsotropicMaterial {
     /// Isotropic scattering is non-directional, so the reflectance estimate is simply `1.0`.
     fn reflectance_estimate(&self, _wo: Direction3, _si: &SurfaceInteraction) -> f32 {
         1.0
+    }
+}
+
+impl IsotropicMaterial {
+    /// Create an isotropic material from a solid color.
+    pub fn new(albedo: Color3) -> Self {
+        Self { albedo, tex: None }
+    }
+
+    /// Create an isotropic material from a texture.
+    pub fn textured(tex: Arc<dyn Texture>) -> Self {
+        Self {
+            albedo: Color3::ZERO,
+            tex: Some(tex),
+        }
+    }
+}
+
+impl From<IsotropicMaterial> for Material {
+    fn from(m: IsotropicMaterial) -> Self {
+        Material::Isotropic(m)
     }
 }
 

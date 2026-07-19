@@ -21,6 +21,8 @@ use crate::onb::Onb;
 use crate::pdf::cosine_hemisphere_direction;
 use crate::vec3::{Color3, Direction3};
 
+use crate::material::Material;
+
 /// Maximum number of internal bounces for a Coated material. Each bounce
 /// gets a fresh dimension from `next_dim()` for the internal Fresnel split.
 /// The integrator terminates the path if this limit is exceeded to avoid
@@ -293,6 +295,35 @@ impl CoatedMaterial {
                 eta: Some(self.coating_ior),
             })
         }
+    }
+}
+
+impl CoatedMaterial {
+    /// Create a coated material (thin dielectric coating over a substrate).
+    pub fn new(
+        substrate: Arc<dyn Bsdf>,
+        coating: Arc<dyn Bsdf>,
+        coating_ior: f32,
+        coating_tint: Color3,
+        thickness: f32,
+    ) -> Self {
+        Self {
+            substrate,
+            coating,
+            coating_ior,
+            coating_tint: Color3::new(
+                coating_tint.x().min(1.0),
+                coating_tint.y().min(1.0),
+                coating_tint.z().min(1.0),
+            ),
+            thickness,
+        }
+    }
+}
+
+impl From<CoatedMaterial> for Material {
+    fn from(m: CoatedMaterial) -> Self {
+        Material::Coated(m)
     }
 }
 
