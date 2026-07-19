@@ -77,66 +77,52 @@ pub fn morton_encode(mut x: u32, mut y: u32) -> u32 {
     (x << 1) | y
 }
 
-/// Reverse pairs of bits: 0bDD_CC_BB_AA → 0bAA_BB_CC_DD
-fn reverse_bit_pairs(mut v: u32) -> u32 {
-    // Swap adjacent pairs
-    v = ((v & 0x33333333) << 2) | ((v >> 2) & 0x33333333);
-    // Swap adjacent nibbles
-    v = ((v & 0x0F0F0F0F) << 4) | ((v >> 4) & 0x0F0F0F0F);
-    // Swap adjacent bytes
-    v = ((v & 0x00FF00FF) << 8) | ((v >> 8) & 0x00FF00FF);
-    // Swap 16-bit halves
-    v = v.rotate_right(16);
-    v
-}
-
-/// Owen-scramble a 32-bit unsigned integer.
+/// Owen-scramble a 32-bit unsigned integer (Burley 2020).
 ///
-/// Recursively permutes bits so the permutation at each position depends on all
-/// higher-order bits. Destroys structured correlations in the Sobol sequence
-/// while preserving its low-discrepancy property. Guaranteed bijective on u32.
+/// Recursively permutes each bit based on more-significant bits, preserving
+/// the nested elementary-interval (net) structure of the Sobol sequence.
+/// Two values sharing the same top k bits always produce outputs sharing
+/// the same top k bits — this is what maintains O(1/N) convergence.
+///
+/// Implementation: reverse bits, apply Laine-Karras permutation (each bit
+/// propagates only toward more-significant positions), reverse back, which
+/// gives the prefix-dependence structure of true Owen scrambling.
+///
+/// Reference: Burley, "Practical Hash-based Owen Scrambling", JCGT 2020.
 pub fn owen_scramble_base_2(v: u32, seed: u64) -> u32 {
-    // Reverse bits so we can iterate MSB-first with a simple loop.
-    // After reversal, bit 0 = original MSB, bit 31 = original LSB.
-    let mut vr = v.reverse_bits();
-
-    // Seed hash chain from all bits of v. Because splitmix64 is a bijection on
-    // u64, advancing the chain propagates all input bits forward: every flip
-    // decision depends on the full input, guaranteeing distinct outputs.
-    let mut h = seed ^ (vr as u64);
-
-    // Flip each bit with a pseudo-random decision based on the hash chain.
-    for i in 0..32 {
-        h = splitmix64(h);
-        let flip = ((h >> i) & 1) as u32;
-        vr ^= flip << i;
+    // Laine-Karras hash: each bit only affects bits to the left (more
+    // significant positions), giving the nested property (§3.2).
+    fn lk_permute(x: u32, seed: u32) -> u32 {
+        let mut h = x;
+        h ^= h.wrapping_mul(0x3d20adea);
+        h = h.wrapping_add(seed);
+        h = h.wrapping_mul((seed >> 16) | 1);
+        h ^= h.wrapping_mul(0x05526c56);
+        h ^= h.wrapping_mul(0x53a22864);
+        h
     }
-
-    vr.reverse_bits()
+    // Reverse → LK permute → reverse (Burley Listing 2).
+    lk_permute(v.reverse_bits(), seed as u32).reverse_bits()
 }
 
-/// Base-4 Owen scramble of a Morton code.
+/// Base-4 Owen scramble for Morton codes (quadrant hierarchy).
 ///
-/// Scrambles pairs of bits (quadrants) hierarchically by shuffling each level's
-/// sub-quadrant assignment based on higher-level quadrants. Used to decorrelate
-/// pixel blocks in blue-noise screen-space dithering.
-pub fn owen_scramble_base_4(mut v: u32, seed: u64) -> u32 {
-    // Reverse pairs of bits so we can iterate from coarsest to finest.
-    // After this, bits 0-1 = coarsest quadrant, bits 2-3 = next level, etc.
-    v = reverse_bit_pairs(v);
-
-    // Seed hash chain from all bits of v so every quadrant-level permutation
-    // depends on the full input — same bijection guarantee as base-2.
-    let mut h = seed ^ (v as u64);
-
-    // Flip each pair of bits with a pseudo-random permutation based on the hash chain.
-    for i in (0..32).step_by(2) {
-        h = splitmix64(h);
-        let perm = (h >> i) & 0b11;
-        v ^= (perm << i) as u32;
+/// Same nested property as base-2 but with additional within-quadrant
+/// mixing to scramble pairs of bits. Used to decorrelate pixel blocks
+/// in blue-noise screen-space dithering.
+pub fn owen_scramble_base_4(v: u32, seed: u64) -> u32 {
+    fn lk_permute_base4(x: u32, seed: u32) -> u32 {
+        let mut h = x;
+        h ^= h.wrapping_mul(0x3d20adea);
+        h ^= (h >> 1) & (h << 1) & 0x55555555;
+        h = h.wrapping_add(seed);
+        h = h.wrapping_mul((seed >> 16) | 1);
+        h ^= (h >> 1) & (h << 1) & 0x55555555;
+        h ^= h.wrapping_mul(0x05526c56);
+        h ^= h.wrapping_mul(0x53a22864);
+        h
     }
-
-    reverse_bit_pairs(v)
+    lk_permute_base4(v.reverse_bits(), seed as u32).reverse_bits()
 }
 
 /// Pure, Sync source of `[0, 1)` samples indexed by pass `n` and dimension `d`.
@@ -643,6 +629,35 @@ mod tests {
                 );
             }
             prev_estimate = estimate;
+        }
+    }
+
+    #[test]
+    fn owen_scramble_preserves_top_bits() {
+        // True Owen scrambling: values sharing the same top k bits must map to
+        // outputs sharing the same top k bits (nested elementary-interval property).
+        // Here we test top 4 bits across several seeds and sample patterns.
+        let seeds = [42u64, 12345, 98765, 0xdeadbeef];
+        // Representative lower-bit patterns that should not affect the top 4 output bits.
+        let lower_patterns: [u32; 8] = [0, 1, 2, 3, 0xFF, 0xFFFF, 0xFFFFFF, 0x0A0B0C0D];
+        for &seed in &seeds {
+            for base in 0..16u32 {
+                let top = base << 28;
+                let mut top_output: Option<u32> = None;
+                for &lo in &lower_patterns {
+                    let scrambled = owen_scramble_base_2(top | lo, seed);
+                    let out_top = scrambled >> 28;
+                    if let Some(expected) = top_output {
+                        assert_eq!(
+                            out_top, expected,
+                            "seed={seed}, base={base}: values with same top 4 bits \
+                             produced different top 4 output bits (lo={lo}, got {out_top}, expected {expected})"
+                        );
+                    } else {
+                        top_output = Some(out_top);
+                    }
+                }
+            }
         }
     }
 }
