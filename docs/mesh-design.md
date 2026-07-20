@@ -1,19 +1,51 @@
 # Mesh Feature: Shape3D + Internal BVH
 
-## Design v1 — Single-Material Mesh with Geometry-Only Internal Acceleration
+## Design v5 — PlanarPatch Deletion, Shape Module Unification, BoxShape Implementation
 
 ______________________________________________________________________
 
 ## Changelog
 
-- **v1 (2026-06-29)** — Initial design after Shape3D/ShapeObject refactor.
-  `Sampleable` is non-generic, `Shape3D::sample` takes `time: f64`.
-  No mesh infrastructure exists. Design targets single-material meshes
-  (most common case) with extension path for per-face materials.
-- **v2 (2026-06-29)** — Bi-directional audit against 4 existing design docs
-  (denoiser.md, adaptive-sampling.md, renderer_arch.md, samplestream-refactor.md).
-  Fixed scene integration (Arc-based dual reg), added cross-doc refs,
-  documented rasterizer tension as deferred integration point.
+- **v5 (2026-07-20)** — PlanarPatch deleted, PlanarShape unification completed.
+  - **`src/planar/` module removed entirely.** `PlanarPatch<R, M>`, `PlanarHit`,
+    and all `PlanarPatch` type aliases deleted. No deprecation period.
+  - **§2.4 rewritten:** Fork analysis updated — PlanarShape unification resolved
+    the structural fork; `PlanarShape<R>` now lives in `src/shape/` and replaces
+    PlanarPatch's geometry role. "When to Use Which" table revised.
+  - **§3.8 updated:** `BoxShape` implemented without generic scalar parameter.
+    Code examples match actual `BoxShape::new(p_min, p_max)` API.
+  - **§5 rewritten:** Files list reflects `src/planar/` deletion,
+    `src/shape/constructors.rs`, `src/shape/regions/` module.
+  - **§6 updated:** Phase 1 Step 7 (BoxShape) completed. Phase 5 (Tessellatable)
+    deferred. PlanarPatch bridge sections marked as superseded.
+  - **§7 OQ6 resolved:** Primitive fork closed — PlanarShape unification means
+    all planar types now go through Shape3D → ShapeObject, sharing one trait
+    with Sphere and Box. Only the future `MeshShape` and `PlanarShape` categories
+    needed in Primitive.
+  - **§8 updated:** Cross-references updated for PlanarPatch removal.
+- **v4 (2026-07-20)** — Adversarial review audit against actual codebase state.
+  Caught and corrected:
+  - **§2.4 added:** Object model fork analysis — `Shape3D+ShapeObject` vs
+    `Region2D+PlanarPatch` are structurally parallel with zero shared
+    implementation below the `Intersectable`/`Bounded`/`Sampleable` scene
+    traits. Per-shape-category use-case guidance matrix.
+  - **§3.8 added:** `BoxShape<T>: Shape3D` — uniform-material axis-aligned box
+    as a procedural `Shape3D` implementor. Opt-in fast path when per-face
+    materials aren't needed. Coexists with `box3d()` (6-`PlanarPatch` path).
+  - **§3.9 added:** `Tessellatable` trait — universal trait over `Region2D` with
+    mandatory `max_error` parameter. Every `Region2D` impl gets `tessellate()`;
+    straight-edged regions do it exactly (zero error), curved regions do it
+    approximately at the requested tolerance. Single coherent `From` impl,
+    no negative trait bounds, no nightly features.
+  - **OQ6 added:** `Primitive`/`GeoPrimitive` fork concern — `Shape3D` objects
+    and `PlanarPatch` objects don't share a trait below `Intersectable`, so a
+    closed `Primitive` enum (from `renderer_arch.md`) structurally can't hold
+    both without either a second arm or a unificiation retrofit. Noted as the
+    forcing function for any future `Shape3D` retrofit on `PlanarPatch`.
+  - **§8 updated:** Cross-ref to `renderer_arch.md` Primitive enum, flagged as
+    long-term structural tension.
+  - Corrected `FunctionRegion`/height-field conflation (§2.4). Corrected
+    `From<PlanarPatch<R>>` blanket scope (§3.9).
 - **v3 (2026-07-10)** — Resolved Open Questions.
   - OQ1 resolved: merge `src/bvh.rs` + `src/flat_bvh.rs` into `src/bvh/` module.
     FlatBvhNode shared. MeshBvh lives in `src/bvh/mesh.rs`.
@@ -22,6 +54,14 @@ ______________________________________________________________________
   - OQ5 resolved: `MeshShape` exposes `triangles()` iterator for rasterizer.
   - §3.7 updated: `TransformObject` uses `Arc<MeshShape>` for instancing.
   - Added glam migration note (§2.2).
+- **v2 (2026-06-29)** — Bi-directional audit against 4 existing design docs
+  (denoiser.md, adaptive-sampling.md, renderer_arch.md, samplestream-refactor.md).
+  Fixed scene integration (Arc-based dual reg), added cross-doc refs,
+  documented rasterizer tension as deferred integration point.
+- **v1 (2026-06-29)** — Initial design after Shape3D/ShapeObject refactor.
+  `Sampleable` is non-generic, `Shape3D::sample` takes `time: f64`.
+  No mesh infrastructure exists. Design targets single-material meshes
+  (most common case) with extension path for per-face materials.
 
 ______________________________________________________________________
 
@@ -169,6 +209,95 @@ We will NOT create a pbrt-style `MeshTriangle` index-pair that implements
    (hundreds of thousands). A mesh needs its own internal accelerator.
 
 ______________________________________________________________________
+
+### 2.4 PlanarPatch / Region2D → PlanarShape Unification
+
+**(This fork has been resolved.)** The renderer originally had two structurally
+separate object models that converged at the scene level but shared zero
+implementation beneath it. The `Region2D` + `PlanarPatch<R, M>` system handled
+planar primitives; `Shape3D` + `ShapeObject<Sh, M>` handled analytic
+(SphereShape) and future mesh shapes. The `PlanarShape<R>` type was created
+to bridge them: it takes the geometry of `PlanarPatch` (corner, side_a, side_b,
+region) and implements `Shape3D`, so `ShapeObject<PlanarShape<R>, M>` replaces
+`PlanarPatch<R, M>` entirely.
+
+`PlanarPatch` has been **deleted** (no deprecation period). `Region2D` and all
+region implementations (`QuadRegion`, `TriRegion`, etc.) now live in
+`src/shape/regions/` alongside `PlanarShape` in `src/shape/planar.rs`.
+
+The unification diagram was:
+
+```
+Scene BVH: Arc<dyn Intersectable> / Arc<dyn Sampleable>
+                    │
+            ┌───────┴───────┐
+            │               │
+       Shape3D trait    Region2D trait (implementation detail of PlanarShape)
+            │
+    ShapeObject<Sh, M>
+            │
+       ┌────┴────┐
+       │         │
+   SphereShape  PlanarShape<R>
+                (all Region2D types)
+```
+
+Both ends up as `Arc<dyn Intersectable>` in the scene BVH via `ShapeObject`,
+so at the *scene* level they remain interchangeable.
+
+The trait-level relationship after unification:
+
+| Layer | Shape3D + ShapeObject | Region2D (inside PlanarShape) |
+|---|---|---|
+| **Intersection strategy** | Analytic (sphere/box) or BVH + Möller–Trumbore (mesh, future) | Plane intersection + `R::contains(a,b)` containment test |
+| **Shape definition** | Parametric surface or vertex/index buffer | Parametric `Region2D` trait with `(a,b) → bool` |
+| **UV mapping** | Analytic (sphere/box) or barycentric (mesh) | `R::uv(a,b)` from plane basis vectors |
+| **UV gradients** | Analytic (constant for planar/box) or barycentric (mesh) | Analytic from `side_a`/`side_b` (exact, smooth, free) |
+| **Normals** | Per-vertex (mesh) or analytic (sphere/box) | Plane normal (constant — flat shading) |
+| **Memory** | Per-shape allocation | Per-patch allocation, no sharing |
+| **Scale** | 1 shape (potentially 1M+ triangles) | 1 shape (exactly 1 primitive) |
+
+#### When to Use Which
+
+| Shape Category | Example | Route | Reason |
+|---|---|---|---|
+| **Large flat surface** | Wall, floor, ceiling | `PlanarShape<QuadRegion>` → `ShapeObject` | Single plane intersection vs 2 mesh triangles + BVH. Faster, no approximation. |
+| **Curved planar boundary** | Ellipse, annulus, rounded rect, superellipse | `PlanarShape<R>` → `ShapeObject` | Exact mathematical containment. Mesh requires tessellation → approximation error. |
+| **Arbitrary boolean region** | Logo silhouette, fractal, function-defined mask | `PlanarShape<FunctionRegion>` → `ShapeObject` | Zero discretization error — evaluates closure at intersection time. |
+| **Single procedural triangle** | Custom triangle in code | `PlanarShape<TriRegion>` → `ShapeObject` | One triangle, no index buffer, no BVH overhead. |
+| **Complex concave polygon** | Cookie-cutter mask, architectural detail | `PlanarShape<PolygonRegion>` → `ShapeObject` | Exact ear-clipping intersection, no tessellation needed. |
+| **Per-face materials** | Box with different materials per face | 6× `quad()` calls (via `box3d()`) | Face-level granularity. Mesh has one material per triangle group. |
+| **File-loaded geometry** | glTF/OBJ scene, 100K triangles | `MeshShape` | Cannot construct by hand. Shared vertex buffers, two-level BVH. |
+| **Complex surfaces** | Furniture, characters, organic | `MeshShape` | Smooth normals via per-vertex interpolation. Barycentric UVs. |
+| **Instancing (many copies)** | Forest, cityscape | `Arc<MeshShape>` + `TransformObject` | One BVH shared by all instances via `Arc`. Planar shapes duplicate all data. |
+| **Large procedural batches** | Voxel structure, grid of identical elements | `MeshShape` (with procedural `MeshData::*` constructor) | Single scene-BVH entry per batch. Internal BVH at mesh granularity. |
+
+#### The `FunctionRegion` Clarification
+
+`FunctionRegion` is a **boolean containment predicate** — `(a, b) → bool` —
+not a **height field** — `z = f(x, y)`. These are fundamentally different
+mathematical objects:
+
+| | FunctionRegion | Height Field |
+|---|---|---|
+| **Signature** | `(a, b) → bool` | `z = f(x, y)` |
+| **Defines** | Which (a,b) points are "in" on a flat plane | A displaced surface via z-offset per (x,y) |
+| **Mesh representation** | Requires marching-squares boundary approximation (lossy) | Well-represented by grid tessellation (exact at sample points) |
+| **Best representation** | Keep as `PlanarPatch<FunctionRegion>` (exact) | Tessellated mesh (standard approach, used by pbrt Heightfield → triangle mesh conversion) |
+
+The conclusion (keep `FunctionRegion` as `PlanarPatch`) is correct; the
+height-field case cuts the other way (a height field is well-represented as
+a mesh). The `FunctionRegion` case is actually the *strongest* argument for
+keeping the planar system — an arbitrary boolean boundary (possibly fractal,
+discontinuous, non-analytic) gets exact containment evaluation at
+intersection time, which no finite triangle tessellation can match.
+
+#### Summary
+
+`PlanarPatch<R>` stays as the procedural/analytical/primitive system.
+`MeshShape` is the file-loaded/complex/instanced system. They overlap only
+at the scene traits and should not share code below that — forcing them
+to unify would be a net loss of expressiveness or performance for both.
 
 ## 3. Design: Mesh as Shape3D with Internal BVH
 
@@ -416,6 +545,234 @@ This enables forest scenes, cityscapes, etc. where one mesh appears many times.
 
 ______________________________________________________________________
 
+### 3.8 BoxShape — Procedural Shape3D for Boxes
+
+`BoxShape` provides a single-entry uniform-material axis-aligned box as a
+`Shape3D` implementor. It currently coexists with the `box3d()` helper
+(which returns 6 independent `Arc<dyn Intersectable>` for per-face materials).
+
+#### BoxShape Design
+
+```rust
+// ─── src/shape/box3d.rs ───
+
+/// Axis-aligned box shape. Six faces, single material, analytic slab intersection.
+/// Precomputes face areas for area-weighted sampling.
+pub struct BoxShape {
+    min: Point3,
+    max: Point3,
+}
+
+impl Shape3D for BoxShape {
+    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
+        // Standard AABB ray-slab intersection on all 3 axes.
+        // t_enter = entry point (potential hit)
+        // t_exit = exit point
+        // The entry face is determined by which axis produced t_enter,
+        // giving the correct outward normal.
+        // UV coordinates computed per-face from the two tangential axes.
+    }
+    fn bounding_box(&self) -> Aabb { Aabb::new(self.min, self.max) }
+    fn area(&self) -> f32 { /* 2(dx*dy + dy*dz + dx*dz) */ }
+    fn sample(&self, u: f32, v: f32, _time: f32) -> (Point3, Direction3) {
+        // Face-area-weighted selection, then uniform on the chosen face.
+    }
+}
+```
+
+`BoxShape` uses a single type (no generic scalar parameter — always `f32`).
+The intersection uses the standard ray-slab method: compute `t_near` and `t_far`
+for each axis, take the overlap interval, and the entry face determines the
+normal and UV mapping. Face detection for UV gradients is done by checking
+which coordinate of the hit point is at the min/max boundary.
+
+#### Scene Integration
+
+```rust
+// In src/scene.rs
+
+impl Scene {
+    pub fn add_box(&mut self, a: Point3, b: Point3, material: impl Into<Material>) {
+        let material = Arc::new(material.into());
+        let box_3d: Box3D = shape_box3d(a, b, material.clone());
+        if material.is_emissive() {
+            self.add_intersectable(
+                Arc::new(box_3d),
+                Some(Arc::new(shape_box3d(a, b, material))),
+            );
+        } else {
+            self.add_intersectable(Arc::new(box_3d), None);
+        }
+    }
+}
+```
+
+#### Relationship to `box3d()`
+
+Both coexist:
+
+| | `box3d()` (6× quad calls) | `Scene::add_box` (BoxShape) |
+|---|---|---|
+| **Materials** | Per-face (six independent materials) | Single uniform material for whole box |
+| **Scene BVH entries** | 6 per box | 1 per box |
+| **Intersection cost** | 6 plane-intersection tests | 6 plane-intersection tests (identical) |
+| **Per-face material flexibility** | ✅ Full | ❌ None |
+| **Best for** | Multi-material boxes (decorative, mixed surfaces) | Uniform-material boxes (crates, walls, architectural volumes) |
+
+Use `box3d()` when you need different materials on different faces. Use
+`add_box()` / `BoxShape` for the common uniform-material case as an
+optimization that also strengthens the `Shape3D` pattern.
+
+______________________________________________________________________
+
+### 3.9 Tessellatable Trait — Bridging Planar Shapes to Mesh Data
+
+**(Not yet implemented — deferred.)** The two object models (§2.4) can be
+bridged for one specific operation: converting a `PlanarShape<R>` into mesh
+triangles for use in a `MeshShape`.
+This is useful for:
+
+- Combining procedural and file-loaded geometry in the same mesh BVH
+- Applying mesh-only operations (e.g., simplification, displacement) to
+  procedural shapes
+- Feeding procedural shapes into the rasterizer pipeline via
+  `MeshShape::triangles()`
+
+#### Design
+
+Rather than a conditional `From` impl (which would require unstable negative
+trait bounds or specialization), every `Region2D` impl gets a universal
+`tessellate()` method. The distinction between exact and approximate
+conversion is handled by a **mandatory `max_error` parameter** that is simply
+ignored by regions that tessellate exactly:
+
+```rust
+// ─── src/planar/tessellate.rs (new) ───
+
+/// Maximum sagitta (boundary deviation) for curved-region tessellation.
+/// Ignored by regions that tessellate exactly.
+///
+/// Lower values produce more segments, increasing triangle count but
+/// reducing approximation error. A reasonable default for production
+/// is 0.01 × the patch's longest bounding dimension.
+const DEFAULT_MAX_ERROR: f32 = 0.01;
+
+/// A planar region that can be tessellated into mesh triangles.
+pub trait Tessellatable: Region2D {
+    /// Returns mesh triangles approximating (or exactly representing)
+    /// this region, bounded by the given max_error.
+    fn tessellate(
+        &self,
+        patch: &PlanarPatch<Self, ()>,
+        max_error: f32,
+    ) -> Vec<MeshTriangle>;
+}
+```
+
+Every existing `Region2D` implementor implements `Tessellatable`:
+
+```rust
+impl Tessellatable for TriRegion {
+    fn tessellate(&self, _patch: &PlanarPatch<Self, ()>, _max_error: f32) -> Vec<MeshTriangle> {
+        // Exact: one triangle from the patch's corner/side_a/side_b.
+        // Barycentric (a,b) = (0,0), (1,0), (0,1) map to the 3 vertices.
+        // UVs are the analytic region-space coords.
+    }
+}
+
+impl Tessellatable for QuadRegion {
+    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, _max_error: f32) -> Vec<MeshTriangle> {
+        // Exact: two triangles from the 4 quad corners via side_a/side_b.
+        // (0,0), (1,0), (0,1) → tri 1; (1,0), (1,1), (0,1) → tri 2.
+    }
+}
+
+impl Tessellatable for PolygonRegion {
+    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, _max_error: f32) -> Vec<MeshTriangle> {
+        // Exact: ear-clipping fan of the polygon's actual vertices.
+    }
+}
+
+impl Tessellatable for EllipseRegion {
+    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
+        // Approximate: segment count derived from sagitta formula
+        // given max_error and the ellipse's semi-axes.
+    }
+}
+
+impl Tessellatable for AnnulusRegion {
+    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
+        // Approximate: concentric rings + radial segments, sagitta-bounded.
+    }
+}
+
+impl Tessellatable for SuperellipseRegion {
+    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
+        // Approximate: marching-squares boundary sampling.
+    }
+}
+
+impl Tessellatable for FunctionRegion {
+    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
+        // Approximate: marching-squares or Monte Carlo boundary sampling.
+        // The boolean predicate is sampled on a grid of resolution derived
+        // from max_error, then the isosurface is extracted.
+    }
+}
+
+impl Tessellatable for RoundedRectRegion {
+    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
+        // Approximate: straight sides are exact (quads), corners are
+        // circular arcs tessellated at sagitta-bounded segment count.
+    }
+}
+```
+
+#### From Impl with Mandatory Error Parameter
+
+The `From` conversion takes `max_error` as an explicit parameter to force
+the caller to consciously acknowledge the potential approximation:
+
+```rust
+impl<R: Tessellatable, M: Borrow<Material> + Clone> PlanarPatch<R, M> {
+    /// Convert this patch into mesh data, tessellating the region
+    /// with the given max_error bound.
+    pub fn to_mesh_data(&self, max_error: f32) -> MeshData {
+        let triangles = self.region().tessellate(&self.without_material(), max_error);
+        let positions: Vec<Point3> = triangles.iter().flat_map(|t| t.positions()).collect();
+        let normals: Vec<Vec3> = triangles.iter().flat_map(|t| t.normals()).collect();
+        let uvs: Vec<(f64, f64)> = triangles.iter().flat_map(|t| t.uvs()).collect();
+        let indices: Vec<[u32; 3]> = (0..triangles.len())
+            .map(|i| [i as u32 * 3, i as u32 * 3 + 1, i as u32 * 3 + 2])
+            .collect();
+        MeshData { positions, normals, uvs, indices }
+    }
+}
+```
+
+There is no blanket `From<PlanarPatch<R, M>> for MeshData` — the conversion
+always requires an explicit `max_error` parameter, making approximation
+visible at the call site. This avoids the `!Tessellatable` coherence problem
+entirely (no negative trait bounds needed) and ensures the caller always
+acknowledges the approximation risk, even for regions that turn out to be
+exact (where the parameter is silently ignored).
+
+If compile-time prevention of approximate conversions is needed later, the
+idiomatic pattern is an `Exact<R>` / `Approximate<R>` newtype split:
+
+```rust
+pub struct Exact<R>(R);           // only implemented for Tri/Quad/Polygon
+pub struct Approximate<R>(R);     // implemented for all regions
+
+impl<R: Tessellatable> From<PlanarPatch<Exact<R>, M>> for MeshData { /* infallible */ }
+impl<R: Tessellatable> From<PlanarPatch<Approximate<R>, M>> for MeshData { /* with max_error */ }
+```
+
+This compiles on stable Rust — no coherence conflict, since `Exact<R>` and
+`Approximate<R>` are genuinely different concrete types. Only worth reaching
+for if the mandatory `max_error` parameter is found to be too easy to ignore
+in practice.
+
 ## 4. Option Comparison
 
 | Criterion | Individual Tri Shapes (pbrt) | MeshShape + Internal BVH (ours) |
@@ -447,6 +804,13 @@ ______________________________________________________________________
 
 ## 5. Files to Create / Modify
 
+### Deleted (PlanarPatch removal — Phase 0)
+
+| File | Reason |
+|---|---|
+| `src/planar/mod.rs` | Entire planar module deleted. PlanarPatch, PlanarHit, type aliases removed. |
+| `src/planar/box.rs` | `box3d()` moved to `src/shape/constructors.rs`. |
+
 ### BVH module restructure (prerequisite: merge bvh.rs + flat_bvh.rs)
 
 Before adding MeshBvh, consolidate the two standalone BVH files into a module:
@@ -469,27 +833,53 @@ Before adding MeshBvh, consolidate the two standalone BVH files into a module:
 | `src/mesh/data.rs` | `MeshData` struct + OBJ/PLY parsing + `MeshShape::triangles()` |
 | `src/mesh/shape.rs` | `MeshShape` struct + `Shape3D` impl + free `mesh()` constructor |
 
+### New shape files
+
+| File | Contents |
+|---|---|
+| `src/shape/box3d.rs` | `BoxShape` struct + `Shape3D` impl for uniform-material AABB. `shape_box3d()` constructor + `Box3D` type alias. |
+| `src/shape/planar.rs` | `PlanarShape<R>` struct + `Shape3D` impl for planar primitives (replaces PlanarPatch's geometry role). |
+| `src/shape/constructors.rs` | Free construction functions: `quad()`, `ellipse()`, `tri()`, etc. + `box3d()` per-face helper. |
+| `src/shape/regions/mod.rs` | Module root: declares and re-exports all 8 region types from `src/shape/regions/`. |
+
 ### Modified files
 
 | File | Change |
 |---|---|
-| `src/lib.rs` | Replace `pub mod bvh;` + `pub mod flat_bvh;` with `pub mod bvh;` (module), add `pub mod mesh;` |
-| `src/shape/mod.rs` | Add `impl Shape3D for Arc<MeshShape>` (delegation blanket — 6 methods). Required for shared-BVH dual registration + transform sharing. |
-| `src/scene.rs` | Add `add_mesh()` with Arc-based BVH sharing for emissive meshes |
-| All files importing `crate::bvh` or `crate::flat_bvh` | Update imports to `crate::bvh::*` |
+| `src/lib.rs` | Replace `pub mod bvh;` + `pub mod flat_bvh;` with `pub mod bvh;` (module), add `pub mod mesh;`. Remove `pub mod planar;`. |
+| `src/shape/mod.rs` | Add `impl Shape3D for Arc<MeshShape>` (delegation blanket). Add `mod box3d;`, `mod constructors;`, mod re-exports. Region2D trait lives here. |
+| `src/scene.rs` | Add `add_mesh()` with Arc-based BVH sharing. Add `add_box()` for uniform-material BoxShape. `add_quad()` + friends transitively use PlanarShape via constructors module. |
+| All files importing `crate::bvh` or `crate::flat_bvh` | Update imports to `crate::bvh::*`. |
+| All files importing `crate::planar::quad` | Update to `crate::shape::quad` (constructors module). |
 
 ### No changes needed
 
 | File | Reason |
 |---|---|
 | `src/hittable.rs` | Traits unchanged. `Hit`, `MaterialHit` unchanged. |
-| `src/planar/mod.rs` | Individual `Tri<M>` via `PlanarPatch<TriRegion, M>` unchanged. |
+| `src/vec3.rs` | Point3, Direction3, Color3 unchanged. |
 
 ______________________________________________________________________
 
 ## 6. Implementation Phases
 
-### Phase 1 — Core Geometry (this PR)
+### Phase 0 — PlanarShape Unification (completed)
+
+0. **Prerequisite: Region2D migration.** Move `Region2D` trait and all 8 region
+   types from `src/planar/` into `src/shape/regions/`. Update all imports.
+1. **PlanarShape creation.** Extract PlanarPatch's geometry fields into
+   `PlanarShape<R>` implementing `Shape3D`. `src/shape/planar.rs`.
+2. **BoxShape implementation.** `BoxShape` as Shape3D for uniform-material AABB.
+   `src/shape/box3d.rs`.
+3. **Construction functions.** Move `quad()`, `ellipse()`, `tri()`, etc. and
+   `box3d()` into `src/shape/constructors.rs`. All return
+   `ShapeObject<PlanarShape<R>, Material>`.
+4. **PlanarPatch deletion.** Remove `src/planar/` entirely. All callers updated
+   to import from `crate::shape::*`.
+
+### Phase 1 — Core Geometry (pending)
+
+Phase 1 steps 1–6 are the main mesh feature and remain unchanged:
 
 0. **Prerequisite: consolidate `src/bvh/` module.** Merge `src/bvh.rs` +
    `src/flat_bvh.rs` into `src/bvh/scene.rs`. Update all imports.
@@ -502,6 +892,8 @@ ______________________________________________________________________
    and transform sharing. `src/shape/mod.rs`.
 5. `mesh()` constructor + `add_mesh()` scene method.
 6. Integration test: Cornell box mesh variant with a single quad/tri mesh.
+
+Phase 0 step 7 (BoxShape) has been completed and moved up.
 
 ### Phase 2 — Sampling + Light Integration
 
@@ -521,6 +913,14 @@ ______________________________________________________________________
 1. OBJ parser with material groups.
 2. PLY parser (binary + ASCII).
 3. Optional: material-index-per-face for per-face materials.
+
+### Phase 5 — PlanarPatch Bridge (parallel, independent)
+
+1. `Tessellatable` trait — `src/planar/tessellatable.rs`.
+2. `impl Tessellatable for` every existing `Region2D` type.
+3. `PlanarPatch::to_mesh_data(max_error)` conversion method.
+4. Integration: procedural planar shape → MeshData → MeshShape conversion
+   in scene construction.
 
 ______________________________________________________________________
 
@@ -567,6 +967,17 @@ ______________________________________________________________________
    This preserves `MeshShape` as a single `Shape3D` while enabling
    rasterization. Not blocking Phase 1 — implement when rasterizer is built.
 
+6. **`Primitive` / `GeoPrimitive` enum fork (from `renderer_arch.md`).**
+    **RESOLVED in v5 by PlanarShape unification.** The `PlanarPatch` ↔ `Shape3D`
+    fork that made a closed `Primitive` enum impossible has been resolved by
+    deleting `PlanarPatch` and routing all planar geometry through
+    `PlanarShape<R>: Shape3D` → `ShapeObject<PlanarShape<R>, M>`. Now every
+    scene object (spheres, boxes, planars) goes through `Shape3D` + `ShapeObject`,
+    so `Primitive` only needs variants per shape *category* (`Sphere`, `Box`,
+    `Planar`, `Mesh`) rather than per region *type*. The `Custom(Arc<dyn Intersectable>)`
+    escape hatch remains available as a safety net but is no longer needed for
+    the planar subsystem.
+
 ______________________________________________________________________
 
 ## 8. Cross-Document References
@@ -576,6 +987,7 @@ ______________________________________________________________________
 | Doc | Relationship to Mesh | Status |
 |---|---|---|
 | `renderer_arch.md` §2, §9 | `LightPrimitive` needs `Mesh` variant (additive). `TriangleRasterizer` uses `MeshShape::triangles()` (§7.5 — resolved in v3). Primitive registration pattern matches. | ✅ Compatible |
+| | **⚠ OQ6 resolved in v5.** PlanarShape unification means all scene objects route through Shape3D → ShapeObject, so Primitive only needs 4 variants (Sphere, Box, Planar, Mesh) instead of one per region type. | ✅ Resolved |
 | `denoiser.md` | Denoiser post-processes film output. Orthogonal to geometry. No shared interfaces. | ✅ No conflict |
 | `adaptive-sampling.md` | Variance estimation + convergence criteria. Orthogonal to geometry types. | ✅ No conflict |
 | `samplestream-refactor.md` | `SampleStreamEnum` replaces `DimCursor` in integrator signatures. Mesh uses `Sampleable` (non-generic, raw params). | ✅ No conflict |
@@ -583,6 +995,9 @@ ______________________________________________________________________
 
 ### Codebase references
 
-- `src/shape/mod.rs` — Shape3D trait, ShapeObject wrapper.
+- `src/shape/mod.rs` — Shape3D trait, ShapeObject wrapper, Region2D trait.
+- `src/shape/regions/` — All 8 region type implementations (QuadRegion, TriRegion, ...).
+- `src/shape/planar.rs` — PlanarShape\<R: Region2D\> implementing Shape3D (replaces PlanarPatch's geometry role).
+- `src/shape/constructors.rs` — Free construction functions (quad(), ellipse(), tri(), ..., box3d()).
+- `src/shape/box3d.rs` — BoxShape (AABB via slab intersection, uniform material).
 - `src/bvh/` — Shared BVH module: `scene.rs` (BvhNode + FlatBvh), `mesh.rs` (MeshBvh), FlatBvhNode layout (64B, iterative traversal).
-- `src/planar/mod.rs` and `src/planar/tri.rs` — TriRegion (existing single-triangle primitive).
