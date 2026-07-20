@@ -16,8 +16,7 @@ use crate::material::{
     RoughDielectricMaterial,
 };
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
-use crate::planar::{box3d, quad};
-use crate::shape::{moving_sphere, sphere};
+use crate::shape::{moving_sphere, quad, shape_box3d, sphere};
 use crate::texture::{CheckerTexture, ImageTexture, NoiseTexture, SolidColor, Texture};
 use crate::transform::{RotateY, TransformObject, Translate};
 use crate::vec3::{Color3, Direction3, Point3};
@@ -177,6 +176,23 @@ impl Scene {
         }
     }
 
+    /// Add an axis-aligned box to the scene with a single material on all 6 faces.
+    ///
+    /// This creates a single `ShapeObject<BoxShape>` entry in the scene BVH (one BVH leaf
+    /// for the entire box). For per-face materials, construct quads individually via `quad()`
+    /// and add them with `add_intersectable`.
+    pub fn add_box(&mut self, a: Point3, b: Point3, material: impl Into<Material>) {
+        let material = material.into();
+        trace!(?a, ?b, "add box");
+        let material = Arc::new(material);
+        let box_3d = Arc::new(shape_box3d(a, b, material.clone()));
+        if material.is_emissive() {
+            self.add_intersectable(box_3d.clone(), Some(box_3d.clone()));
+        } else {
+            self.add_intersectable(box_3d, None);
+        }
+    }
+
     pub fn add_sphere_moving(
         &mut self,
         center_start: Point3,
@@ -236,7 +252,7 @@ impl Scene {
                 let y1 = rand::rng().random_range(1.0..101.0);
                 let z1 = z0 + w;
 
-                let box_quads = box3d(
+                let box_quads = shape_box3d(
                     Point3::new(x0, y0, z0),
                     Point3::new(x1, y1, z1),
                     ground.clone(),
@@ -394,13 +410,11 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat, phase_fn)| {
-                let quad_box = box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
+                let quad_box = shape_box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
 
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
-                let wrapped: TransformObject<
-                    Translate,
-                    TransformObject<RotateY, Vec<Arc<dyn Intersectable>>>,
-                > = TransformObject::new(Translate::new(*translate_vec), rotated);
+
+                let wrapped = TransformObject::new(Translate::new(*translate_vec), rotated);
                 let const_medium = ConstantMedium::new(Arc::new(wrapped), 0.01, phase_fn.clone());
 
                 Arc::new(const_medium) as Arc<dyn Intersectable>
@@ -443,13 +457,10 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat)| {
-                let quad_box = box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
+                let quad_box = shape_box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
 
                 let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
-                let wrapped: TransformObject<
-                    Translate,
-                    TransformObject<RotateY, Vec<Arc<dyn Intersectable>>>,
-                > = TransformObject::new(Translate::new(*translate_vec), rotated);
+                let wrapped = TransformObject::new(Translate::new(*translate_vec), rotated);
 
                 Arc::new(wrapped) as Arc<dyn Intersectable>
             });
@@ -468,19 +479,6 @@ impl Scene {
             // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
             // Values must be <= 1.0 for energy conservation (no light amplification).
             DielectricMaterial::tinted(1.5, Color3::new(0.8, 0.8, 1.0)),
-        );
-        // Glass sphere — delta material, no importance sampling needed.
-        scene.add_intersectable(
-            Arc::new(sphere(
-                Point3::new(200., 90., 200.),
-                90.,
-                Material::from(DielectricMaterial::new(1.5)),
-            )),
-            Some(Arc::new(sphere(
-                Point3::new(200., 90., 200.),
-                90.,
-                Material::Void,
-            ))),
         );
 
         scene.config.samples_per_pixel = 200;
@@ -1114,8 +1112,8 @@ impl Scene {
         let box_min = box_center - box_size / 2.;
         let box_max = box_center + box_size / 2.;
 
-        let glass_box = box3d(box_min, box_max, glass_material);
-        scene.objects.extend(glass_box);
+        let glass_box = shape_box3d(box_min, box_max, glass_material);
+        scene.objects.push(Arc::new(glass_box));
 
         scene.config.aspect_ratio = 16.0 / 9.0;
         scene.config.image_width = 800;
