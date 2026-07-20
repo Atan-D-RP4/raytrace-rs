@@ -1,17 +1,14 @@
 use std::f32::consts::PI;
 
-use crate::planar::Region2D;
+use crate::shape::Region2D;
 
-/// Region type for an annular (ring) region with configurable inner radius.
+/// Region type for a unit-disk ellipse in (a,b) space.
 #[derive(Clone)]
-pub struct AnnulusRegion {
-    pub inner: f32,
-}
+pub struct EllipseRegion;
 
-impl Region2D for AnnulusRegion {
+impl Region2D for EllipseRegion {
     fn contains(&self, a: f32, b: f32) -> bool {
-        let radius = (a * a + b * b).sqrt();
-        radius >= self.inner && radius <= 1.0
+        (a * a + b * b) <= 1.0
     }
 
     fn uv(&self, a: f32, b: f32) -> (f32, f32) {
@@ -19,11 +16,11 @@ impl Region2D for AnnulusRegion {
     }
 
     fn area(&self) -> f32 {
-        PI * (1.0 - self.inner * self.inner)
+        PI
     }
 
     fn sample(&self, u: f32, v: f32) -> (f32, f32) {
-        let r = (self.inner * self.inner + u * (1.0 - self.inner * self.inner)).sqrt();
+        let r = u.sqrt();
         let theta = v * 2.0 * PI;
         let (sin_theta, cos_theta) = theta.sin_cos();
         (r * cos_theta, r * sin_theta)

@@ -586,7 +586,7 @@ mod tests {
     /// BvhNode for a multi-object scene.
     #[test]
     fn flat_bvh_matches_bvh_node_multi_object() {
-        use crate::planar::quad;
+        use crate::shape::quad;
 
         // Build a small scene: 3 spheres at different positions.
         let s1: Arc<dyn Intersectable> = Arc::new(sphere(

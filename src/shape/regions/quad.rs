@@ -1,6 +1,6 @@
 use crate::interval::Interval;
 
-use crate::planar::Region2D;
+use crate::shape::Region2D;
 
 /// Region type for a full parallelogram (unit square in (a,b) space).
 #[derive(Clone)]

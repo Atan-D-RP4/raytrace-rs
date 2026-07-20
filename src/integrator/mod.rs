@@ -44,8 +44,8 @@ mod tests {
     use crate::film::{Film, RgbFilm};
     use crate::flat_bvh::FlatBvh;
     use crate::material::{DiffuseLightMaterial, LambertianMaterial, Material};
-    use crate::planar::quad;
     use crate::sampler::NaiveRandomSampler;
+    use crate::shape::quad;
     use crate::vec3::{Color3, Direction3, Point3};
     use glam::Vec3;
 

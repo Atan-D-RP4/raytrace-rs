@@ -1,4 +1,4 @@
-use crate::planar::Region2D;
+use crate::shape::Region2D;
 
 /// Region type for a triangle (a ≥ 0, b ≥ 0, a+b ≤ 1).
 #[derive(Clone)]

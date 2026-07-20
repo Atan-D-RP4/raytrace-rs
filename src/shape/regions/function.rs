@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rand::RngExt;
 
-use crate::planar::Region2D;
+use crate::shape::Region2D;
 
 /// Region type defined by an arbitrary `(a, b) -> bool` predicate (a math
 /// inequality, a set of inequalities, or any other condition).

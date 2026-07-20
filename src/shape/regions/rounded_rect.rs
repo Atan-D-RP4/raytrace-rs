@@ -1,6 +1,6 @@
 use std::f32::consts::PI;
 
-use crate::planar::Region2D;
+use crate::shape::Region2D;
 
 /// Region type for a rounded rectangle in `[-1, 1] × [-1, 1]` (a, b) parametric space.
 ///

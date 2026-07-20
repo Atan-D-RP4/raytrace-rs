@@ -1,0 +1,228 @@
+use glam::Vec3;
+
+use crate::aabb::Aabb;
+use crate::hittable::{Hit, LightSample};
+use crate::interval::Interval;
+use crate::ray::Ray;
+use crate::shape::Region2D;
+use crate::texture::UVDifferentiable;
+use crate::vec3::{Color3, Direction3, Point3};
+
+use super::Shape3D;
+
+/// A planar shape that lives in a 3D plane, defined by a parallelogram (corner + two side vectors)
+/// and a `Region2D` that carves a 2D shape out of that parallelogram.
+///
+/// The geometry is pure (no material) — wrap via `ShapeObject<PlanarShape<R>, M>` to make it
+/// intersectable with a material. This replaces the old `PlanarPatch<R, M>` which combined
+/// geometry and material in one type.
+pub struct PlanarShape<R: Region2D> {
+    /// The corner point of the planar patch, corresponding to (a, b) = (0, 0).
+    corner: Point3,
+    /// The side vector corresponding to the (a, b) = (1, 0) direction.
+    side_a: Vec3,
+    /// The side vector corresponding to the (a, b) = (0, 1) direction.
+    side_b: Vec3,
+
+    /// Precomputed reciprocal of the squared length of the normal vector (side_a × side_b).
+    w: Vec3,
+    /// The axis-aligned bounding box of the planar patch, used for acceleration structures.
+    bbox: Aabb,
+    /// The unit normal vector of the planar patch, precomputed for efficiency.
+    normal: Vec3,
+    /// The plane constant `d` in the plane equation `normal . P = d`, precomputed for efficiency.
+    d: f32,
+    /// The area of the planar patch in world space, precomputed for efficiency.
+    area: f32,
+    /// The 2D region that defines the shape of the patch (e.g. quad, ellipse, triangle).
+    region: R,
+}
+
+#[derive(Clone, Copy)]
+struct PlanarHit {
+    time: f32,
+    point: Point3,
+    a: f32,
+    b: f32,
+}
+
+impl<R: Region2D> PlanarShape<R> {
+    pub fn new(corner: Point3, side_a: Vec3, side_b: Vec3, region: R) -> Self {
+        // Compute the AABB from the two diagonals of the parallelogram.
+        // This is tighter than computing the min/max of all four corners separately.
+        let bbox_diagonal1 = Aabb::from_points(&corner, &(corner + side_a + side_b));
+        let bbox_diagonal2 = Aabb::from_points(&(corner + side_a), &(corner + side_b));
+
+        // Cross product gives the unnormalized plane normal (= 2× parallelogram area).
+        let n = side_a.cross(side_b);
+        let normal = n.normalize();
+
+        Self {
+            corner,
+            side_a,
+            side_b,
+            // w = n / |n|²: projects a world-space point onto the (a, b) basis
+            // via the formula a = (offset × side_b) · w, b = (side_a × offset) · w.
+            w: n / n.dot(n),
+            bbox: bbox_diagonal1.merge(&bbox_diagonal2),
+            normal,
+            // Plane constant d = n · P (for any point P on the plane).
+            d: normal.dot(corner.into_inner()),
+            // World-space area of the parallelogram (not the region shape).
+            area: n.length(),
+            region,
+        }
+    }
+
+    /// Returns the intersection of the ray with the plane of the patch, if there is any, alongside
+    /// the (a, b) coordinates in parametric space.
+    fn hit_plane(&self, ray: &Ray, ray_t: Interval) -> Option<PlanarHit> {
+        let denom = self.normal.dot(ray.direction.into_inner());
+
+        if denom.abs() < 1e-8 {
+            return None;
+        }
+
+        let t = (self.d - self.normal.dot(ray.origin.into_inner())) / denom;
+        if !ray_t.contains(t) {
+            return None;
+        }
+
+        let point = ray.at(t);
+        let planar_hit_point_vector = point - self.corner;
+        let a = self
+            .w
+            .dot(planar_hit_point_vector.cross(self.side_b).into_inner());
+        let b = self
+            .w
+            .dot(self.side_a.cross(planar_hit_point_vector.into_inner()));
+
+        Some(PlanarHit {
+            time: t,
+            point,
+            a,
+            b,
+        })
+    }
+}
+
+impl<R: Region2D> UVDifferentiable for PlanarShape<R> {
+    /// Returns (∂u/∂P, ∂v/∂P) as 3-vectors. Constant across the patch.
+    fn uv_gradient(&self, _mapping_point: &Point3) -> (Direction3, Direction3) {
+        let a = self.side_a;
+        let b = self.side_b;
+        let aa = a.dot(a);
+        let bb = b.dot(b);
+        let ab = a.dot(b);
+        let det = (aa * bb - ab * ab).max(1e-12);
+
+        // du_dp = (bb·side_a − ab·side_b) / det
+        let du_dp = (b * bb - a * ab) / det;
+        // dv_dp = (−ab·side_a + aa·side_b) / det
+        let dv_dp = (a * -ab + b * aa) / det;
+        (Direction3(du_dp), Direction3(dv_dp))
+    }
+}
+
+impl<R: Region2D> Shape3D for PlanarShape<R> {
+    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<crate::hittable::Hit> {
+        let planar_hit = self.hit_plane(ray, ray_t)?;
+
+        if !self.region.contains(planar_hit.a, planar_hit.b) {
+            return None;
+        }
+
+        let uv = self.region.uv(planar_hit.a, planar_hit.b);
+
+        Some(Hit::new(
+            planar_hit.time,
+            planar_hit.point,
+            planar_hit.point,
+            Direction3(self.normal),
+            Some(uv),
+            None,
+        ))
+    }
+
+    fn bounding_box(&self) -> Aabb {
+        self.bbox
+    }
+
+    fn area(&self) -> f32 {
+        self.area * self.region.area()
+    }
+
+    fn sample(&self, u: f32, v: f32, _time: f32) -> (Point3, Direction3) {
+        // Sample (a, b) in parametric space via the region's sampling distribution,
+        // then map to world-space point on the parallelogram.
+        let (a, b) = self.region.sample(u, v);
+        let point = self.corner + self.side_a * a + self.side_b * b;
+        (point, Direction3(self.normal))
+    }
+
+    fn sample_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
+        let (point, _) = self.sample(u, v, time);
+        (point - origin).normalize()
+    }
+
+    fn sample_light(&self, origin: Point3, u: f32, v: f32, _time: f32) -> LightSample {
+        let (point, normal) = self.sample(u, v, 0.0);
+        let direction = point - origin;
+        let distance = direction.length();
+        // Area PDF: uniform over the bounding box area (matches pdf_direction's denominator).
+        // No back-face culling here — ShapeObject::sample_light handles emission gating.
+        let world_area = self.area * self.region.bounding_box_area();
+        let area_pdf = if world_area > 1e-20 {
+            world_area.recip()
+        } else {
+            0.0
+        };
+        LightSample {
+            direction,
+            normal,
+            distance,
+            pdf: area_pdf,
+            emission: Color3::ZERO,
+        }
+    }
+
+    fn pdf_direction(&self, origin: Point3, direction: Direction3, _time: f32) -> f32 {
+        // Inline the plane-intersection + containment test from intersect_shape
+        // to avoid constructing a full Ray (with differentials) on a per-light-sample
+        // path that only needs a PDF value.
+        let dir = direction.into_inner();
+        let denom = self.normal.dot(dir);
+
+        // Back-face culling: if the ray direction is parallel to the plane (denom ≈ 0)
+        // or points the same way as the normal (surface is rear-facing for emission),
+        // return 0 PDF.
+        if denom.abs() < 1e-8 {
+            return 0.0;
+        }
+
+        let t = (self.d - self.normal.dot(origin.into_inner())) / denom;
+        if t < 0.001 || !t.is_finite() {
+            return 0.0;
+        }
+
+        let point = origin.into_inner() + dir * t;
+        let offset = Point3(point) - self.corner;
+        let a = self.w.dot(offset.cross(self.side_b).into_inner());
+        let b = self.w.dot(self.side_a.cross(offset.into_inner()));
+
+        if !self.region.contains(a, b) {
+            return 0.0;
+        }
+
+        // Area-to-solid-angle PDF conversion: p(ω) = d² / (|cos_θ| · A).
+        // cos_θ accounts for the foreshortening of the light surface; d² for inverse-square.
+        let distance_squared = (point - origin.into_inner()).length_squared();
+        let cos_theta = self.normal.dot(-dir).abs();
+        let world_area = self.area * self.region.bounding_box_area();
+        if cos_theta > 0.0 {
+            distance_squared / (cos_theta * world_area)
+        } else {
+            0.0
+        }
+    }
+}

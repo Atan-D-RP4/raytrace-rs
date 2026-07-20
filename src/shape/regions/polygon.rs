@@ -1,4 +1,4 @@
-use crate::planar::Region2D;
+use crate::shape::Region2D;
 
 /// Region type for an arbitrary convex or simple polygon defined by vertices
 /// in (a, b) parametric space.

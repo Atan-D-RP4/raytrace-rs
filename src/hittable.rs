@@ -373,7 +373,7 @@ impl<'a> SurfaceInteraction<'a> {
     pub fn test_surface(
         material: &'a Material,
         shading_normal: Direction3,
-    ) -> SurfaceInteraction<'_> {
+    ) -> SurfaceInteraction<'a> {
         SurfaceInteraction::new(
             Hit::new(0.0, Point3::ZERO, Point3::ZERO, shading_normal, None, None),
             shading_normal,

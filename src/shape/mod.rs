@@ -11,9 +11,53 @@ use crate::ray::Ray;
 use crate::texture::UVDifferentiable;
 use crate::vec3::{Color3, Direction3, Point3};
 
+mod box3d;
+mod constructors;
+mod planar;
+pub(crate) mod regions;
 mod sphere;
 
 pub use sphere::{SphereShape, moving_sphere, sphere};
+
+pub use box3d::{Box3D, BoxShape, shape_box3d};
+pub use constructors::*;
+pub use planar::PlanarShape;
+
+/// Defines the 2D region test, UV mapping, area, and sampling for a planar shape.
+///
+/// Methods take `&self` so that per-instance data (e.g. annulus inner radius)
+/// can be stored in the region type.
+pub trait Region2D: Send + Sync {
+    /// Returns true if the given `(a, b)` coordinates are inside the region.
+    ///
+    /// The `(a, b)` coordinates are in the parametric space defined by the planar patch's `side_a`
+    /// and `side_b` vectors.
+    fn contains(&self, a: f32, b: f32) -> bool;
+
+    /// Maps `(a, b)` coordinates to UV space for texture mapping.
+    ///
+    /// The default implementation maps `(a, b)` directly to `(u, v)`.
+    fn uv(&self, a: f32, b: f32) -> (f32, f32) {
+        (a, b)
+    }
+
+    /// Area of the region in (a,b) parametric space.
+    ///
+    /// Used to compute the world-space area (= |side_a × side_b| × area)
+    /// for correct PDF computation in light importance sampling.
+    fn area(&self) -> f32;
+
+    /// Area of the bounding-box that `sample()` draws from.
+    ///
+    /// For bbox-based samplers (superellipse, rounded rect, etc.) this is larger
+    /// than `area()` — the PDF uses this to stay unbiased.  Default: `area()`.
+    fn bounding_box_area(&self) -> f32 {
+        self.area()
+    }
+
+    /// Samples `(a, b)` within the region from `(u, v)` ∈ [0,1]².
+    fn sample(&self, u: f32, v: f32) -> (f32, f32);
+}
 
 /// 3D shape interface — the 3D analogue of [`Region2D`].
 ///
@@ -21,7 +65,7 @@ pub use sphere::{SphereShape, moving_sphere, sphere};
 /// surface sampling in local space. Material assignment and trait derivation
 /// are handled by [`ShapeObject`].
 ///
-/// [Region2D]: crate::planar::Region2D
+/// [Region2D]: crate::shape::Region2D
 pub trait Shape3D: UVDifferentiable + Send + Sync {
     /// Intersect a ray in local space. Returns a bare [`Hit`] for the
     /// caller to wrap in [`MaterialHit`].
@@ -92,7 +136,7 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
     }
 }
 
-/// A material-wrapped 3D shape — the 3D analogue of [`PlanarPatch`].
+/// A material-wrapped 3D shape — combines a [`Shape3D`] with a [`Material`],
 ///
 /// Combines a [`Shape3D`] with a [`Material`], deriving `Intersectable`,
 /// `Bounded`, and `Sampleable` generically. Adding a new shape only
