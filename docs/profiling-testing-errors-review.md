@@ -1,15 +1,80 @@
 # Profiling, Testing & Error Handling Review
 
-> Generated: 2026-06-30
-> Last updated: 2026-06-30 (reconciled against fresh codebase scan)
+> Version: 1.1 Generated: 2026-06-30 Last updated: 2026-07-19 (BSDF conformance
+> test harness added, spec'd for reuse across all future materials)
 >
-> Review of the raytrace-rs project's profiling harness, test suite & coverage, and error handling compared to production renderers (pbrt-v4, LuxCore, MoonRay).
+> Review of the raytrace-rs project's profiling harness, test suite & coverage,
+> and error handling compared to production renderers (pbrt-v4, LuxCore,
+> MoonRay).
+
+______________________________________________________________________
+
+## Changelog
+
+### v1.1.1 — 2026-07-19 (later same day)
+
+- **Confirmed and closed:** both predictions from the v1.1 entry landed and were
+  independently re-verified, not just read off the diff.
+  - `Coated::pdf()`/`eval()` bug **found and fixed** (`043e62f`): root cause was
+    a Rust operator-precedence trap — `-wi.refract(...)` negates the *result* of
+    `.refract()` (method calls bind tighter than unary `-`), not the input, as
+    `(-wi).refract(...)` was intended to. This flipped `wi_internal`'s sign,
+    drove `cos_int` negative, got clamped near zero, and blew the refraction
+    Jacobian up by ~10 orders of magnitude — the actual mechanism behind the
+    outlier fireflies `PATH_THROUGHPUT_LIMIT`/`COATED_FIRE_FLY_LIMIT` were added
+    to mask. Accompanying fix: removed `.abs()` from hemisphere cosines and
+    added explicit back-facing guards (a reflective coating must return 0 for
+    back-side directions, not silently fold them into a valid-looking positive
+    number via `.abs()`).
+  - Owen scramble net-preservation bug **found and fixed** (`7c7befd`): replaced
+    the flat hash-chain with Burley's Laine-Karras permutation (reverse →
+    LK-permute → reverse), matching JCGT 2020 Listing 2. Independently
+    re-verified outside the repo (ported to Python, reran the same
+    top-bits-preserved test): **0/16 mismatched coarse cells, down from 16/16**,
+    bijectivity still holds.
+- **Partial harness landed, general form still open:** one targeted test
+  (`coated_pdf_substrate_integrates_to_fresnel_t`, 500k-sample MC integral)
+  proved the PDF-integration technique against the material that actually had a
+  bug. The generalized, registry-driven harness from §2.1 (`BsdfTestCase` +
+  `all_test_cases()`, one line per material) has not been built yet — this is
+  the natural next step now that the technique is proven, not a re-guess.
+- Minor: `COATED_FIRE_FLY_LIMIT` changed to `f32::MAX - f32::EPSILON` — almost
+  certainly a numeric no-op at this magnitude (`f32::EPSILON` is far smaller
+  than the representable-value spacing near `f32::MAX`), and doesn't change the
+  NaN-laundering behavior of the `.min()` clamp flagged in the prior review.
+
+### v1.1 — 2026-07-19
+
+- **New:** §2.1 "BSDF Conformance Test Harness" — full design spec for a
+  reusable, table-driven correctness harness (PDF-integrates-to-1, sample/PDF
+  histogram consistency, Helmholtz reciprocity, energy conservation,
+  NaN/negativity fuzzing) that runs against every `Bsdf` impl from one shared
+  test module, extended by adding a single registry entry per new material.
+- **Motivating incident:** algebraic review of `Coated::pdf()` (multi-bounce
+  `scatter()` vs. single-bounce closed-form `pdf()`) predicted a measurable
+  PDF-integration error; the harness in §2.1 is the general-purpose version of
+  the one-off test written to check that prediction, generalized so it isn't a
+  Coated-only tool.
+- **Status note:** the harness design below reflects the collaborative spec, not
+  yet a verified commit — reconcile against the actual test code once it lands
+  and update the Test Inventory table (§2, row `material/mod.rs`) with real
+  pass/fail numbers and file:line references.
+- Reclassified item 3 of "What Production Renderers Do That This Doesn't" (§2)
+  from *open gap* to *in progress* — property-based BSDF testing is no longer
+  wholly absent, it's mid-implementation.
+
+### v1.0 — 2026-06-30
+
+- Initial review: profiling harness, test suite inventory (36 tests / 7
+  modules), error handling audit, 5-phase error handling plan.
 
 ______________________________________________________________________
 
 ## Verdict: NEEDS_WORK
 
-Three areas at distinct maturity levels. Profiling is architecturally sound but incomplete. Tests are narrowly scoped. Error handling is development-grade but **several previously flagged issues have already been fixed**.
+Three areas at distinct maturity levels. Profiling is architecturally sound but
+incomplete. Tests are narrowly scoped. Error handling is development-grade but
+**several previously flagged issues have already been fixed**.
 
 ______________________________________________________________________
 
@@ -17,10 +82,15 @@ ______________________________________________________________________
 
 ### What's Good
 
-- The `profiling` crate with 4 backend options (`tracing`, `puffin`, `tracy`, `optick`) via Cargo features is the right abstraction — matches how production renderers ship profiling backends behind a feature flag.
-- `default = ["profile-with-tracing"]` is a sane default: zero-cost when disabled, useful traces when enabled.
-- The `#[profiling::function]` annotation on `live_render` and `headless_render` plus manual `profiling::scope!("...")` calls show awareness of the API.
-- `tracing-subscriber` is initialized with env-filter, thread IDs, and line numbers — the tracing pipeline is production-ready.
+- The `profiling` crate with 4 backend options (`tracing`, `puffin`, `tracy`,
+  `optick`) via Cargo features is the right abstraction — matches how production
+  renderers ship profiling backends behind a feature flag.
+- `default = ["profile-with-tracing"]` is a sane default: zero-cost when
+  disabled, useful traces when enabled.
+- The `#[profiling::function]` annotation on `live_render` and `headless_render`
+  plus manual `profiling::scope!("...")` calls show awareness of the API.
+- `tracing-subscriber` is initialized with env-filter, thread IDs, and line
+  numbers — the tracing pipeline is production-ready.
 
 ### Current Instrumentation (17 total)
 
@@ -59,19 +129,35 @@ ______________________________________________________________________
 
 ### Specific Gaps vs Production Renderers
 
-1. **No per-phase breakdown within `sample_pass`.** The entire sample loop is wrapped by one `profiling::scope!`. When the profiler shows a bottleneck, you can't tell whether it's BVH traversal cost, material evaluation, or PDF sampling. pbrt-v4 instruments each bounce phase.
+1. **No per-phase breakdown within `sample_pass`.** The entire sample loop is
+   wrapped by one `profiling::scope!`. When the profiler shows a bottleneck, you
+   can't tell whether it's BVH traversal cost, material evaluation, or PDF
+   sampling. pbrt-v4 instruments each bounce phase.
 
-2. **No BVH traversal profiling.** `FlatBvh::intersect` has zero profiling scopes. Production renderers track traversed-node count, leaf-intersection count, early-exit rate. Critical for BVH optimization.
+2. **No BVH traversal profiling.** `FlatBvh::intersect` has zero profiling
+   scopes. Production renderers track traversed-node count, leaf-intersection
+   count, early-exit rate. Critical for BVH optimization.
 
-3. **No per-object-type intersection counters.** The `Intersectable` trait has no instrumentation wrapper. You can't see whether ray vs sphere costs dominate vs ray vs planar-patch costs.
+3. **No per-object-type intersection counters.** The `Intersectable` trait has
+   no instrumentation wrapper. You can't see whether ray vs sphere costs
+   dominate vs ray vs planar-patch costs.
 
-4. **No allocator or memory profiling.** The arena refactor is identified as P0 in `ARCH_REVIEW.md`, but there's no profiling to track malloc pressure or `Arc` refcount traffic.
+4. **No allocator or memory profiling.** The arena refactor is identified as P0
+   in `ARCH_REVIEW.md`, but there's no profiling to track malloc pressure or
+   `Arc` refcount traffic.
 
-5. **No GPU-side profiling infrastructure.** GPU modules (`material/gpu.rs`, `texture/gpu.rs`) serialize GPU buffers but have zero profiling scopes.
+5. **No GPU-side profiling infrastructure.** GPU modules (`material/gpu.rs`,
+   `texture/gpu.rs`) serialize GPU buffers but have zero profiling scopes.
 
-6. **No explicit puffin/tracy/optick initialization.** The `profiling` crate handles backend selection at compile time, but there's no `puffin::GlobalProfiler::new(...)`, `tracy_client::Client::start()`, or Optick init code. The default `profile-with-tracing` path works, but non-tracing backends may not be wired up correctly.
+6. **No explicit puffin/tracy/optick initialization.** The `profiling` crate
+   handles backend selection at compile time, but there's no
+   `puffin::GlobalProfiler::new(...)`, `tracy_client::Client::start()`, or
+   Optick init code. The default `profile-with-tracing` path works, but
+   non-tracing backends may not be wired up correctly.
 
-**Recommendation:** Add per-integrator-phase profiling scopes (`ray_gen`, `bvh_traverse`, `material_sample`, `mis_pdf`, `shadow_ray`) and instrument `FlatBvh::intersect` and `ConstantMedium::intersect` at minimum.
+**Recommendation:** Add per-integrator-phase profiling scopes (`ray_gen`,
+`bvh_traverse`, `material_sample`, `mis_pdf`, `shadow_ray`) and instrument
+`FlatBvh::intersect` and `ConstantMedium::intersect` at minimum.
 
 ______________________________________________________________________
 
@@ -89,23 +175,167 @@ All tests are standard Rust unit tests embedded in `#[cfg(test)] mod tests` bloc
 |--------|-------|-----------------|-----|
 | `sampler.rs` | 11 | Direction number validity, unit interval ranges, van der Corput exact values, determinism, seed diversity, Sync/Send traits | No edge-case behavior (extreme dimensions, overflow), no QMC stratification quality metrics |
 | `film/rgb.rs` | 5 | Variance convergence, convergence mask, RGB8 dimension conversion | No pixel-level correctness tests, no tone mapping tests |
-| `material/mod.rs` | 7 | GPU buffer serialization for each material type, Mix/Coated tree flattening, nested compositions, custom material passthrough | No BSDF correctness tests, no energy conservation checks, no reciprocity tests, no textured material sampling tests |
+| `material/mod.rs` | 7 | GPU buffer serialization for each material type, Mix/Coated tree flattening, nested compositions, custom material passthrough | *(see §2.1 — conformance harness spec'd, pending verified commit)* No textured material sampling tests |
+| `material/conformance_tests.rs` | *pending* | **New module, spec'd in §2.1**: PDF-integrates-to-1, sample/PDF histogram matching, Helmholtz reciprocity, energy conservation, NaN/negativity fuzzing — table-driven across every registered material | Reconcile row against actual commit once pushed: real test count, pass/fail per material, whether the predicted `Coated::pdf()` divergence was confirmed and at what magnitude |
 | `flat_bvh.rs` | 5 | Node size, empty BVH, single/two-sphere intersection correctness, multi-object BVH matches BVH | No stress tests (many objects), no SAH cost verification, no transform integration, no correctness vs flat-list baseline |
 | `const_medium.rs` | 3 | Volume scattering, sparse medium pass-through, normal at volume hit | No absorption/scattering coefficient sweeps, no heterogeneous medium tests |
 | `texture/gpu.rs` | 4 | Sentinel value, node layout size, empty/push buffer | No texture value correctness tests, no mapping tests, no image texture tests |
 | `integrator/mod.rs` | 1 | Render a 4×4 minimal scene (basic integration smoke test) | Single tiny test — no bounce correctness, no light sampling, no background handling |
 
+### 2.1 BSDF Conformance Test Harness (new in v1.1)
+
+**Why this exists:** a purely algebraic review of `Coated::pdf()` (comparing the
+multi-bounce stochastic walk `scatter()` actually samples against the
+single-bounce closed-form density `pdf()` scores) predicted a measurable
+inconsistency — `pdf()` structurally undercounts density reachable via 2+
+internal bounces. That's a testable, falsifiable claim, not just a code-smell —
+a valid PDF must integrate to 1 over its domain by definition, and a valid
+`scatter()`/`pdf()` pair must agree on the density of any direction either one
+can reach. Rather than write one throwaway test to check `Coated` specifically,
+the harness below is designed so **any** `Bsdf` impl — present or future — gets
+the same battery of checks by adding one line to a registry, not by writing
+bespoke tests per material.
+
+**What every production renderer's BxDF test suite checks, and this harness
+mirrors** (this is standard practice, not novel — pbrt-v4's own `bxdfs_test.cpp`
+runs the same category of checks against every `BxDF`):
+
+| Property | What it catches | How it's checked |
+|---|---|---|
+| PDF integrates to 1 | `pdf()` inconsistent with what `scatter()` samples (the Coated bug) | Monte Carlo estimate of `∫ pdf(wo,wi) dwi` over the sphere/hemisphere, compare to 1.0 within tolerance |
+| Sample histogram matches PDF | Same root cause, more targeted — shows *which* directions diverge | Bin the sphere, histogram `scatter()` outputs, compare normalized-by-solid-angle density per bin against `pdf()` evaluated at bin center |
+| Helmholtz reciprocity | `eval(wo,wi) != eval(wi,wo)` (breaks bidirectional methods outright if BDPT/VCM is ever built — see prior review) | Direct comparison at sampled `(wo,wi)` pairs; BTDFs need the `η²` radiance-compression factor from the reciprocity relation for transmission, not naive equality — the harness must special-case `is_transmissive` |
+| Energy conservation | `eval()` returns more energy than physically arrives (amplifying instead of attenuating) | Monte Carlo estimate of `∫ f(wo,wi)·cosθᵢ dwi` (reflectance), assert `≤ 1` per channel (or `≤ 1` combined reflectance+transmittance for dielectrics) |
+| No NaN / negative values | Silent NaN propagation (the exact failure mode the `f32::MAX` clamp review flagged — clamping masks this instead of catching it) | Fuzz `wo`, `wi` across the full sphere including grazing angles; assert every `eval()`/`pdf()` output is finite and non-negative |
+
+**Harness shape** (`src/material/conformance_tests.rs`, `#[cfg(test)]`-only, not shipped in release builds):
+
+```rust
+/// One material configuration to run the full conformance battery against.
+struct BsdfTestCase {
+    name: &'static str,
+    bsdf: Arc<dyn Bsdf>,
+    /// Representative incident directions, deliberately including grazing
+    /// angles and near-normal incidence — divergence often concentrates at
+    /// the extremes (this is exactly where the Coated bug's multi-bounce
+    /// paths live).
+    wo_samples: Vec<Direction3>,
+    is_transmissive: bool,
+    eta: Option<f32>, // for reciprocity's η² correction on BTDFs
+}
+
+fn pdf_integrates_to_one(case: &BsdfTestCase, tol: f32);
+fn sample_matches_pdf_histogram(case: &BsdfTestCase, n_bins: usize, tol: f32);
+fn helmholtz_reciprocity(case: &BsdfTestCase, tol: f32);
+fn energy_conservation(case: &BsdfTestCase);
+fn no_nan_or_negative(case: &BsdfTestCase, n_fuzz: usize);
+
+/// The registry. Adding support for a new material to the entire conformance
+/// suite is exactly one entry here — this is the "how it tests future
+/// materials" answer: nothing about the five check functions above is
+/// Coated-specific or Mix-specific, they operate purely through the `Bsdf`
+/// trait, so a brand-new material gets full coverage for free the moment
+/// it's registered.
+fn all_test_cases() -> Vec<BsdfTestCase> {
+    vec![
+        case!("lambertian", LambertianMaterial::new(white())),
+        case!("metal_smooth", MetalMaterial::new(silver(), 0.0)),
+        case!("metal_rough", MetalMaterial::new(silver(), 0.5)),
+        case!("dielectric_glass", DielectricMaterial::new(1.5)).transmissive(1.5),
+        case!("rough_dielectric", RoughDielectricMaterial::new(1.5, 0.3)).transmissive(1.5),
+        case!("glossy", GlossyMaterial::new(white(), 0.3)),
+        // Deliberately sweep the parameters the Coated bug's severity scales
+        // with (thickness, coating IOR, substrate reflectance) rather than
+        // one arbitrary config — this is what turns "might be a problem
+        // somewhere" into "is/isn't a problem in the configs we ship".
+        case!("coated_thin_low_ior", CoatedMaterial::new(lambertian(), dielectric(1.1), 1.1, white(), 0.01)),
+        case!("coated_thick_high_ior", CoatedMaterial::new(metal(0.05), dielectric(2.0), 2.0, white(), 1.0)),
+        case!("mix_diffuse_metal", lambertian().mix(metal(), 0.5)),
+        case!("mix_diffuse_delta", lambertian().mix(dielectric(1.5), 0.3)),
+    ]
+}
+
+#[test]
+fn all_materials_pdf_integrates_to_one() {
+    for case in all_test_cases() { pdf_integrates_to_one(&case, 0.05); }
+}
+#[test]
+fn all_materials_sample_matches_pdf() {
+    for case in all_test_cases() { sample_matches_pdf_histogram(&case, 64, 0.1); }
+}
+#[test]
+fn all_materials_reciprocal() {
+    for case in all_test_cases() { helmholtz_reciprocity(&case, 0.02); }
+}
+#[test]
+fn all_materials_conserve_energy() {
+    for case in all_test_cases() { energy_conservation(&case); }
+}
+#[test]
+fn all_materials_finite_and_nonnegative() {
+    for case in all_test_cases() { no_nan_or_negative(&case, 10_000); }
+}
+```
+
+**Extending it for a new material** — the actual answer to "how can it test any
+future materials": implementing a new `Bsdf` requires exactly one new
+`case!(...)` line in `all_test_cases()`. No new test function, no new check
+logic — the five properties above are defined purely in terms of the `Bsdf`
+trait (`eval`/`pdf`/`scatter`), so they apply unchanged to anything implementing
+it, composite (`Mix`, `Coated`) or leaf (`Lambertian`, `Metal`). The one thing a
+contributor has to think about per-material is which `wo_samples`/parameter
+sweep is representative — same principle as the Coated sweep above: pick
+configurations that stress the specific thing most likely to break (grazing
+angles for Fresnel-heavy materials, extreme roughness for microfacet models,
+extreme mix weights for composites).
+
+**Guard against forgetting to register a new material** (cheap, worth adding
+once `Material` stabilizes): a test asserting `all_test_cases().len()` covers
+every `Material` enum variant, e.g. via a `match` with no wildcard arm — the
+classic "exhaustiveness as a test" trick, where forgetting to add a case becomes
+a compile error (non-exhaustive match) rather than a silently-uncovered
+material. Simpler than pulling in `inventory`/`linkme` for compile-time
+auto-registration, and sufficient for a project at this scale.
+
+**What this harness would and wouldn't have caught, for calibration**: it
+directly targets exactly the class of bug found in `Coated::pdf()` — that's the
+motivating case, and any material with a similar sampling/scoring mismatch gets
+caught the same way. It would *not* catch the earlier Owen-scrambling
+net-preservation issue (a sampler-level property, not a `Bsdf`-level one) or the
+`f32::MAX` NaN-laundering issue (that's a clamp masking a symptom, not a BSDF
+conformance property) — worth keeping in mind that this harness closes one
+specific, real gap, not testing in general.
+
 ### What Production Renderers Do That This Doesn't
 
-1. **Integration/regression tests (critical gap).** No test renders a scene, saves output, and compares pixel-by-pixel against a known reference. Every production renderer has a scene corpus with golden images. Even a single golden-image test (Cornell box, fixed seed, ±1/255 tolerance) would catch material or integrator regressions that unit tests miss entirely.
+1. **Integration/regression tests (critical gap).** No test renders a scene,
+   saves output, and compares pixel-by-pixel against a known reference. Every
+   production renderer has a scene corpus with golden images. Even a single
+   golden-image test (Cornell box, fixed seed, ±1/255 tolerance) would catch
+   material or integrator regressions that unit tests miss entirely.
 
-2. **No benchmark suite.** The only timing output is the console log. No `#[bench]` functions, no Criterion benchmarks, no performance regression tracking. A commit that doubles BVH traversal time goes undetected. This is especially important for a renderer where performance is a core feature.
+2. **No benchmark suite.** The only timing output is the console log. No
+   `#[bench]` functions, no Criterion benchmarks, no performance regression
+   tracking. A commit that doubles BVH traversal time goes undetected. This is
+   especially important for a renderer where performance is a core feature.
 
-3. **No property-based or randomized testing.** Materials have fuzzable sampling paths (compositions with random weights, extreme roughness values, NaN inputs) that aren't tested. The sampler QMC code has no stratification quality metrics.
+3. **Property-based/randomized BSDF testing — in progress (was: absent).**
+   §2.1's conformance harness (PDF integration, sample/PDF histogram matching,
+   reciprocity, energy conservation, NaN fuzzing) covers the material-sampling
+   half of this gap once merged. Still open: the sampler's own QMC
+   stratification quality has no dedicated metrics (a discrepancy measure, not
+   just the bijection/determinism tests already in `sampler.rs`), and there's no
+   fuzzing of scene-construction inputs (extreme transforms, degenerate
+   geometry) independent of materials.
 
-4. **No error-path tests.** No test for what happens when `ImageTexture::new` fails (it panics), when image resolution is 0, or when the BVH gets NaN positions.
+4. **No error-path tests.** No test for what happens when `ImageTexture::new`
+   fails (it panics), when image resolution is 0, or when the BVH gets NaN
+   positions.
 
-5. **No multi-threaded correctness tests.** No test verifies the film output is identical between single-threaded and multi-threaded render runs. Welford's online algorithm in `rgb.rs` uses shared `m_2` state that could race under concurrency.
+5. **No multi-threaded correctness tests.** No test verifies the film output is
+   identical between single-threaded and multi-threaded render runs. Welford's
+   online algorithm in `rgb.rs` uses shared `m_2` state that could race under
+   concurrency.
 
 ### File-by-File Test Gaps (untested modules)
 
@@ -119,7 +349,10 @@ All tests are standard Rust unit tests embedded in `#[cfg(test)] mod tests` bloc
 | `camera/perspective.rs` | 183 | Zero tests. Ray generation, jitter bounds, defocus disk, resolution edge cases. |
 | `main.rs` | 572 | Zero tests. CLI args parsing, scene selection, headless vs live mode. |
 
-**Recommendation:** Add a Criterion benchmark suite (3–4 benches: BVH build, ray intersection, sample pass, full Cornell box) and a `tests/` integration directory with at least one golden-image test that renders a fixed scene with fixed seed and compares against a committed reference.
+**Recommendation:** Add a Criterion benchmark suite (3–4 benches: BVH build, ray
+intersection, sample pass, full Cornell box) and a `tests/` integration
+directory with at least one golden-image test that renders a fixed scene with
+fixed seed and compares against a committed reference.
 
 ______________________________________________________________________
 
@@ -127,7 +360,9 @@ ______________________________________________________________________
 
 ### Current State
 
-**12 panic points in production code + 1 in test code.** No error handling crates (`anyhow`, `thiserror`, `eyre`, `snafu`). No custom error types. Minimal `Result<>` propagation.
+**12 panic points in production code + 1 in test code.** No error handling
+crates (`anyhow`, `thiserror`, `eyre`, `snafu`). No custom error types. Minimal
+`Result<>` propagation.
 
 ### Important: Several Original Issues Already Fixed
 
@@ -177,14 +412,18 @@ The three most critical issues from the initial review have been resolved:
 
 - `catch_unwind` — 0 calls
 - `std::panic::set_hook` — 0 calls
-- Error handling crates (`anyhow`, `thiserror`, `eyre`, `snafu`) — none in `Cargo.toml`
+- Error handling crates (`anyhow`, `thiserror`, `eyre`, `snafu`) — none in
+  `Cargo.toml`
 - Custom error types — 0 defined
 
 ### What Production Renderers Do
 
-- **pbrt-v4** returns `optional` or zero values for failures — missing textures substitute a checker, malformed scenes print warnings and continue.
-- **LuxCore** has a full `boost::optional`/error-return pattern for asset loading. Missing textures trigger a fallback. GPU errors are caught per frame.
-- **MoonRay** uses error collectors — errors are aggregated, logged, and the render continues.
+- **pbrt-v4** returns `optional` or zero values for failures — missing textures
+  substitute a checker, malformed scenes print warnings and continue.
+- **LuxCore** has a full `boost::optional`/error-return pattern for asset
+  loading. Missing textures trigger a fallback. GPU errors are caught per frame.
+- **MoonRay** uses error collectors — errors are aggregated, logged, and the
+  render continues.
 
 ### Remaining Issues
 
@@ -194,11 +433,17 @@ The three most critical issues from the initial review have been resolved:
 | 2 | **Medium** | `main.rs:154` | `buffer.present().unwrap()` — presentation failure crashes | Change to `if let Err(e) = buffer.present() { error!(...); }` — skip frame, don't crash |
 | 3 | **Medium** | `main.rs:183` | `surface.resize().expect()` — crashes on resize failure | Use `if let Err(e) = surface.resize(...) { error!(...); return; }` — skip frame |
 
-### The Broader Question: "Do we need more error handling in a renderer project?"
+### The Broader Question: "Do we need more error handling in a renderer
+project?"
 
-For a learning/educational path tracer, the current approach is defensible — fast iteration matters more than robustness. Notably, **3 of the 5 original high-severity concerns have already been fixed by the project maintainers**. The remaining gap is concentrated in `scene.rs` scene constructors panicking on missing image assets (lines 290, 658, 811).
+For a learning/educational path tracer, the current approach is defensible —
+fast iteration matters more than robustness. Notably, **3 of the 5 original
+high-severity concerns have already been fixed by the project maintainers**. The
+remaining gap is concentrated in `scene.rs` scene constructors panicking on
+missing image assets (lines 290, 658, 811).
 
-Below is a concrete error handling plan informed by the 11-principle discussion in `docs/renderer-error-handling-discussion.md`.
+Below is a concrete error handling plan informed by the 11-principle discussion
+in `docs/renderer-error-handling-discussion.md`.
 
 ---
 
@@ -466,7 +711,7 @@ ______________________________________________________________________
 | Area | Original Verdict | Updated Verdict | Most Critical Fix |
 |------|-----------------|-----------------|-------------------|
 | **Profiling** | Needs more granular scopes | Still valid — no code changes detected | Add per-phase scopes: `ray_gen`, `bvh_traverse`, `material_sample`, `mis_pdf` |
-| **Tests** | Narrow — 29 tests, 0 integration | **Corrected: 36 tests**, still 0 integration, 0 benches | Add 1 golden-image integration test + 3 Criterion benchmarks |
+| **Tests** | Narrow — 29 tests, 0 integration | **Corrected: 36 tests**, still 0 integration, 0 benches; BSDF conformance harness spec'd (§2.1), pending verified commit | Add 1 golden-image integration test + 3 Criterion benchmarks; land and reconcile the conformance harness |
 | **Error handling** | 3+ critical weaknesses | **Improved: 3/5 critical issues already fixed** + enriched plan from rendering error handling discussion | See 5-phase plan above: thiserror at boundaries, anyhow at main, debug_assert in core |
 
 ### Key Changes from Rendering Error Handling Discussion
