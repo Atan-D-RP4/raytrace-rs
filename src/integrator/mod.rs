@@ -3,11 +3,12 @@ use std::sync::Arc;
 use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::ray::Ray;
-pub use crate::sampler::{SampleStream, SamplerRng};
 use crate::vec3::{Color3, Direction3};
 
+pub use crate::integrator::path_tracer::PathTracingIntegrator;
+pub use crate::sampler::{SampleStream, SamplerRng};
+
 pub mod path_tracer;
-pub use path_tracer::PathTracingIntegrator;
 
 pub trait Integrator: Send + Sync {
     /// Default background radiance for a ray that missed all geometry.
@@ -41,8 +42,8 @@ pub trait Integrator: Send + Sync {
 mod tests {
     use super::*;
     use crate::bvh::BvhNode;
+    use crate::bvh::flat_bvh::FlatBvh;
     use crate::film::{Film, RgbFilm};
-    use crate::flat_bvh::FlatBvh;
     use crate::material::{DiffuseLightMaterial, LambertianMaterial, Material};
     use crate::sampler::NaiveRandomSampler;
     use crate::shape::quad;

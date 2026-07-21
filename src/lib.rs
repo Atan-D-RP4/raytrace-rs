@@ -5,7 +5,6 @@ pub mod const_medium;
 pub mod distributions;
 pub mod environment;
 pub mod film;
-pub mod flat_bvh;
 pub mod hittable;
 pub mod integrator;
 pub mod interval;

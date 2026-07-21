@@ -12,11 +12,11 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{Theme, Window, WindowId};
 
 use raytrace_rs::bvh::BvhNode;
+use raytrace_rs::bvh::flat_bvh::FlatBvh;
 use raytrace_rs::camera::Camera;
 use raytrace_rs::camera::PerspectiveCamera;
 use raytrace_rs::film::RgbFilm;
 use raytrace_rs::film::{Framebuffer, SharedFramebuffer};
-use raytrace_rs::flat_bvh::FlatBvh;
 use raytrace_rs::integrator::PathTracingIntegrator;
 use raytrace_rs::renderer::CpuRenderer;
 use raytrace_rs::renderer::Renderer;

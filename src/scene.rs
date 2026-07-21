@@ -5,10 +5,10 @@ use rand::RngExt;
 use tracing::{info, trace};
 
 use crate::bvh::BvhNode;
+use crate::bvh::flat_bvh::FlatBvh;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::environment::{EnvironmentLight, EnvironmentMap};
-use crate::flat_bvh::FlatBvh;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::material::{Bsdf, CoatedMaterial};
 use crate::material::{

@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use tracing::{info, trace};
 
+pub mod flat_bvh;
+
 use crate::aabb::Aabb;
 use crate::hittable::{Bounded, Intersectable, MaterialHit};
 use crate::interval::Interval;

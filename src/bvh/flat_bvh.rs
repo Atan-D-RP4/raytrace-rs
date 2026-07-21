@@ -44,26 +44,24 @@ const MAX_STACK: usize = 64;
 
 /// A flat (array-of-structs) BVH node. Aligned to 64 bytes for cache efficiency.
 ///
-/// Layout is `repr(C)` for deterministic padding and cache-line alignment.
+/// Layout is repr(C) for deterministic padding and cache-line alignment.
 /// Interior nodes: left/right are indices into the flat node array. Leaf nodes: prim_offset/count
 /// index into the primitive index array.
-#[repr(C)]
+#[repr(C, align(64))]
 #[derive(Debug, Clone, Copy)]
 pub struct FlatBvhNode {
-    /// [0..3] min AABB: 3 x f32 = 24 bytes
+    /// [0..12] min AABB: 3 x f32 = 12 bytes
     pub min: [f32; 3], // min_x, min_y, min_z
-    /// [4..6] max AABB: 3 x f32 = 24 bytes
+    /// [12..24] max AABB: 3 x f32 = 12 bytes
     pub max: [f32; 3], // max_x, max_y, max_z
-    /// [48] child_or_count: u32  (interior: left child index; leaf: prim count)
+    /// [24..28] child_or_count: u32 (interior: left child index; leaf: prim count)
     pub child_or_count: u32,
-    /// [52] right_or_unused: u32 (interior: right child index; leaf: 0)
+    /// [28..32] right_or_unused: u32 (interior: right child index; leaf: 0)
     pub right_or_unused: u32,
-    /// [56] prim_offset: u32 (leaf: start index; interior: 0)
+    /// [32..36] prim_offset: u32 (leaf: start index; interior: 0)
     pub prim_offset: u32,
-    /// [60] flags: u8    (0 = interior, 1 = leaf)
+    /// [36..37] flags: u8 (0 = interior, 1 = leaf)
     pub flags: u8,
-    /// [61..63] _pad: [u8; 3]
-    _pad: [u8; 3],
 }
 
 impl FlatBvhNode {
@@ -78,7 +76,6 @@ impl FlatBvhNode {
             right_or_unused: right,
             prim_offset: 0,
             flags: Self::INTERIOR,
-            _pad: [0; 3],
         }
     }
 
@@ -90,7 +87,6 @@ impl FlatBvhNode {
             right_or_unused: 0,
             prim_offset,
             flags: Self::LEAF,
-            _pad: [0; 3],
         }
     }
 
@@ -467,10 +463,10 @@ mod tests {
     use crate::vec3::{Color3, Direction3, Point3};
     use glam::Vec3;
 
-    /// Number of bytes per flat BVH node. Currently 40B (fields + 3-byte pad
-    /// for `#[repr(C)]` alignment). Bump `_pad` to 27 if 64B cache-line packing
-    /// is desired — `FlatBvhNode` is memory-only (not serialized), so padding is safe.
-    const NODE_SIZE: usize = 40;
+    /// Number of bytes per flat BVH node. Currently 40B (fields + 3-byte pad for `#[repr(C)]`
+    /// alignment). Bump `_pad` to 27 if 64B cache-line packing is desired — `FlatBvhNode` is
+    /// memory-only (not serialized), so padding is safe.
+    const NODE_SIZE: usize = 64;
 
     #[test]
     fn flat_bvh_node_size() {
