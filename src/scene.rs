@@ -741,7 +741,7 @@ impl Scene {
         )
         .into();
         let ground_material = ground_material
-            .coated(DielectricMaterial::tinted(1.5, Color3::new(0.8, 0.8, 1.0)).into());
+            .coated(DielectricMaterial::tinted(1.2, Color3::new(0.8, 0.8, 1.0)).into());
         scene.add_sphere(Point3::new(0., -1000., 0.), 1000., ground_material);
 
         for a in -21..21 {
@@ -852,7 +852,7 @@ impl Scene {
         scene.config.samples_per_pixel = 50;
         scene.config.max_depth = 50;
         scene.config.vfov = 30.0;
-        scene.config.look_from = Point3::new(13., 2., 6.);
+        scene.config.look_from = Point3::new(13., 5., 6.);
         scene.config.look_at = Point3::new(0., 1., 0.);
         scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.defocus_angle = 0.6;
