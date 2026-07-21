@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
-use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, blackbody};
+use crate::material::{
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, blackbody,
+};
 use crate::pdf::PdfKind;
 use crate::texture::Texture;
 use crate::vec3::{Color3, Direction3};

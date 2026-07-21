@@ -1,6 +1,7 @@
 use std::f32::consts::PI;
 
 use crate::shape::Region2D;
+use crate::shape::regions::rejection_sample;
 
 /// Region type for a rounded rectangle in `[-1, 1] × [-1, 1]` (a, b) parametric space.
 ///
@@ -36,17 +37,7 @@ impl Region2D for RoundedRectRegion {
     }
 
     fn sample(&self, u: f32, v: f32) -> (f32, f32) {
-        let mut u = u;
-        let mut v = v;
-        for _ in 0..32 {
-            let a = u * 2.0 - 1.0;
-            let b = v * 2.0 - 1.0;
-            if self.contains(a, b) {
-                return (a, b);
-            }
-            u = (u + 0.618_034).fract();
-            v = (v + 0.618_034).fract();
-        }
-        (0.0, 0.0)
+        let (a, b) = rejection_sample(u, v, self);
+        (a, b)
     }
 }

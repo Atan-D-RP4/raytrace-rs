@@ -599,11 +599,13 @@ impl Bsdf for CoatedMaterial {
         let fresnel_i = self.fresnel_transmittance(cos_wi);
 
         // Refract global incoming direction into the coating's internal frame.
-        // If TIR occurs at the incoming direction, only the coating reflection
-        // contributes — the substrate path is physically unreachable.
         let wi_internal = (-wi).refract(sn, 1.0 / self.coating_ior);
         if wi_internal.length_squared() <= 0.0 {
-            return direct_coat;
+            // TIR — only the Fresnel reflection of the coating contributes.
+            let r0 = fresnel_r0(self.coating_ior);
+            let fresnel_r = fresnel_schlick(cos_wo, r0);
+            let r = fresnel_r * cos_wi / std::f32::consts::PI;
+            return Color3::new(r, r, r);
         }
 
         // Compute internal frame: direction inside coating that refracts to wo_global.

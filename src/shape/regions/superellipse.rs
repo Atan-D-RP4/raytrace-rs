@@ -1,6 +1,37 @@
 use std::f32::consts::PI;
 
 use crate::shape::Region2D;
+use crate::shape::regions::rejection_sample;
+
+/// Lanczos approximation of the Gamma function for `x > 0`.
+///
+/// Accurate to ~15 significant digits for typical inputs.
+/// Coefficients from Numerical Recipes 3rd ed., §6.1.
+fn gamma(mut x: f32) -> f32 {
+    if x < 0.5 {
+        // Reflection: Γ(x) = π / (sin(πx) · Γ(1 − x))
+        return PI / ((PI * x).sin() * gamma(1.0 - x));
+    }
+    x -= 1.0;
+    const G: usize = 7;
+    const C: [f32; G + 2] = [
+        0.999_999_999_999_809_9,
+        676.520_4,
+        -1_259.139_2,
+        771.323_4,
+        -176.615_04,
+        12.507_343,
+        -0.138_571_1,
+        9.984_369e-6,
+        1.505_632_7e-7,
+    ];
+    let mut ag = C[0];
+    for (i, ci) in C.iter().enumerate().skip(1) {
+        ag += ci / (x + i as f32);
+    }
+    let t = x + G as f32 + 0.5;
+    (2.0 * PI).sqrt() * t.powf(x + 0.5) * (-t).exp() * ag
+}
 
 /// Region type for a superellipse `|a|^n + |b|^n ≤ 1`.
 ///
@@ -33,47 +64,7 @@ impl Region2D for SuperellipseRegion {
     }
 
     fn sample(&self, u: f32, v: f32) -> (f32, f32) {
-        let mut u = u;
-        let mut v = v;
-        for _ in 0..32 {
-            let a = u * 2.0 - 1.0;
-            let b = v * 2.0 - 1.0;
-            if self.contains(a, b) {
-                return (a, b);
-            }
-            u = (u + 0.618_034).fract();
-            v = (v + 0.618_034).fract();
-        }
-        (0.0, 0.0)
+        let (a, b) = rejection_sample(u, v, self);
+        (a, b)
     }
-}
-
-/// Lanczos approximation of the Gamma function for `x > 0`.
-///
-/// Accurate to ~15 significant digits for typical inputs.
-/// Coefficients from Numerical Recipes 3rd ed., §6.1.
-fn gamma(mut x: f32) -> f32 {
-    if x < 0.5 {
-        // Reflection: Γ(x) = π / (sin(πx) · Γ(1 − x))
-        return PI / ((PI * x).sin() * gamma(1.0 - x));
-    }
-    x -= 1.0;
-    const G: usize = 7;
-    const C: [f32; G + 2] = [
-        0.999_999_999_999_809_9,
-        676.520_4,
-        -1_259.139_2,
-        771.323_4,
-        -176.615_04,
-        12.507_343,
-        -0.138_571_1,
-        9.984_369e-6,
-        1.505_632_7e-7,
-    ];
-    let mut ag = C[0];
-    for (i, ci) in C.iter().enumerate().skip(1) {
-        ag += ci / (x + i as f32);
-    }
-    let t = x + G as f32 + 0.5;
-    (2.0 * PI).sqrt() * t.powf(x + 0.5) * (-t).exp() * ag
 }
