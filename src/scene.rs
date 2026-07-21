@@ -16,8 +16,15 @@ use crate::material::{
     RoughDielectricMaterial,
 };
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
-use crate::shape::{moving_sphere, quad, shape_box3d, sphere};
-use crate::texture::{CheckerTexture, ImageTexture, NoiseTexture, SolidColor, Texture};
+use crate::shape::regions::FunctionRegion;
+use crate::shape::{
+    annulus, function_patch, moving_sphere, polygon, quad, rounded_rect, shape_box3d, sphere,
+    superellipse, tri,
+};
+use crate::texture::{
+    CheckerTexture, ImageTexture, NoiseTexture, SolidColor, SphericalUvMapping, Texture,
+    TriplanarMapping, UvCheckerTexture, WorldSpaceMapping,
+};
 use crate::transform::{RotateY, TransformObject, Translate};
 use crate::vec3::{Color3, Direction3, Point3};
 
@@ -478,7 +485,8 @@ impl Scene {
             90.,
             // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
             // Values must be <= 1.0 for energy conservation (no light amplification).
-            DielectricMaterial::tinted(1.5, Color3::new(0.8, 0.8, 1.0)),
+            // DielectricMaterial::tinted(1.5, Color3::new(0.8, 0.8, 1.0)),
+            MetalMaterial::with_ior(Color3::new(0.8, 0.8, 0.9), 0.1, 50.0),
         );
 
         scene.config.samples_per_pixel = 200;
@@ -1125,6 +1133,486 @@ impl Scene {
         scene.config.vup = Direction3::new(0., 1., 0.);
         scene.config.focus_distance = 10.0;
         scene.config.defocus_angle = 0.0;
+        scene.config.background = Color3::new(0.1, 0.1, 0.1);
+
+        scene
+    }
+
+    /// Master stress test: exercises every material, texture, shape, and
+    /// composition feature in the engine.  Each object is labelled in the
+    /// source so you can identify it in the rendered image.
+    ///
+    /// Deterministic — no randomness used anywhere in scene construction.
+    pub fn master_stress_test() -> Self {
+        let scene = Self::new();
+
+        // Environment map — tests env importance sampling + MIS on miss paths.
+        let mut scene = scene.with_env_map(Arc::new(EnvironmentMap::new(
+            image::open("./kiara_1_dawn_4k.hdr")
+                .expect("Failed to load kiara_1_dawn_4k.hdr for master_stress_test")
+                .into(),
+        )));
+
+        // ── Cornell box shell (walls, floor, ceiling light) ───────────
+        let red: Material = LambertianMaterial::new(Color3::new(0.65, 0.05, 0.05)).into();
+        let white: Material = LambertianMaterial::new(Color3::new(0.73, 0.73, 0.73)).into();
+        let green: Material = LambertianMaterial::new(Color3::new(0.12, 0.45, 0.15)).into();
+
+        // Floor
+        scene.add_quad(
+            Point3::new(0., 0., 0.),
+            Vec3::new(555., 0., 0.),
+            Vec3::new(0., 0., 555.),
+            white.clone(),
+        );
+        // Left wall  (red)
+        scene.add_quad(
+            Point3::new(0., 0., 0.),
+            Vec3::new(0., 555., 0.),
+            Vec3::new(0., 0., 555.),
+            red,
+        );
+        // Right wall (green)
+        scene.add_quad(
+            Point3::new(555., 0., 0.),
+            Vec3::new(0., 555., 0.),
+            Vec3::new(0., 0., -555.),
+            green,
+        );
+        // Back wall
+        scene.add_quad(
+            Point3::new(0., 0., 555.),
+            Vec3::new(555., 0., 0.),
+            Vec3::new(0., 555., 0.),
+            white.clone(),
+        );
+        // Ceiling
+        scene.add_quad(
+            Point3::new(0., 555., 0.),
+            Vec3::new(555., 0., 0.),
+            Vec3::new(0., 0., 555.),
+            white.clone(),
+        );
+        // Area light
+        scene.add_quad(
+            Point3::new(213., 554., 227.),
+            Vec3::new(130., 0., 0.),
+            Vec3::new(0., 0., 105.),
+            DiffuseLightMaterial::new(Color3::new(16., 16., 16.)),
+        );
+
+        // ── Vertical grid layout ─────────────────────────────────────
+        //
+        // The Cornell box is 555 units tall (y: 0→555). Objects are
+        // stacked in 5 vertical levels, all centred at z=278 (mid-depth).
+        // Overflow shapes sit on the floor at z=100 (near camera).
+        //
+        //   Level 1 (y=56):   basic materials
+        //   Level 2 (y=160):  emissive + isotropic + coated
+        //   Level 3 (y=260):  textures
+        //   Level 4 (y=360):  composition (Mix, Coated)
+        //   Level 5 (y=460):  exotic shapes
+        //   Overflow (z=100): additional shapes on the floor
+
+        let zf: f32 = 278.; // z: box centre (front-to-back)
+        let zo: f32 = 100.; // z: overflow row (near camera)
+        let y1: f32 = 56.; // level 1 — on floor
+        let y2: f32 = 160.; // level 2
+        let y3: f32 = 260.; // level 3
+        let y4: f32 = 360.; // level 4
+        let y5: f32 = 460.; // level 5 — near ceiling
+        let c1: f32 = 80.;
+        let c2: f32 = 170.;
+        let c3: f32 = 260.;
+        let c4: f32 = 350.;
+        let c5: f32 = 440.;
+        let r: f32 = 28.;
+
+        // ── Level 1 (y=56) — Basic materials ─────────────────────────
+        // C1 — Lambertian (diffuse)
+        scene.add_sphere(
+            Point3::new(c1, y1, zf),
+            r,
+            LambertianMaterial::new(Color3::new(0.8, 0.2, 0.2)),
+        );
+        // C2 — Metal (rough)
+        scene.add_sphere(
+            Point3::new(c2, y1, zf),
+            r,
+            MetalMaterial::new(Color3::new(0.8, 0.6, 0.2), 0.3),
+        );
+        // C3 — Metal (mirror, roughness < 0.01 → delta, explicit IOR)
+        scene.add_sphere(
+            Point3::new(c3, y1, zf),
+            r,
+            MetalMaterial::with_ior(Color3::new(0.9, 0.9, 0.9), 0.0, 2.5),
+        );
+        // C4 — Dielectric (glass)
+        scene.add_sphere(Point3::new(c4, y1, zf), r, DielectricMaterial::new(1.5));
+        // C5 — Glossy (GGX dielectric BRDF)
+        scene.add_sphere(
+            Point3::new(c5, y1, zf),
+            r,
+            GlossyMaterial::new(Color3::new(0.8, 0.2, 0.8), 0.3, 1.5),
+        );
+
+        // ── Level 2 (y=160) — Emissive, isotropic, coated ────────────
+        // C1 — DiffuseLight (area emitter)
+        scene.add_sphere(
+            Point3::new(c1, y2, zf),
+            r,
+            DiffuseLightMaterial::new(Color3::new(4., 4., 4.)),
+        );
+        // C2 — DiffuseLight (textured emitter — Perlin noise)
+        scene.add_sphere(
+            Point3::new(c2, y2, zf),
+            r,
+            DiffuseLightMaterial::textured(NoiseTexture::with_scale(0.5)),
+        );
+        // C3 — Isotropic (volume-scattering material on a surface)
+        scene.add_sphere(
+            Point3::new(c3, y2, zf),
+            r,
+            IsotropicMaterial::new(Color3::new(0.4, 0.6, 0.3)),
+        );
+        // C4 — RoughDielectric (rough glass)
+        scene.add_sphere(
+            Point3::new(c4, y2, zf),
+            r,
+            RoughDielectricMaterial::tinted(1.5, 0.3, Color3::new(0.8, 1.0, 0.8)),
+        );
+        // C5 — Coated: Lambertian substrate + Metal coating (random_world type 5)
+        scene.add_sphere(
+            Point3::new(c5, y2, zf),
+            r,
+            Material::from(LambertianMaterial::new(Color3::new(0.2, 0.7, 0.2)))
+                .coated(MetalMaterial::new(Color3::new(0.8, 0.6, 0.2), 0.1).into()),
+        );
+
+        // ── Level 3 (y=260) — Textures ───────────────────────────────
+        // C1 — Checker texture on Lambertian
+        scene.add_sphere(
+            Point3::new(c1, y3, zf),
+            r,
+            LambertianMaterial::with_texture(
+                Color3::ZERO,
+                CheckerTexture::with_scale(
+                    0.32,
+                    Color3::new(0.2, 0.4, 0.1),
+                    Color3::new(0.9, 0.9, 0.9),
+                ),
+            ),
+        );
+        // C2 — Perlin noise texture on Lambertian
+        scene.add_sphere(
+            Point3::new(c2, y3, zf),
+            r,
+            LambertianMaterial::with_texture(Color3::ZERO, NoiseTexture::with_scale(1. / 4.)),
+        );
+        // C3 — Image texture on Lambertian (earth map)
+        scene.add_sphere(
+            Point3::new(c3, y3, zf),
+            r,
+            LambertianMaterial::with_texture(
+                Color3::ZERO,
+                ImageTexture::load_arc("./earthmap.png")
+                    .expect("Failed to load earthmap.png for master_stress_test"),
+            ),
+        );
+        // C4 — Image texture on Glossy
+        scene.add_sphere(
+            Point3::new(c4, y3, zf),
+            r,
+            GlossyMaterial::textured(
+                ImageTexture::load_arc("./earthmap.png")
+                    .expect("Failed to load earthmap.png for master_stress_test"),
+                0.2,
+                1.5,
+            ),
+        );
+        // C5 — SolidColor on Metal (just albedo, no texture object)
+        scene.add_sphere(
+            Point3::new(c5, y3, zf),
+            r,
+            MetalMaterial::new(Color3::new(0.7, 0.1, 0.1), 0.1),
+        );
+
+        // ── Level 4 (y=360) — Composition (Mix, Coated combos) ───────
+        // C1 — Mix: Lambertian + Metal (50/50)
+        scene.add_sphere(
+            Point3::new(c1, y4, zf),
+            r,
+            Material::from(LambertianMaterial::new(Color3::new(0.8, 0.5, 0.2))).mix(
+                MetalMaterial::new(Color3::new(0.9, 0.7, 0.1), 0.1).into(),
+                0.5,
+            ),
+        );
+        // C2 — Mix: Lambertian + DiffuseLight (emissive blend)
+        scene.add_sphere(
+            Point3::new(c2, y4, zf),
+            r,
+            Material::from(LambertianMaterial::new(Color3::new(0.2, 0.2, 0.8))).mix(
+                DiffuseLightMaterial::new(Color3::new(0.2, 0.4, 0.9)).into(),
+                0.3,
+            ),
+        );
+        // C3 — Mix: Metal + Glossy
+        scene.add_sphere(
+            Point3::new(c3, y4, zf),
+            r,
+            Material::from(MetalMaterial::new(Color3::new(0.8, 0.2, 0.2), 0.2)).mix(
+                GlossyMaterial::new(Color3::new(0.2, 0.8, 0.8), 0.3, 1.5).into(),
+                0.5,
+            ),
+        );
+        // C4 — Coated: Metal substrate + Dielectric coating (tinted)
+        scene.add_sphere(
+            Point3::new(c4, y4, zf),
+            r,
+            Material::from(MetalMaterial::new(Color3::new(0.9, 0.7, 0.1), 0.1))
+                .coated(DielectricMaterial::tinted(1.5, Color3::new(0.9, 0.3, 0.1)).into()),
+        );
+        // C5 — Coated: Glossy substrate + Dielectric coating
+        scene.add_sphere(
+            Point3::new(c5, y4, zf),
+            r,
+            Material::from(GlossyMaterial::new(Color3::new(0.8, 0.2, 0.2), 0.3, 1.5))
+                .coated(DielectricMaterial::new(1.5).into()),
+        );
+
+        // ── Level 5 (y=460) — Exotic shapes ──────────────────────────
+        // C1 — Box (shape_box3d, single material)
+        scene.add_box(
+            Point3::new(c1 - r, y5 - r * 2., zf - r),
+            Point3::new(c1 + r, y5, zf + r),
+            LambertianMaterial::new(Color3::new(0.6, 0.6, 0.1)),
+        );
+        // C2 — Moving Lambertian sphere (motion blur, random_world type 0 moving)
+        scene.add_sphere_moving(
+            Point3::new(c2, y5, zf),
+            Point3::new(c2 + 40., y5, zf),
+            r,
+            LambertianMaterial::new(Color3::new(0.8, 0.3, 0.1)),
+        );
+        // C3 — ConstantMedium (volume inside a dielectric sphere)
+        scene.add_sphere(
+            Point3::new(c3, y5, zf),
+            r,
+            DielectricMaterial::new(1.0), // invisible boundary
+        );
+        scene.objects.push(Arc::new(ConstantMedium::new_albedo(
+            sphere(Point3::new(c3, y5, zf), r, Material::Void),
+            0.5,
+            Color3::new(0.8, 0.2, 0.1).into_inner(),
+        )));
+        // C4 — Triangle (tri constructor)
+        let tri_mat: Material = LambertianMaterial::new(Color3::new(0.3, 0.3, 0.9)).into();
+        scene.add_object(Arc::new(tri(
+            Point3::new(c4 - r, y5, zf - r),
+            Vec3::new(r * 2., 0., 0.),
+            Vec3::new(0., 0., r * 2.),
+            tri_mat,
+        )));
+        // C5 — Annulus (ring shape)
+        let ann_mat: Material = GlossyMaterial::new(Color3::new(0.6, 0.1, 0.6), 0.15, 1.5).into();
+        scene.add_object(Arc::new(annulus(
+            Point3::new(c5, y5, zf),
+            Vec3::new(r, 0., 0.),
+            Vec3::new(0., 0., r),
+            0.4, // inner radius ratio
+            ann_mat,
+        )));
+
+        // ── Overflow (floor, z=100) — additional shapes ──────────────
+        // Rounded rectangle
+        let rr_mat: Material = LambertianMaterial::new(Color3::new(0.1, 0.8, 0.6)).into();
+        scene.add_object(Arc::new(rounded_rect(
+            Point3::new(c1, 0.1, zo),
+            Vec3::new(r, 0., 0.),
+            Vec3::new(0., 0., r),
+            0.3,
+            rr_mat,
+        )));
+        // Superellipse (n > 2 = squircle, n < 2 = diamond-like)
+        let se_mat: Material = GlossyMaterial::new(Color3::new(0.9, 0.5, 0.1), 0.2, 1.5).into();
+        scene.add_object(Arc::new(superellipse(
+            Point3::new(c2, 0.1, zo),
+            Vec3::new(r, 0., 0.),
+            Vec3::new(0., 0., r),
+            4.0, // squircle exponent
+            se_mat,
+        )));
+        // Polygon (pentagon)
+        let pentagon_verts: Vec<(f32, f32)> = (0..5)
+            .map(|i| {
+                let angle =
+                    std::f32::consts::FRAC_PI_2 + i as f32 * 2.0 * std::f32::consts::PI / 5.0;
+                (0.5 * angle.cos(), 0.5 * angle.sin())
+            })
+            .collect();
+        let poly_mat: Material = LambertianMaterial::new(Color3::new(0.9, 0.9, 0.2)).into();
+        scene.add_object(Arc::new(polygon(
+            Point3::new(c3, 0.1, zo),
+            Vec3::new(r, 0., 0.),
+            Vec3::new(0., 0., r),
+            pentagon_verts,
+            poly_mat,
+        )));
+        // Cross-shaped FunctionRegion patch
+        let cross_fn = FunctionRegion::new(
+            Arc::new(|a: f32, b: f32| {
+                (a.abs() < 0.2 && b.abs() < 0.5) || (a.abs() < 0.5 && b.abs() < 0.2)
+            }),
+            0.4 * 0.5 * 2.0 - 0.4 * 0.4, // two bars minus overlap
+            (-0.5, -0.5, 0.5, 0.5),
+        );
+        let fn_mat: Material = MetalMaterial::new(Color3::new(0.7, 0.7, 0.9), 0.0).into();
+        scene.add_object(Arc::new(function_patch(
+            Point3::new(c4, 0.1, zo),
+            Vec3::new(r, 0., 0.),
+            Vec3::new(0., 0., r),
+            cross_fn,
+            fn_mat,
+        )));
+        // Glass box (shape_box3d with dielectric)
+        let glass_box = shape_box3d(
+            Point3::new(c5 - r * 0.7, 0.1, zo - r * 0.7),
+            Point3::new(c5 + r * 0.7, r * 1.4, zo + r * 0.7),
+            Material::from(DielectricMaterial::new(1.5)),
+        );
+        scene.add_object(Arc::new(glass_box));
+        // DiffuseLight textured with image (random_world featured)
+        scene.add_sphere(
+            Point3::new(c1, r, zo + 70.),
+            r,
+            DiffuseLightMaterial::textured(
+                ImageTexture::load_arc("./earthmap.png")
+                    .expect("Failed to load earthmap.png for master_stress_test"),
+            ),
+        );
+        // Moving metal sphere (motion blur + Metal::with_ior, random_world type 1 moving)
+        scene.add_sphere_moving(
+            Point3::new(c2, r, zo + 70.),
+            Point3::new(c2 + 30., r, zo + 70.),
+            r,
+            MetalMaterial::with_ior(Color3::new(0.8, 0.6, 0.5), 0.2, 2.5),
+        );
+
+        // ── Camera ───────────────────────────────────────────────────
+        // Camera centred vertically to frame all 5 levels (y: 56→460).
+        scene.config.aspect_ratio = 16. / 9.;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 200;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 40.0;
+        scene.config.look_from = Point3::new(278., 278., -600.);
+        scene.config.look_at = Point3::new(278., 278., 278.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.defocus_angle = 0.0;
+        scene.config.focus_distance = 800.0;
+        scene.config.background = Color3::new(0., 0., 0.);
+
+        scene
+    }
+    /// Diagnostic scene for coated dielectric over textured Lambertian.
+    ///
+    /// Three spheres side-by-side so you can compare:
+    ///
+    ///   Left   — bare checker Lambertian (reference: texture always visible)
+    ///   Centre — coated checker (tinted dielectric over checker)
+    ///            - lit face: Fresnel reflection/refraction at coating
+    ///            - grazing rim: mirror-like reflection, checker obscured
+    ///            - shadow side: checker visible through transparent coating
+    ///   Right  — bare dielectric (reference: glass with no substrate)
+    ///
+    /// A strong area light from the upper-right creates a clear lit face
+    /// and a shadow side on each sphere, making it easy to judge whether
+    /// the substrate texture shows through the coating in each region.
+    pub fn coated_dielectric_test() -> Self {
+        let mut scene = Self::new().with_env_map(Arc::new(EnvironmentMap::new(
+            image::open("./kiara_1_dawn_4k.hdr")
+                .expect("Failed to load kiara_1_dawn_4k.hdr for coated_dielectric_test")
+                .into(),
+        )));
+
+        // Ground — plain grey Lambertian so it doesn't compete for attention.
+        let ground: Material = LambertianMaterial::new(Color3::new(0.5, 0.5, 0.5)).into();
+        scene.add_quad(
+            Point3::new(-5., 0., 0.),
+            Vec3::new(10., 0., 0.),
+            Vec3::new(0., 0., 12.),
+            ground,
+        );
+
+        // --- 3D world-space checker (reference — current default) ---
+
+        // Left — bare checker Lambertian (3D world-space mapping).
+        let ws_checker: Arc<dyn Texture> = Arc::new(WorldSpaceMapping::new(
+            CheckerTexture::from_color(Color3::new(0.2, 0.4, 0.1), Color3::new(0.9, 0.9, 0.9)),
+            0.32,
+        ));
+        scene.add_sphere(
+            Point3::new(-2.5, 1., 5.),
+            1.,
+            LambertianMaterial::with_texture(Color3::ZERO, ws_checker.clone()),
+        );
+
+        // Centre — coated checker (tinted dielectric over checker Lambertian).
+        scene.add_sphere(
+            Point3::new(0., 1., 5.),
+            1.,
+            Material::from(LambertianMaterial::with_texture(Color3::ZERO, ws_checker))
+                .coated(DielectricMaterial::tinted(1.5, Color3::new(0.8, 0.8, 1.0)).into()),
+        );
+
+        // Right — bare dielectric (reference: glass with no substrate).
+        scene.add_sphere(Point3::new(2.5, 1., 5.), 1., DielectricMaterial::new(1.5));
+
+        // --- Spherical UV-mapped checker (uses latitude/longitude from geometry) ---
+
+        // Far-left — bare UV checker Lambertian.
+        let uv_checker: Arc<dyn Texture> = Arc::new(SphericalUvMapping::new(
+            UvCheckerTexture::new(8.0, Color3::new(0.2, 0.4, 0.1), Color3::new(0.9, 0.9, 0.9)),
+        ));
+        scene.add_sphere(
+            Point3::new(-5., 1., 5.),
+            1.,
+            LambertianMaterial::with_texture(Color3::ZERO, uv_checker),
+        );
+
+        // --- Triplanar-mapped checker (projects checker from 3 axes, blends by normal) ---
+
+        // Far-right — bare triplanar checker Lambertian.
+        let tri_checker: Arc<dyn Texture> = Arc::new(TriplanarMapping::new(
+            CheckerTexture::from_color(Color3::new(0.2, 0.4, 0.1), Color3::new(0.9, 0.9, 0.9)),
+            4.0,
+            0.32,
+        ));
+        scene.add_sphere(
+            Point3::new(5., 1., 5.),
+            1.,
+            LambertianMaterial::with_texture(Color3::ZERO, tri_checker),
+        );
+
+        // Strong area light from upper-right to create a clear lit face
+        // and a shadow side on each sphere.
+        scene.add_quad(
+            Point3::new(0., 5., 3.),
+            Vec3::new(4., 0., 0.),
+            Vec3::new(0., 0., 4.),
+            DiffuseLightMaterial::new(Color3::new(12., 12., 12.)),
+        );
+
+        scene.config.aspect_ratio = 16. / 9.;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 200;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 30.0;
+        scene.config.look_from = Point3::new(0., 2., 20.);
+        scene.config.look_at = Point3::new(0., 1., 5.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.defocus_angle = 0.0;
+        scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.1, 0.1, 0.1);
 
         scene

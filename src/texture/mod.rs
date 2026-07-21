@@ -16,8 +16,11 @@ mod gpu;
 mod impls;
 pub mod mapping;
 
-pub use gpu::{GPU_TEX_NONE, GpuTextureBuffer, GpuTextureNode, GpuTextureType};
-pub use impls::{CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor};
+pub use gpu::{GpuTextureBuffer, GpuTextureNode, GpuTextureType, GPU_TEX_NONE};
+pub use impls::{
+    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, SphericalUvMapping,
+    TriplanarMapping, UvCheckerTexture, WorldSpaceMapping,
+};
 
 use crate::vec3::{Color3, Direction3, Point3};
 

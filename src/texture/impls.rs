@@ -11,8 +11,8 @@ use image::Rgba32FImage;
 
 use crate::interval::Interval;
 use crate::perlin::Perlin;
-use crate::texture::TextureDerivatives;
 use crate::texture::mapping::{TextureMapping2D, TextureMapping3D, UvGen};
+use crate::texture::TextureDerivatives;
 use crate::texture::{Texture, TextureCoords};
 use crate::vec3::Color3;
 
@@ -391,5 +391,179 @@ impl Texture for NoiseTexture {
         let point = coords.tex_points.texture;
         Color3::new(0.5, 0.5, 0.5)
             * (1.0 + (point.z() + (10.0 * self.noise.turbulence(point, 7))).sin())
+    }
+}
+
+// ─── Mapping-comparison textures ───────────────────────────────────────────
+
+/// 2D checkerboard driven by UV coordinates.
+///
+/// Unlike [`CheckerTexture`] (which uses the 3D texture-space point), this
+/// evaluates a standard latitude/longitude checker from the `(u, v)` in
+/// [`TextureCoords`].  Useful for comparing UV-mapped vs 3D-mapped procedural
+/// patterns on curved surfaces like spheres.
+pub struct UvCheckerTexture {
+    scale: f32,
+    even: Color3,
+    odd: Color3,
+}
+
+impl UvCheckerTexture {
+    pub fn new(scale: f32, even: Color3, odd: Color3) -> Self {
+        Self { scale, even, odd }
+    }
+}
+
+impl Texture for UvCheckerTexture {
+    fn value(&self, coords: &TextureCoords) -> Color3 {
+        let u_cell = (coords.u * self.scale).floor() as i32;
+        let v_cell = (coords.v * self.scale).floor() as i32;
+        if (u_cell + v_cell) % 2 == 0 {
+            self.even
+        } else {
+            self.odd
+        }
+    }
+}
+
+/// Triplanar projection wrapper.
+///
+/// Projects the inner texture from three orthogonal planes (XY, XZ, YZ)
+/// and blends the results using the surface normal as weights.  This
+/// eliminates pole/distortion artifacts from UV-based mappings on spheres
+/// and other curved geometry.
+///
+/// Part of the three generic mapping wrappers alongside
+/// [`WorldSpaceMapping`] and [`SphericalUvMapping`].
+///
+/// `sharpness` controls the blend transition: higher values produce sharper
+/// boundaries between projections (typical: 4.0–8.0).
+pub struct TriplanarMapping<T: Texture> {
+    inner: T,
+    sharpness: f32,
+    scale: f32,
+}
+
+impl<T: Texture> TriplanarMapping<T> {
+    pub fn new(inner: T, sharpness: f32, scale: f32) -> Self {
+        Self {
+            inner,
+            sharpness,
+            scale,
+        }
+    }
+}
+
+impl<T: Texture> Texture for TriplanarMapping<T> {
+    fn value(&self, coords: &TextureCoords) -> Color3 {
+        use crate::texture::TextureCoords;
+        use crate::vec3::Point3;
+
+        let inv_scale = 1.0 / self.scale;
+        let point = coords.tex_points.texture * inv_scale;
+        let n = coords.geometry_normal.into_inner();
+
+        // Blend weights from the absolute normal components, raised to sharpness.
+        let nx = n.x.abs().powf(self.sharpness);
+        let ny = n.y.abs().powf(self.sharpness);
+        let nz = n.z.abs().powf(self.sharpness);
+        let total = nx + ny + nz;
+        let inv_total = if total > 1e-10 {
+            1.0 / total
+        } else {
+            1.0 / 3.0
+        };
+
+        // Sample the inner texture projected onto each of the three axis-aligned planes.
+        // zero_axis: 0 = zero X (YZ plane), 1 = zero Y (XZ plane), 2 = zero Z (XY plane).
+        let sample_plane = |zero_axis: usize| -> Color3 {
+            let pp = match zero_axis {
+                0 => Point3::new(0.0, point.y(), point.z()),
+                1 => Point3::new(point.x(), 0.0, point.z()),
+                _ => Point3::new(point.x(), point.y(), 0.0),
+            };
+            let mapped = TextureCoords::new(
+                coords.u,
+                coords.v,
+                coords.tex_points.world,
+                coords.tex_points.mapping,
+                coords.geometry_normal,
+                Some(coords.derivatives),
+            )
+            .with_texture_point(pp);
+            self.inner.value(&mapped)
+        };
+
+        let c_xy = sample_plane(2); // XY plane — zero Z
+        let c_xz = sample_plane(1); // XZ plane — zero Y
+        let c_yz = sample_plane(0); // YZ plane — zero X
+
+        c_xy * (nx * inv_total) + c_xz * (ny * inv_total) + c_yz * (nz * inv_total)
+    }
+}
+
+/// 3D world-space projection wrapper.
+///
+/// Scales the3D texture-space point by `1/scale` before passing it to the
+/// inner texture.  This is the standard "cell size" convention: smaller
+/// `scale` values produce higher-frequency patterns.
+///
+/// Use this for procedural textures that evaluate at a 3D point (checker,
+/// noise, marble, etc.) when you want world-space-aligned patterns.
+pub struct WorldSpaceMapping<T: Texture> {
+    inner: T,
+    inv_scale: f32,
+}
+
+impl<T: Texture> WorldSpaceMapping<T> {
+    /// `scale` is the desired cell/feature size in world units.
+    pub fn new(inner: T, scale: f32) -> Self {
+        assert!(scale > 0.0, "scale must be positive");
+        Self {
+            inner,
+            inv_scale: 1.0 / scale,
+        }
+    }
+}
+
+impl<T: Texture> Texture for WorldSpaceMapping<T> {
+    fn value(&self, coords: &TextureCoords) -> Color3 {
+        let mapped = coords.with_texture_point(coords.tex_points.texture * self.inv_scale);
+        self.inner.value(&mapped)
+    }
+}
+
+/// Spherical UV projection wrapper.
+///
+/// Converts the 3D mapping-space point (unit-sphere direction for spheres)
+/// into latitude/longitude `(u, v)` coordinates and passes them to the
+/// inner texture.  Works with any texture that reads from UV coordinates
+/// (image textures, [`UvCheckerTexture`], etc.).
+///
+/// For 3D procedural textures (checker, noise) that read from
+/// `tex_points.texture`, use [`WorldSpaceMapping`] instead — passing them
+/// through this wrapper would ignore the generated UVs.
+pub struct SphericalUvMapping<T: Texture> {
+    inner: T,
+}
+
+impl<T: Texture> SphericalUvMapping<T> {
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+impl<T: Texture> Texture for SphericalUvMapping<T> {
+    fn value(&self, coords: &TextureCoords) -> Color3 {
+        use std::f32::consts::PI;
+
+        let p = coords.tex_points.mapping.normalize();
+        let theta = (-p.y()).acos();
+        let phi = (-p.z()).atan2(p.x()) + PI;
+        let u = phi / (2.0 * PI);
+        let v = theta / PI;
+
+        let mapped = coords.with_uv(u, v);
+        self.inner.value(&mapped)
     }
 }
