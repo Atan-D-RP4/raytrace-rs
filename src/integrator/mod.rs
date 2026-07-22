@@ -79,7 +79,7 @@ mod tests {
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![light, floor];
-        let world = Bvh::<2>::from(TreeBuilder::new(&mut objects));
+        let world = Bvh::<8>::from(TreeBuilder::new(&mut objects));
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::ZERO, None);
@@ -144,7 +144,7 @@ mod tests {
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![floor, light_quad];
-        let world = Bvh::<2>::from(TreeBuilder::new(&mut objects));
+        let world = Bvh::<8>::from(TreeBuilder::new(&mut objects));
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::ZERO, None);

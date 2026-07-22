@@ -539,7 +539,7 @@ fn headless_render(scene: Scene, scene_name: &str) {
 
     // Build a binary BVH then widen to W=4 for wide traversal.
     let binary_bvh = Bvh::<2>::from(world_bvh);
-    let world = binary_bvh.widen::<4>();
+    let world = binary_bvh.widen::<8>();
 
     info!(
         threads = rayon::current_num_threads(),

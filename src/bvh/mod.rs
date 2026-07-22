@@ -33,6 +33,9 @@ pub mod aabb;
 pub mod builder;
 #[cfg(test)]
 mod tests;
+use std::simd::num::SimdFloat;
+use std::simd::prelude::*;
+use std::simd::{Mask, Simd};
 use std::sync::Arc;
 
 use tracing::info;
@@ -544,21 +547,16 @@ impl Bvh<2> {
                 offsets[slot] = child_wide_idx;
                 leaf_counts[slot] = 0; // interior child
 
-                // Compute this subtree's full AABB from the freshly emitted wide node.
-                // Layout is SoA: bbox.min[axis][child].
-                let cwn = &wide_nodes[child_wide_idx as usize];
-                let mut cmn = [f32::INFINITY; 3];
-                let mut cmx = [f32::NEG_INFINITY; 3];
-                for j in 0..cwn.child_count as usize {
-                    cmn[0] = cmn[0].min(cwn.bbox.min[0][j]);
-                    cmn[1] = cmn[1].min(cwn.bbox.min[1][j]);
-                    cmn[2] = cmn[2].min(cwn.bbox.min[2][j]);
-                    cmx[0] = cmx[0].max(cwn.bbox.max[0][j]);
-                    cmx[1] = cmx[1].max(cwn.bbox.max[1][j]);
-                    cmx[2] = cmx[2].max(cwn.bbox.max[2][j]);
+                // Use the binary node's own child AABBs, which already encode
+                // the full subtree bounds (including any deeper wide nodes).
+                // The wide node's bbox only covers its direct children, so it
+                // underestimates when those children are interior.
+                let (min0, max0) = node.bbox.child_aabb(0);
+                let (min1, max1) = node.bbox.child_aabb(1);
+                for a in 0..3 {
+                    mins[slot][a] = min0[a].min(min1[a]);
+                    maxs[slot][a] = max0[a].max(max1[a]);
                 }
-                mins[slot] = cmn;
-                maxs[slot] = cmx;
             }
 
             *count += 1;
@@ -598,7 +596,11 @@ impl Bvh<2> {
     }
 }
 
-impl<const W: usize> Intersectable for Bvh<W> {
+impl<const W: usize> Intersectable for Bvh<W>
+where
+    Simd<f32, W>: SimdPartialOrd + SimdFloat,
+    <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
+{
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         if self.nodes.is_empty() {
             return None;
@@ -645,18 +647,21 @@ impl<const W: usize> Intersectable for Bvh<W> {
                 continue;
             }
 
-            // --- Wide path (W ≥ 4): per-child scalar loop ---
-            // TODO: SIMD acceleration — test all W children's AABBs in parallel with
-            // SSE/AVX packed loads, then push only the children that passed.
-            // Reference: Embree BVH4Node / tinybvh BVH4_CPU.
+            // --- Wide path (W ≥ 4): branchless per-child test ---
             if W >= 4 {
-                let mut any_hit = false;
+                let mut hits = node.bbox.hit_mask(ray, tmin, best_t);
+                // Mask unused slots — empty sentinel AABBs always report a
+                // hit, which defeats the early-exit check.
+                let valid = ((1u32 << node.child_count) - 1) as u16;
+                hits &= valid;
+                if hits == 0 {
+                    continue;
+                }
+
                 for i in 0..node.child_count as usize {
-                    let (child_min, child_max) = node.bbox.child_aabb(i);
-                    if !slab_aabb_test(child_min, child_max, ray, tmin, best_t) {
+                    if (hits & (1 << i)) == 0 {
                         continue;
                     }
-                    any_hit = true;
 
                     if node.is_child_leaf(i) {
                         // Inline leaf test — primitives for this child are pinned
@@ -681,19 +686,13 @@ impl<const W: usize> Intersectable for Bvh<W> {
                         sp += 1;
                     }
                 }
-                if !any_hit {
-                    continue;
-                }
                 continue;
             }
 
             // --- Binary interior (W = 2, !is_leaf): direction-sign ordering ---
-            // Per-child slab test, then near-first push.
-            let (child_min0, child_max0) = node.bbox.child_aabb(0);
-            let (child_min1, child_max1) = node.bbox.child_aabb(1);
-            let hit0 = slab_aabb_test(child_min0, child_max0, ray, tmin, best_t);
-            let hit1 = slab_aabb_test(child_min1, child_max1, ray, tmin, best_t);
-
+            let hits = node.bbox.hit_mask(ray, tmin, best_t);
+            let hit0 = (hits & 1) != 0;
+            let hit1 = (hits & 2) != 0;
             if !hit0 && !hit1 {
                 continue;
             }
@@ -735,11 +734,11 @@ impl<const W: usize> Intersectable for Bvh<W> {
         stack[sp] = 0;
         sp += 1;
 
+        let tmin = ray_t.min;
+        let tmax = ray_t.max;
         let dx = ray.direction.x();
         let dy = ray.direction.y();
         let dz = ray.direction.z();
-        let tmin = ray_t.min;
-        let tmax = ray_t.max;
 
         while sp > 0 {
             sp -= 1;
@@ -763,12 +762,19 @@ impl<const W: usize> Intersectable for Bvh<W> {
                 continue;
             }
 
-            // --- Wide path (W ≥ 4): per-child scalar loop ---
-            // TODO: SIMD acceleration.
+            // --- Wide path (W ≥ 4): branchless per-child test ---
             if W >= 4 {
+                let mut hits = node.bbox.hit_mask(ray, tmin, tmax);
+                // Mask unused slots — empty sentinel AABBs always report a
+                // hit, which defeats the early-exit check.
+                let valid = ((1u32 << node.child_count) - 1) as u16;
+                hits &= valid;
+                if hits == 0 {
+                    continue;
+                }
+
                 for i in 0..node.child_count as usize {
-                    let (child_min, child_max) = node.bbox.child_aabb(i);
-                    if !slab_aabb_test(child_min, child_max, ray, tmin, tmax) {
+                    if (hits & (1 << i)) == 0 {
                         continue;
                     }
 
@@ -794,10 +800,9 @@ impl<const W: usize> Intersectable for Bvh<W> {
             }
 
             // --- Binary interior (W = 2): direction-sign ordering ---
-            let (child_min0, child_max0) = node.bbox.child_aabb(0);
-            let (child_min1, child_max1) = node.bbox.child_aabb(1);
-            let hit0 = slab_aabb_test(child_min0, child_max0, ray, tmin, tmax);
-            let hit1 = slab_aabb_test(child_min1, child_max1, ray, tmin, tmax);
+            let hits = node.bbox.hit_mask(ray, tmin, tmax);
+            let hit0 = (hits & 1) != 0;
+            let hit1 = (hits & 2) != 0;
 
             if !hit0 && !hit1 {
                 continue;

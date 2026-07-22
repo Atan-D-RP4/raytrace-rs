@@ -1,3 +1,7 @@
+use std::simd::num::SimdFloat;
+use std::simd::prelude::*;
+use std::simd::{Mask, Simd};
+
 use glam::Vec3;
 
 use crate::interval::Interval;
@@ -206,51 +210,51 @@ impl<const W: usize> AabbPacked<W> {
     /// Branchless slab test against all W children for a single ray.
     ///
     /// Returns `[bool; W]` where `mask[i]` is true if the ray segment
-    /// `[tmin, tmax]` intersects child i's AABB. No early-exit branches —
-    /// the compiler can auto-vectorize the inner loops with `-C target-cpu=native`.
+    /// `[tmin, tmax]` intersects child i's AABB. Uses explicit `std::simd`
+    /// for guaranteed packed AABB testing.
     #[inline]
-    pub fn hit_mask(
-        &self,
-        ox: f32,
-        oy: f32,
-        oz: f32,
-        idx: f32,
-        idy: f32,
-        idz: f32,
-        tmin: f32,
-        tmax: f32,
-    ) -> [bool; W] {
-        let mut lo = [tmin; W];
-        let mut hi = [tmax; W];
+    pub fn hit_mask(&self, ray: &Ray, tmin: f32, tmax: f32) -> u16
+    where
+        Simd<f32, W>: SimdPartialOrd + SimdFloat,
+        <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
+    {
+        let ox = Simd::<f32, W>::splat(ray.origin.x());
+        let oy = Simd::<f32, W>::splat(ray.origin.y());
+        let oz = Simd::<f32, W>::splat(ray.origin.z());
+        let idx = Simd::<f32, W>::splat(ray.inverse_direction.x());
+        let idy = Simd::<f32, W>::splat(ray.inverse_direction.y());
+        let idz = Simd::<f32, W>::splat(ray.inverse_direction.z());
 
-        // X axis — no early branch, just chain.
-        let (min_x, max_x) = self.axis(0);
-        for i in 0..W {
-            let t0 = (min_x[i] - ox) * idx;
-            let t1 = (max_x[i] - ox) * idx;
-            lo[i] = lo[i].max(t0.min(t1));
-            hi[i] = hi[i].min(t0.max(t1));
-        }
+        let mut lo = Simd::<f32, W>::splat(tmin);
+        let mut hi = Simd::<f32, W>::splat(tmax);
+
+        // X axis
+        let min_x = Simd::from_array(self.min[0]);
+        let max_x = Simd::from_array(self.max[0]);
+        let t0 = (min_x - ox) * idx;
+        let t1 = (max_x - ox) * idx;
+        lo = lo.simd_max(t0.simd_min(t1));
+        hi = hi.simd_min(t0.simd_max(t1));
 
         // Y axis
-        let (min_y, max_y) = self.axis(1);
-        for i in 0..W {
-            let t0 = (min_y[i] - oy) * idy;
-            let t1 = (max_y[i] - oy) * idy;
-            lo[i] = lo[i].max(t0.min(t1));
-            hi[i] = hi[i].min(t0.max(t1));
-        }
+        let min_y = Simd::from_array(self.min[1]);
+        let max_y = Simd::from_array(self.max[1]);
+        let t0 = (min_y - oy) * idy;
+        let t1 = (max_y - oy) * idy;
+        lo = lo.simd_max(t0.simd_min(t1));
+        hi = hi.simd_min(t0.simd_max(t1));
 
         // Z axis
-        let (min_z, max_z) = self.axis(2);
-        for i in 0..W {
-            let t0 = (min_z[i] - oz) * idz;
-            let t1 = (max_z[i] - oz) * idz;
-            lo[i] = lo[i].max(t0.min(t1));
-            hi[i] = hi[i].min(t0.max(t1));
-        }
+        let min_z = Simd::from_array(self.min[2]);
+        let max_z = Simd::from_array(self.max[2]);
+        let t0 = (min_z - oz) * idz;
+        let t1 = (max_z - oz) * idz;
+        lo = lo.simd_max(t0.simd_min(t1));
+        hi = hi.simd_min(t0.simd_max(t1));
 
-        core::array::from_fn(|i| hi[i] > lo[i])
+        // Compare and extract bitmask.
+        let mask: Mask<i32, W> = hi.simd_gt(lo).into();
+        mask.to_bitmask() as u16
     }
 }
 

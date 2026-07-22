@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 pub mod bvh;
 pub mod camera;
 pub mod const_medium;
