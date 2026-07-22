@@ -21,21 +21,39 @@ impl Interval {
         max: f32::INFINITY,
     };
 
-    pub fn new() -> Self {
+    #[inline]
+    pub const fn new() -> Self {
         Self::EMPTY
     }
 
-    pub fn from_intervals(a: &Interval, b: &Interval) -> Self {
+    #[inline]
+    pub const fn min(&self, other: &Interval) -> Self {
+        let min = self.min.min(other.min);
+        let max = self.max.min(other.max);
+        Self { min, max }
+    }
+
+    #[inline]
+    pub const fn max(&self, other: &Interval) -> Self {
+        let min = self.min.max(other.min);
+        let max = self.max.max(other.max);
+        Self { min, max }
+    }
+
+    #[inline]
+    pub const fn from_intervals(a: &Interval, b: &Interval) -> Self {
         let min = a.min.min(b.min);
         let max = a.max.max(b.max);
         Self { min, max }
     }
 
+    #[inline]
     pub const fn from(min: f32, max: f32) -> Self {
         Self { min, max }
     }
 
-    pub fn size(&self) -> f32 {
+    #[inline]
+    pub const fn size(&self) -> f32 {
         if self.max > self.min {
             self.max - self.min
         } else {
@@ -43,15 +61,18 @@ impl Interval {
         }
     }
 
-    pub fn contains(&self, value: f32) -> bool {
+    #[inline]
+    pub const fn contains(&self, value: f32) -> bool {
         self.min <= value && value <= self.max
     }
 
-    pub fn surrounds(&self, value: f32) -> bool {
+    #[inline]
+    pub const fn surrounds(&self, value: f32) -> bool {
         self.min < value && value < self.max
     }
 
-    pub fn clamp(&self, value: f32) -> f32 {
+    #[inline]
+    pub const fn clamp(&self, value: f32) -> f32 {
         if value < self.min {
             self.min
         } else if value > self.max {
@@ -61,7 +82,8 @@ impl Interval {
         }
     }
 
-    pub fn expand(&mut self, delta: f32) {
+    #[inline]
+    pub const fn expand(&mut self, delta: f32) {
         let padding = delta / 2.0;
         self.min -= padding;
         self.max += padding;
