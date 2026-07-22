@@ -11,8 +11,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{Theme, Window, WindowId};
 
-use raytrace_rs::bvh::BvhNode;
-use raytrace_rs::bvh::flat_bvh::FlatBvh;
+use raytrace_rs::bvh::Bvh;
+use raytrace_rs::bvh::builder::TreeBuilder;
 use raytrace_rs::camera::Camera;
 use raytrace_rs::camera::PerspectiveCamera;
 use raytrace_rs::film::RgbFilm;
@@ -476,8 +476,8 @@ fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, 
             "building world BVH"
         );
         profiling::scope!("root_bvh_build");
-        let world_bvh = BvhNode::new(&mut objects);
-        let world = FlatBvh::from(world_bvh);
+        let world_bvh = TreeBuilder::new(&mut objects);
+        let world = Bvh::<2>::from(world_bvh);
 
         // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
         // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
@@ -535,8 +535,11 @@ fn headless_render(scene: Scene, scene_name: &str) {
     );
     // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
     profiling::scope!("root_bvh_build");
-    let world_bvh = BvhNode::new(&mut objects);
-    let world = FlatBvh::from(world_bvh);
+    let world_bvh = TreeBuilder::new(&mut objects);
+
+    // Build a binary BVH then widen to W=4 for wide traversal.
+    let binary_bvh = Bvh::<2>::from(world_bvh);
+    let world = binary_bvh.widen::<4>();
 
     info!(
         threads = rayon::current_num_threads(),

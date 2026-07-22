@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use glam::Vec3;
 
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit};
 use crate::interval::Interval;
 use crate::material::{IsotropicMaterial, Material};

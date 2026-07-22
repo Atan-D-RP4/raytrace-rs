@@ -1,6 +1,6 @@
 use glam::Vec3;
 
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::hittable::{Bounded, Hit, Intersectable, LightSample, MaterialHit, Sampleable};
 use crate::interval::Interval;
 use crate::ray::Ray;
@@ -220,9 +220,9 @@ impl Transform for RotateY {
                 let j = j as f32;
                 let k = k as f32;
 
-                let x = i * bbox.x.max + (1. - i) * bbox.x.min;
-                let y = j * bbox.y.max + (1. - j) * bbox.y.min;
-                let z = k * bbox.z.max + (1. - k) * bbox.z.min;
+                let x = i * bbox.max[0][0] + (1. - i) * bbox.min[0][0];
+                let y = j * bbox.max[1][0] + (1. - j) * bbox.min[1][0];
+                let z = k * bbox.max[2][0] + (1. - k) * bbox.min[2][0];
 
                 let newx = self.cos_theta * x + self.sin_theta * z;
                 let newz = -self.sin_theta * x + self.cos_theta * z;
@@ -233,7 +233,7 @@ impl Transform for RotateY {
                     max[c] = max[c].max(tester[c]);
                 });
             });
-        Aabb::from_points(&min, &max)
+        Aabb::from_corners(min, max)
     }
 
     fn object_to_world_direction(&self, dir: Direction3) -> Direction3 {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use image::Rgba32FImage;
 
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::distributions::Dist2D;
 use crate::film::rgb::LUMINANCE;
 use crate::hittable::{Bounded, Intersectable, LightSample, MaterialHit, Sampleable};
@@ -140,7 +140,7 @@ impl EnvironmentLight {
 impl Bounded for EnvironmentLight {
     fn bounding_box(&self) -> Aabb {
         // Environment light is at infinity, so it doesn't have a finite bounding box.
-        Aabb::new()
+        Aabb::empty()
     }
 }
 

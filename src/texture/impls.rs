@@ -11,8 +11,8 @@ use image::Rgba32FImage;
 
 use crate::interval::Interval;
 use crate::perlin::Perlin;
-use crate::texture::mapping::{TextureMapping2D, TextureMapping3D, UvGen};
 use crate::texture::TextureDerivatives;
+use crate::texture::mapping::{TextureMapping2D, TextureMapping3D, UvGen};
 use crate::texture::{Texture, TextureCoords};
 use crate::vec3::Color3;
 

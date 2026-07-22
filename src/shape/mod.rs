@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::hittable::{
     Bounded, Hit, Intersectable, LightSample, MaterialHit, Sampleable, SurfaceInteraction,
 };

@@ -41,8 +41,8 @@ pub trait Integrator: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bvh::BvhNode;
-    use crate::bvh::flat_bvh::FlatBvh;
+    use crate::bvh::Bvh;
+    use crate::bvh::builder::TreeBuilder;
     use crate::film::{Film, RgbFilm};
     use crate::material::{DiffuseLightMaterial, LambertianMaterial, Material};
     use crate::sampler::NaiveRandomSampler;
@@ -79,7 +79,7 @@ mod tests {
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![light, floor];
-        let world = FlatBvh::from(BvhNode::new(&mut objects));
+        let world = Bvh::<2>::from(TreeBuilder::new(&mut objects));
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::ZERO, None);
@@ -144,7 +144,7 @@ mod tests {
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![floor, light_quad];
-        let world = FlatBvh::from(BvhNode::new(&mut objects));
+        let world = Bvh::<2>::from(TreeBuilder::new(&mut objects));
         let lights: Vec<Arc<dyn Sampleable>> = vec![light_sample];
 
         let integrator = PathTracingIntegrator::new(8, Color3::ZERO, None);

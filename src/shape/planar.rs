@@ -1,6 +1,6 @@
 use glam::Vec3;
 
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::hittable::{Hit, LightSample};
 use crate::interval::Interval;
 use crate::ray::Ray;
@@ -50,8 +50,8 @@ impl<R: Region2D> PlanarShape<R> {
     pub fn new(corner: Point3, side_a: Vec3, side_b: Vec3, region: R) -> Self {
         // Compute the AABB from the two diagonals of the parallelogram.
         // This is tighter than computing the min/max of all four corners separately.
-        let bbox_diagonal1 = Aabb::from_points(&corner, &(corner + side_a + side_b));
-        let bbox_diagonal2 = Aabb::from_points(&(corner + side_a), &(corner + side_b));
+        let bbox_diagonal1 = Aabb::from_corners(corner, corner + side_a + side_b);
+        let bbox_diagonal2 = Aabb::from_corners(corner + side_a, corner + side_b);
 
         // Cross product gives the unnormalized plane normal (= 2× parallelogram area).
         let n = side_a.cross(side_b);

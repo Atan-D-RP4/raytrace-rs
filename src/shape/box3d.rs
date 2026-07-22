@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use glam::Vec3;
 
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
@@ -186,7 +186,7 @@ impl Shape3D for BoxShape {
     }
 
     fn bounding_box(&self) -> Aabb {
-        Aabb::from_points(&self.min, &self.max)
+        Aabb::from_corners(self.min, self.max)
     }
 
     fn area(&self) -> f32 {

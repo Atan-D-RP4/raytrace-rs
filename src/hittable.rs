@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::interval::Interval;
 use crate::material::Material;
 use crate::ray::Ray;
@@ -295,7 +295,7 @@ pub trait Bounded: Send + Sync {
 impl<T: Bounded> Bounded for Vec<T> {
     fn bounding_box(&self) -> Aabb {
         self.iter()
-            .fold(Aabb::new(), |acc, obj| acc.merge(&obj.bounding_box()))
+            .fold(Aabb::empty(), |acc, obj| acc.merge(&obj.bounding_box()))
     }
 }
 

@@ -4,8 +4,8 @@ use glam::Vec3;
 use rand::RngExt;
 use tracing::{info, trace};
 
-use crate::bvh::BvhNode;
-use crate::bvh::flat_bvh::FlatBvh;
+use crate::bvh::Bvh;
+use crate::bvh::builder::TreeBuilder;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::environment::{EnvironmentLight, EnvironmentMap};
@@ -276,7 +276,7 @@ impl Scene {
                 box_count = boxes_len,
                 "assembled complex_scene ground boxes"
             );
-            Arc::new(FlatBvh::from(BvhNode::new(&mut boxes)))
+            Arc::new(Bvh::<2>::from(TreeBuilder::new(&mut boxes)))
         };
         scene.objects.push(boxes1_bvh);
 
@@ -364,7 +364,7 @@ impl Scene {
             )));
         }
 
-        let cluster: TransformObject<Translate, TransformObject<RotateY, BvhNode>> = {
+        let cluster: TransformObject<Translate, TransformObject<RotateY, TreeBuilder>> = {
             let mut boxes = boxes2;
             let boxes_len = boxes.len();
             info!(
@@ -373,7 +373,7 @@ impl Scene {
             );
             TransformObject::new(
                 Translate::new(Vec3::new(-100., 270., 395.)),
-                TransformObject::new(RotateY::new(15.), BvhNode::new(&mut boxes)),
+                TransformObject::new(RotateY::new(15.), TreeBuilder::new(&mut boxes)),
             )
         };
         scene.objects.push(Arc::new(cluster));

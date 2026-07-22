@@ -1,4 +1,4 @@
-cargo-features = ["codegen-backend"]
+cargo-features = ["codegen-backend", "profile-rustflags"]
 
 [package]
 name = "raytrace-rs"
@@ -12,7 +12,6 @@ rand = { version = "0.10.0", default-features = false, features = ["std", "threa
 rayon = "1.11.0"
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-
 winit = { version = "0.30.13", default-features = false, features = ["wayland", "rwh_06"] }
 softbuffer = { version = "0.4.8", default-features = false, features = ["wayland"] }
 smol = "2.0.2"
@@ -35,3 +34,9 @@ codegen-backend = "cranelift"
 codegen-units = 1
 panic = "abort"
 lto = "fat"
+rustflags = ["-C", "target-cpu=native"]
+
+[profile.dist]
+inherits = "release"
+# Skip native CPU optimizations for dist builds to avoid issues with cross-compilation.
+rustflags = []

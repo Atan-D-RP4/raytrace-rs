@@ -3,7 +3,7 @@ use std::f32::consts::PI;
 
 use glam::Vec3;
 
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::hittable::{Hit, LightSample};
 use crate::interval::Interval;
 use crate::material::Material;
@@ -156,7 +156,7 @@ impl Shape3D for SphereShape {
 
     fn bounding_box(&self) -> Aabb {
         let rvec = Vec3::new(self.radius, self.radius, self.radius);
-        let local = Aabb::from_points(&Point3(-rvec), &Point3(rvec));
+        let local = Aabb::from_corners(Point3(-rvec), Point3(rvec));
         self.center.sweep_aabb(&local)
     }
 

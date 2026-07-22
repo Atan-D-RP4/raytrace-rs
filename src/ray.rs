@@ -1,4 +1,4 @@
-use crate::aabb::Aabb;
+use crate::bvh::aabb::Aabb;
 use crate::vec3::{Direction3, Point3};
 
 #[derive(Debug, Clone, Copy)]
