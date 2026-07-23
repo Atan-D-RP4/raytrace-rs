@@ -19,6 +19,8 @@
 # Other Projects and Libraries
 - **[Embree](https://www.embree.org/)** by Intel.
     - Embree is a high-performance ray tracing kernel library that provides optimized algorithms for ray tracing and is widely used in production rendering.
+- **[Tinybvh](https://github.com/jbikker/tinybvh) by Jacco Bikker
+    - Tinybvh is a lightweight and efficient bounding volume hierarchy (BVH) implementation for ray tracing, suitable for real-time applications.
 
 # White Papers
 - **[Building an Orthonormal Basis, Revisited,](https://jcgt.org/published/0006/01/01/)** by Duff et al., JCGT 2017

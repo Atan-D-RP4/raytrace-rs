@@ -1,11 +1,28 @@
 # Mesh Feature: Shape3D + Internal BVH
 
-## Design v5 — PlanarPatch Deletion, Shape Module Unification, BoxShape Implementation
+## Design v7 — Codebase Reconciliation: BVH, Sampleable, glam/f32
 
 ______________________________________________________________________
 
 ## Changelog
 
+- **v7 (2026-07-23)** — Codebase reconciliation: BVH restructure, Sampleable decoupling, glam/f32.
+  - **BVH module restructured.** `src/bvh.rs` + `src/flat_bvh.rs` merged into
+    `src/bvh/` with `mod.rs`, `builder.rs`, `aabb.rs`, `tests.rs`. The old
+    `FlatBvh` and `FlatBvhNode` types are gone. Replaced by generic `Bvh<W>`
+    and `BvhNode<W>` (parametric width W=2,4,8) with SoA layout and SIMD
+    `hit_mask` traversal.
+  - **`Sampleable` decoupled from `Intersectable.` Now `Sampleable: Send + Sync`
+    only. Area lights participate in both lists; non-geometric lights (environment)
+    only in `important_objects`. `add_importance_target` no longer pushes to `objects`.
+  - **Glam migration complete.** Custom Vec3 replaced with `glam::Vec3`. `Point3`,
+    `Direction3`, `Color3` are newtype wrappers. TransformObject still uses
+    `Translate`/`RotateY` (not yet `Affine3A`).
+  - **f32 migration complete.** All type signatures use `f32`, not `f64`.
+  - **MeshBvh design updated.** `Bvh<W>` stores `Vec<Arc<dyn Intersectable>>`
+    and can't be directly reused for mesh (needs geometry-only triangle indices).
+    `MeshBvh` will use `BvhNode<W>` node format but with `Vec<u32>` tri_indices
+    and separate construction from `TreeBuilder`.
 - **v5 (2026-07-20)** — PlanarPatch deleted, PlanarShape unification completed.
   - **`src/planar/` module removed entirely.** `PlanarPatch<R, M>`, `PlanarHit`,
     and all `PlanarPatch` type aliases deleted. No deprecation period.
@@ -59,7 +76,7 @@ ______________________________________________________________________
   Fixed scene integration (Arc-based dual reg), added cross-doc refs,
   documented rasterizer tension as deferred integration point.
 - **v1 (2026-06-29)** — Initial design after Shape3D/ShapeObject refactor.
-  `Sampleable` is non-generic, `Shape3D::sample` takes `time: f64`.
+  `Sampleable` is non-generic (raw `(u, v, time)` params), decoupled from `Intersectable`.
   No mesh infrastructure exists. Design targets single-material meshes
   (most common case) with extension path for per-face materials.
 
@@ -132,12 +149,13 @@ ______________________________________________________________________
 Shape3D trait (src/shape/mod.rs)
   │   intersect_shape(&self, ray, ray_t) -> Option<Hit>
   │   bounding_box(&self) -> Aabb
-  │   area(&self) -> f64
-  │   sample(&self, u, v, time) -> (Point3, Vec3)
-  │   sample_direction(&self, origin, u, v, time) -> Vec3       [default]
-  │   pdf_direction(&self, origin, direction, time) -> f64      [default]
+  │   area(&self) -> f32
+  │   sample(&self, u, v, time) -> (Point3, Direction3)
+  │   sample_direction(&self, origin, u, v, time) -> Direction3  [default]
+  │   pdf_direction(&self, origin, direction, time) -> f32       [default]
   │
-  └── SphereShape (src/shape/sphere.rs) — example Shape3D impl
+  └── SphereShape, PlanarShape<R>, BoxShape — existing Shape3D impls
+  └── MeshShape [future]
 
 ShapeObject<Sh: Shape3D, M: Borrow<Material>>
   │   Wraps Sh + M, derives Intersectable + Bounded + Sampleable
@@ -145,51 +163,41 @@ ShapeObject<Sh: Shape3D, M: Borrow<Material>>
   │   Sampleable::random_direction → shape.sample_direction()
   │   Sampleable::pdf_value → shape.pdf_direction()
   │
-  └── Sphere<M> = ShapeObject<SphereShape, M>
-  └── Mesh<M>   = ShapeObject<MeshShape, M>  [future]
+  └── Sphere<M>   = ShapeObject<SphereShape, M>
+  └── Quad<M>     = ShapeObject<PlanarShape<QuadRegion>, M>
+  └── Mesh<M>     = ShapeObject<MeshShape, M>  [future]
 
-PlanarPatch<R: Region2D, M> (src/planar/mod.rs)
-  │   Implements Intersectable, Bounded, Sampleable directly
-  │   (not via ShapeObject — it predates the Shape3D trait)
+Bvh<W> (src/bvh/mod.rs)
+  │   Parametric wide BVH: W=2 (binary), W=4, W=8
+  │   BvhNode<W>: SoA AABB layout, SIMD hit_mask traversal
+  │   TreeBuilder (src/bvh/builder.rs): SAH-binned construction with rayon
+  │   Stores Vec<Arc<dyn Intersectable>> at leaves
   │
-  └── Tri<M>  = PlanarPatch<TriRegion, M>   — single triangle on a plane
-  └── Quad<M> = PlanarPatch<QuadRegion, M>
-
-BvhNode / FlatBvh (src/bvh.rs, src/flat_bvh.rs)
-  │   Stores Arc<dyn Intersectable> at leaves
-  │   FlatBvh: cache-line-optimized iterative traversal, 64B nodes
-  │   BvhNode: SAH-binned construction with rayon parallelism
-  │
-  └── Scene BVH: Arc<dyn Intersectable> = Sphere | Quad | Mesh | ...
+  └── Scene BVH: Bvh<2> or Bvh<4> → Arc<dyn Intersectable> = Sphere | Quad | Box | Mesh | ...
 ```
 
 ### 2.2 Key Constraints
 
-- **`FlatBvh` leaf primitives are `Arc<dyn Intersectable>`**, returning
+- **`Bvh<W>` leaf primitives are `Arc<dyn Intersectable>`**, returning
   `MaterialHit` (geometry + material reference). For mesh-internal BVH
-  we need geometry-only intersection (`Hit`, no material).
+  we need geometry-only intersection (`Hit`, no material). `Bvh<W>` stores
+  `Vec<Arc<dyn Intersectable>>` and can't be directly reused — `MeshBvh`
+  uses the same `BvhNode<W>` node format but with `Vec<u32>` tri_indices
+  and its own construction pipeline (not `TreeBuilder`).
 
-- **`Hit::geometric_normal` is private** — must use `Hit::new()` or
+- **`Hit::geometric_normal` is `pub(crate)`** — must use `Hit::new()` or
   `set_geometric_normal()`.
 
-- **`Shape3D::sample()` and friends take `time: f64`** — important for
+- **`Shape3D::sample()` and friends take `time: f32`** — important for
   animated meshes later (TODO), but not required for static meshes.
 
-- **`Sampleable` is non-generic** (no `S: Sampler`) — uses raw
-  `(u, v, time)` parameters.
+- **`Sampleable` is decoupled from `Intersectable`** (now `Sampleable: Send + Sync`).
+  Area lights register in both lists (same shape, two trait casts). Non-geometric
+  lights (environment) only in `important_objects`.
 
-- **Scene's `add_*` pattern** — emissive objects register both an
-  `Arc<dyn Intersectable>` for the object list and an
-  `Arc<dyn Sampleable>` for the light list (same geometry, two Arcs).
-
-- **Upcoming: vec3 → glam migration.** The custom `Vec3`, `Point3`, etc.
-  will be replaced with `glam::Vec3`, `glam::Vec3A`, and `glam::Affine3A`
-  for the Transform system. Mesh `MeshData.positions` will store
-  `glam::Vec3A` (aligned for SIMD) — critical for BVH AABB computation
-  and Möller–Trumbore performance. The mesh design is type-agnostic;
-  switching the concrete type is a mechanical rename in data structures.
-  Möller–Trumbore remains the same math. TransformObject will use
-  `glam::Affine3A` or `glam::Mat4` instead of the current `Transform`.
+- **Glam migration complete.** Custom `Vec3` replaced with `glam::Vec3` (0.33.2).
+  `Point3`, `Direction3`, `Color3` are newtype wrappers in `src/vec3.rs`.
+  `MeshData.positions` stores `Point3` (wraps `glam::Vec3`).
 
 ### 2.3 Non-Goal: Individual Mesh Triangles as Shape3Ds
 
@@ -204,9 +212,11 @@ We will NOT create a pbrt-style `MeshTriangle` index-pair that implements
    one material per shape. Per-face materials can be added later via a
    material-index buffer + `Sampleable` override.
 
-3. **Existing BVH uses `Arc<dyn Intersectable>`.** The `BvhNode` / `FlatBvh`
-   are designed for scene-level objects (hundreds), not mesh-level triangles
-   (hundreds of thousands). A mesh needs its own internal accelerator.
+3. **`Bvh<W>` stores `Vec<Arc<dyn Intersectable>>`.** The parametric wide BVH
+   is designed for scene-level objects (hundreds), not mesh-level triangles
+   (hundreds of thousands). Each triangle needs geometry-only intersection
+   without vtable overhead. A mesh needs its own internal accelerator using
+   the same `BvhNode<W>` format but with triangle indices.
 
 ______________________________________________________________________
 
@@ -309,8 +319,8 @@ to unify would be a net loss of expressiveness or performance for both.
 /// Shared mesh vertex/index data. Cheaply cloneable via Arc.
 pub struct MeshData {
     pub positions: Vec<Point3>,
-    pub normals: Vec<Vec3>,      // per-vertex, may be empty
-    pub uvs: Vec<(f64, f64)>,    // per-vertex UVs, may be empty
+    pub normals: Vec<Direction3>,  // per-vertex, may be empty
+    pub uvs: Vec<(f32, f32)>,     // per-vertex UVs, may be empty
     pub indices: Vec<[u32; 3]>,  // triangle vertex indices
 }
 ```
@@ -322,27 +332,29 @@ construction.
 ```rust
 // ─── src/bvh/mesh.rs ───
 
-/// Internal flat BVH over mesh triangles. Geometry-only.
+/// Internal wide BVH over mesh triangles. Geometry-only.
 ///
-/// Lives in src/bvh/ alongside the scene BVH types, sharing FlatBvhNode.
-/// Exported as MeshBvh to distinguish from FlatBvh (scene-level).
+/// Uses the same `BvhNode<W>` node format as the scene-level `Bvh<W>`,
+/// but stores triangle indices instead of `Arc<dyn Intersectable>`.
+/// Has its own SAH construction (not `TreeBuilder`, which is typed
+/// on `Arc<dyn Intersectable>`).
 ///
-/// Differs from the scene-level FlatBvh:
-///   - Leaf primitives are triangle index ranges, not Arc<dyn Intersectable>
-///   - Intersection returns Option<MeshHit> not Option<MaterialHit>
+/// Differs from the scene-level `Bvh<W>`:
+///   - Leaf primitives are triangle index ranges, not `Arc<dyn Intersectable>`
+///   - Intersection returns `Option<MeshHit>` not `Option<MaterialHit>`
 ///   - Triangle data is fetched from MeshData at intersection time
 ///   - No material, no vtable dispatch
 pub struct MeshBvh {
-    nodes: Vec<FlatBvhNode>,    // same node format as FlatBvh (64B cache line)
-    tri_indices: Vec<u32>,      // triangle indices in traversal order
-    mesh_data: Arc<MeshData>,   // source vertex data
+    nodes: Vec<BvhNode<2>>,      // same BvhNode<W> format as scene BVH
+    tri_indices: Vec<u32>,       // triangle indices in traversal order
+    mesh_data: Arc<MeshData>,    // source vertex data
 }
 ```
 
-The `FlatBvhNode` format is reused (64 bytes, same layout) — the leaf stores
-`(tri_offset, tri_count)` where `tri_indices[tri_offset..tri_offset+tri_count]`
-are triangle indices. At leaf traversal, each triangle index is fetched, its
-three vertex positions are extracted from `mesh_data`, and
+The `BvhNode<W>` format is reused — for mesh BVH, `W=2` (binary) gives
+64-byte cache-aligned nodes. Leaf nodes store `(tri_offset, tri_count)` via
+`child_offset[0]` and `leaf_info[0]`. At leaf traversal, each triangle index
+is fetched, its three vertex positions are extracted from `mesh_data`, and
 Möller–Trumbore intersection is computed on-the-fly.
 
 This avoids per-triangle heap allocation entirely. A 100K-triangle mesh
@@ -362,7 +374,7 @@ pub struct MeshShape {
     data: Arc<MeshData>,
     bvh: MeshBvh,
     bbox: Aabb,          // precomputed from all triangle AABBs
-    area: f64,            // precomputed sum of triangle areas
+    area: f32,            // precomputed sum of triangle areas
 }
 ```
 
@@ -372,7 +384,7 @@ pub struct MeshShape {
 impl Shape3D for MeshShape {
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
         // Traverse MeshBvh:
-        //   1. Iterative stack traversal over FlatBvhNode array
+        //   1. Iterative stack traversal over BvhNode<W> array
         //   2. At leaf, for each tri_index:
         //      a. Fetch 3 vertex positions from self.data
         //      b. Run Möller–Trumbore intersection
@@ -385,11 +397,11 @@ impl Shape3D for MeshShape {
         self.bbox
     }
 
-    fn area(&self) -> f64 {
+    fn area(&self) -> f32 {
         self.area
     }
 
-    fn sample(&self, u: f64, v: f64, time: f64) -> (Point3, Vec3) {
+    fn sample(&self, u: f32, v: f32, time: f32) -> (Point3, Direction3) {
         // Uniform triangle sampling:
         //   1. Pick triangle i by area-weighted distribution
         //   2. Sample barycentric coords via sqrt(u), sqrt(v) method
@@ -408,10 +420,10 @@ impl Shape3D for MeshShape {
 /// Intermediate hit result produced by MeshBvh traversal.
 /// Converted to `Hit` before returning from `intersect_shape`.
 struct MeshHit {
-    t: f64,
+    t: f32,
     point: Point3,
-    normal: Vec3,       // geometric normal (unit length)
-    uv: (f64, f64),     // barycentric → texture UV
+    normal: Direction3,  // geometric normal (unit length)
+    uv: (f32, f32),      // barycentric → texture UV
     tri_index: u32,
 }
 ```
@@ -443,19 +455,19 @@ The intersection function is:
 
 ```rust
 fn intersect_triangle(
-    ray: &Ray, t_max: f64,
+    ray: &Ray, t_max: f32,
     p0: Point3, p1: Point3, p2: Point3,
-) -> Option<(f64, f64, f64, f64)>  // (t, b0, b1, b2) barycentric coords
+) -> Option<(f32, f32, f32, f32)>  // (t, b0, b1, b2) barycentric coords
 ```
 
 ### 3.5 BVH Construction
 
-The mesh BVH construction mirrors `BvhNode::new` (SAH binning) but:
+The mesh BVH construction uses SAH binning (same algorithm as `TreeBuilder`) but:
 
 - Primitives are triangle index ranges, not `Arc<dyn Intersectable>`
 - AABB computation fetches vertex positions from `MeshData`
 - Centroid computation uses the triangle's centroid (average of 3 vertices)
-- Uses `rayon::join` for parallel construction (same as scene BVH)
+- Uses `rayon::join` for parallel construction (same as scene BVH). A separate `MeshTreeBuilder` or equivalent handles triangle AABBs without `Arc<dyn Intersectable>` overhead.
 
 The output is a `MeshBvh` (flat BVH node array + triangle index array).
 
@@ -469,14 +481,14 @@ impl Shape3D for Arc<MeshShape> {
         self.as_ref().intersect_shape(ray, ray_t)
     }
     fn bounding_box(&self) -> Aabb { self.as_ref().bounding_box() }
-    fn area(&self) -> f64 { self.as_ref().area() }
-    fn sample(&self, u: f64, v: f64, time: f64) -> (Point3, Vec3) {
+    fn area(&self) -> f32 { self.as_ref().area() }
+    fn sample(&self, u: f32, v: f32, time: f32) -> (Point3, Direction3) {
         self.as_ref().sample(u, v, time)
     }
-    fn sample_direction(&self, origin: Point3, u: f64, v: f64, time: f64) -> Vec3 {
+    fn sample_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
         self.as_ref().sample_direction(origin, u, v, time)
     }
-    fn pdf_direction(&self, origin: Point3, direction: Vec3, time: f64) -> f64 {
+    fn pdf_direction(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
         self.as_ref().pdf_direction(origin, direction, time)
     }
 }
@@ -488,9 +500,9 @@ This enables dual registration without deep-copying the mesh BVH:
 // In src/scene.rs — following add_sphere pattern, shares BVH via Arc
 
 impl Scene {
-    pub fn add_mesh(&mut self, data: Arc<MeshData>, material: Material) {
+    pub fn add_mesh(&mut self, data: Arc<MeshData>, material: impl Into<Material>) {
+        let material = Arc::new(material.into());
         let mesh_shape = Arc::new(MeshShape::from_data(data));
-        let material = Arc::new(material);
         // First ShapeObject consumes mesh_shape.clone() (cheap Arc increment)
         let obj: Arc<dyn Intersectable> = Arc::new(
             ShapeObject::new(mesh_shape.clone(), material.clone()),
@@ -627,7 +639,9 @@ ______________________________________________________________________
 
 ### 3.9 Tessellatable Trait — Bridging Planar Shapes to Mesh Data
 
-**(Not yet implemented — deferred.)** The two object models (§2.4) can be
+**(Not yet implemented — deferred.)** This section references the old `PlanarPatch<Self, ()>`
+type which has been deleted. The design needs updating to use `PlanarShape<R>` / `PlanarShapeGeometry`
+before implementation. The two object models (§2.4) can be
 bridged for one specific operation: converting a `PlanarShape<R>` into mesh
 triangles for use in a `MeshShape`.
 This is useful for:
@@ -740,8 +754,8 @@ impl<R: Tessellatable, M: Borrow<Material> + Clone> PlanarPatch<R, M> {
     pub fn to_mesh_data(&self, max_error: f32) -> MeshData {
         let triangles = self.region().tessellate(&self.without_material(), max_error);
         let positions: Vec<Point3> = triangles.iter().flat_map(|t| t.positions()).collect();
-        let normals: Vec<Vec3> = triangles.iter().flat_map(|t| t.normals()).collect();
-        let uvs: Vec<(f64, f64)> = triangles.iter().flat_map(|t| t.uvs()).collect();
+        let normals: Vec<Direction3> = triangles.iter().flat_map(|t| t.normals()).collect();
+        let uvs: Vec<(f32, f32)> = triangles.iter().flat_map(|t| t.uvs()).collect();
         let indices: Vec<[u32; 3]> = (0..triangles.len())
             .map(|i| [i as u32 * 3, i as u32 * 3 + 1, i as u32 * 3 + 2])
             .collect();
@@ -791,7 +805,7 @@ The internal BVH approach is preferred because:
    allocations, no Arc overhead, no vtable pointers.
 
 2. **Cache-friendly traversal** — the mesh BVH stores triangle indices
-   compactly, and the FlatBvhNode layout is 64B cache lines.
+   compactly, and the BvhNode<W> layout is cache-line-aligned (64B for W=2).
 
 3. **Fits the Shape3D abstraction** — `MeshShape` is just another shape
    to `ShapeObject`. No new trait, no new wrapper, no architecture break.
@@ -811,19 +825,19 @@ ______________________________________________________________________
 | `src/planar/mod.rs` | Entire planar module deleted. PlanarPatch, PlanarHit, type aliases removed. |
 | `src/planar/box.rs` | `box3d()` moved to `src/shape/constructors.rs`. |
 
-### BVH module restructure (prerequisite: merge bvh.rs + flat_bvh.rs)
+### BVH module restructure (COMPLETED)
 
-Before adding MeshBvh, consolidate the two standalone BVH files into a module:
+The BVH module has already been restructured into `src/bvh/`:
 
-| Action | File | Contents |
-|---|---|---|
-| Create | `src/bvh/mod.rs` | Re-export `BvhNode`, `FlatBvh`, `FlatBvhNode`, `MeshBvh` |
-| Create | `src/bvh/scene.rs` | `BvhNode`, `FlatBvh` (moved from `src/bvh.rs`, `src/flat_bvh.rs`) |
-| Create | `src/bvh/mesh.rs` | `MeshBvh` struct + flat BVH traversal + SAH construction |
-| Remove | `src/bvh.rs` | Content moved to `src/bvh/scene.rs` |
-| Remove | `src/flat_bvh.rs` | Content moved to `src/bvh/scene.rs` |
+| File | Contents |
+|---|---|
+| `src/bvh/mod.rs` | `Bvh<W>` (wide BVH), `BvhNode<W>` (SoA layout, SIMD hit_mask) |
+| `src/bvh/builder.rs` | `TreeBuilder` (SAH-binned binary construction with rayon) |
+| `src/bvh/aabb.rs` | `Aabb`, `AabbPacked<W>` (SIMD-ready SoA bounding boxes) |
+| `src/bvh/tests.rs` | BVH tests |
 
-`FlatBvhNode` becomes shared by both `FlatBvh` and `MeshBvh` via `src/bvh/mod.rs`.
+`MeshBvh` will live in `src/bvh/mesh.rs` as a parallel structure using
+`BvhNode<W>` nodes with triangle-index leaves.
 
 ### New mesh files
 
@@ -846,17 +860,17 @@ Before adding MeshBvh, consolidate the two standalone BVH files into a module:
 
 | File | Change |
 |---|---|
-| `src/lib.rs` | Replace `pub mod bvh;` + `pub mod flat_bvh;` with `pub mod bvh;` (module), add `pub mod mesh;`. Remove `pub mod planar;`. |
+| `src/lib.rs` | Add `pub mod mesh;`. BVH module restructuring already done. |
 | `src/shape/mod.rs` | Add `impl Shape3D for Arc<MeshShape>` (delegation blanket). Add `mod box3d;`, `mod constructors;`, mod re-exports. Region2D trait lives here. |
 | `src/scene.rs` | Add `add_mesh()` with Arc-based BVH sharing. Add `add_box()` for uniform-material BoxShape. `add_quad()` + friends transitively use PlanarShape via constructors module. |
-| All files importing `crate::bvh` or `crate::flat_bvh` | Update imports to `crate::bvh::*`. |
+| All files importing `crate::bvh` | Update imports to `crate::bvh::*`. (Already done.) |
 | All files importing `crate::planar::quad` | Update to `crate::shape::quad` (constructors module). |
 
 ### No changes needed
 
 | File | Reason |
 |---|---|
-| `src/hittable.rs` | Traits unchanged. `Hit`, `MaterialHit` unchanged. |
+| `src/hittable.rs` | Traits: `Sampleable` decoupled from `Intersectable`. `Hit`, `MaterialHit` unchanged. |
 | `src/vec3.rs` | Point3, Direction3, Color3 unchanged. |
 
 ______________________________________________________________________
@@ -881,9 +895,9 @@ ______________________________________________________________________
 
 Phase 1 steps 1–6 are the main mesh feature and remain unchanged:
 
-0. **Prerequisite: consolidate `src/bvh/` module.** Merge `src/bvh.rs` +
-   `src/flat_bvh.rs` into `src/bvh/scene.rs`. Update all imports.
-   Shared `FlatBvhNode` in `src/bvh/mod.rs`.
+0. **Prerequisite: BVH module restructure.** ✅ COMPLETED. `src/bvh/` module
+   with `BvhNode<W>`, `Bvh<W>`, `TreeBuilder`, `AabbPacked<W>`. MeshBvh will
+   reuse `BvhNode<W>` node format in `src/bvh/mesh.rs`.
 1. `MeshData` — positions, normals, uvs, indices. OBJ file format parser.
 2. `MeshBvh` — SAH construction, flat-node iterative traversal. `src/bvh/mesh.rs`.
 3. `MeshShape: Shape3D` — intersection via internal BVH + Möller–Trumbore
@@ -926,12 +940,12 @@ ______________________________________________________________________
 
 ## 7. Open Questions
 
-1. ~~**`FlatBvhNode` reuse.**~~ **RESOLVED in v3.** Merge `src/bvh.rs` and
-   `src/flat_bvh.rs` into a `src/bvh/` module. Content goes in
-   `src/bvh/scene.rs`. `FlatBvhNode` is shared by both `FlatBvh` (scene)
-   and `MeshBvh`. `MeshBvh` lives in `src/bvh/mesh.rs` since it directly
-   reuses `FlatBvhNode` — avoids cross-module dependency from `src/mesh/`
-   to `src/bvh/` at the struct level.
+1. ~~**BVH module restructure / BvhNode reuse.**~~ **RESOLVED.** BVH module
+   restructured into `src/bvh/{mod.rs, builder.rs, aabb.rs, tests.rs}`.
+   `FlatBvhNode` replaced by `BvhNode<W>` (parametric wide BVH with SoA
+   layout and SIMD hit_mask). `MeshBvh` will reuse `BvhNode<W>` format in
+   `src/bvh/mesh.rs` but with `Vec<u32>` tri_indices instead of
+   `Vec<Arc<dyn Intersectable>>`. Own SAH construction, not `TreeBuilder`.
 
 2. ~~**`MeshShape::clone()` for dual light registration.**~~ **RESOLVED in v2.**
    The scene code (§3.6) uses `impl Shape3D for Arc<MeshShape>` so an
@@ -1000,4 +1014,4 @@ ______________________________________________________________________
 - `src/shape/planar.rs` — PlanarShape\<R: Region2D\> implementing Shape3D (replaces PlanarPatch's geometry role).
 - `src/shape/constructors.rs` — Free construction functions (quad(), ellipse(), tri(), ..., box3d()).
 - `src/shape/box3d.rs` — BoxShape (AABB via slab intersection, uniform material).
-- `src/bvh/` — Shared BVH module: `scene.rs` (BvhNode + FlatBvh), `mesh.rs` (MeshBvh), FlatBvhNode layout (64B, iterative traversal).
+- `src/bvh/` — BVH module: `mod.rs` (`Bvh<W>`, `BvhNode<W>` with SoA layout), `builder.rs` (SAH `TreeBuilder`), `aabb.rs` (`Aabb`, `AabbPacked<W>`), `tests.rs`.
