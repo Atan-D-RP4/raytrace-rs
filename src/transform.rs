@@ -92,7 +92,7 @@ where
 impl<T, O> Sampleable for TransformObject<T, O>
 where
     T: Transform,
-    O: Sampleable,
+    O: Intersectable + Sampleable,
 {
     fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
         // Transform the ray into object space and delegate to the inner object.

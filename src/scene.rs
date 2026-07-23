@@ -145,13 +145,12 @@ impl Scene {
         self.objects.push(object);
     }
 
-    /// Register a sampleable as an importance target.
+    /// Register a sampleable as an importance target for light sampling.
     ///
-    /// Pushes to both `objects` (intersection) and `important_objects`
-    /// (importance sampling via `EmitterPDF`).
+    /// Pushes to `important_objects` only. Use `add_intersectable` for
+    /// objects that need both intersection and importance sampling.
     pub fn add_importance_target(&mut self, object: Arc<dyn Sampleable>) {
-        self.important_objects.push(object.clone());
-        self.objects.push(object);
+        self.important_objects.push(object);
     }
 
     pub fn add_sphere(&mut self, center: Point3, radius: f32, material: impl Into<Material>) {

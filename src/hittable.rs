@@ -325,7 +325,7 @@ pub struct LightSample {
     pub emission: Color3,
 }
 
-pub trait Sampleable: Intersectable + Send + Sync {
+pub trait Sampleable: Send + Sync {
     /// Returns the PDF value for sampling this hittable from a given origin and direction.
     /// Default returns 0.0 (no contribution to the PDF).
     fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {

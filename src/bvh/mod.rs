@@ -385,14 +385,14 @@ impl Bvh<2> {
     ///
     /// The result has the same primitives (shared via `Arc` clones) and
     /// produces identical intersection results.
-    pub fn widen<const W: usize>(&self) -> Bvh<W> {
+    pub fn widen<const W: usize>(self) -> Bvh<W> {
         let collapse_depth = W.ilog2() as usize;
         let mut wide_nodes = Vec::new();
 
         if self.nodes.is_empty() {
             return Bvh {
                 nodes: wide_nodes,
-                primitives: self.primitives.clone(),
+                primitives: self.primitives,
             };
         }
 
@@ -406,7 +406,7 @@ impl Bvh<2> {
 
         Bvh {
             nodes: wide_nodes,
-            primitives: self.primitives.clone(),
+            primitives: self.primitives,
         }
     }
 
@@ -675,10 +675,7 @@ where
                         }
                     } else {
                         // Interior child — push for later traversal.
-                        if sp >= MAX_STACK {
-                            tracing::warn!("Bvh traversal stack overflow");
-                            break;
-                        }
+                        debug_assert!(sp < MAX_STACK, "Bvh traversal stack overflow");
                         stack[sp] = node.child_offset[i];
                         sp += 1;
                     }
@@ -704,17 +701,14 @@ where
             let near_hit = if sign == 0 { hit0 } else { hit1 };
             let far_hit = if sign == 0 { hit1 } else { hit0 };
 
-            if sp >= MAX_STACK - 1 {
-                tracing::warn!("Bvh traversal stack overflow");
-            } else {
-                if far_hit {
-                    stack[sp] = far_idx;
-                    sp += 1;
-                }
-                if near_hit {
-                    stack[sp] = near_idx;
-                    sp += 1;
-                }
+            debug_assert!(sp < MAX_STACK, "Bvh traversal stack overflow");
+            if far_hit {
+                stack[sp] = far_idx;
+                sp += 1;
+            }
+            if near_hit {
+                stack[sp] = near_idx;
+                sp += 1;
             }
         }
 
@@ -785,10 +779,7 @@ where
                             return true;
                         }
                     } else {
-                        if sp >= MAX_STACK {
-                            tracing::warn!("Bvh traversal stack overflow");
-                            return false;
-                        }
+                        debug_assert!(sp < MAX_STACK, "Bvh traversal stack overflow");
                         stack[sp] = node.child_offset[i];
                         sp += 1;
                     }
@@ -815,17 +806,14 @@ where
             let near_hit = if sign == 0 { hit0 } else { hit1 };
             let far_hit = if sign == 0 { hit1 } else { hit0 };
 
-            if sp >= MAX_STACK - 1 {
-                tracing::warn!("Bvh traversal stack overflow");
-            } else {
-                if far_hit {
-                    stack[sp] = far_idx;
-                    sp += 1;
-                }
-                if near_hit {
-                    stack[sp] = near_idx;
-                    sp += 1;
-                }
+            debug_assert!(sp < MAX_STACK, "Bvh traversal stack overflow");
+            if far_hit {
+                stack[sp] = far_idx;
+                sp += 1;
+            }
+            if near_hit {
+                stack[sp] = near_idx;
+                sp += 1;
             }
         }
         false
@@ -837,16 +825,12 @@ impl<const W: usize> Bounded for Bvh<W> {
         if self.nodes.is_empty() {
             return Aabb::empty();
         }
-        // Phase 4 per-child AABB layout: each slot of each node stores individual
-        // child/leaf AABBs. The root's slot 0 is only child 0's AABB, not the full
-        // scene bounds. Union all slots of all nodes to cover every primitive.
-        let mut bbox = Aabb::empty();
-        for node in &self.nodes {
-            let aabbs: [Aabb; W] = (&node.bbox).into();
-            for aabb in aabbs {
-                bbox = bbox.merge(&aabb);
-            }
-        }
-        bbox
+        // Phase AABB layout: each slot of each node stores individual child/leaf AABBs. The root's
+        // W children partition the entire scene, so their union = scene bounds.
+        let root = &self.nodes[0];
+        let aabbs: [Aabb; W] = (&root.bbox).into();
+        aabbs
+            .iter()
+            .fold(Aabb::empty(), |acc, aabb| acc.merge(aabb))
     }
 }
