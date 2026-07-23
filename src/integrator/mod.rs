@@ -10,6 +10,11 @@ pub use crate::sampler::{SampleStream, SamplerRng};
 
 pub mod path_tracer;
 
+/// A trait for integrators that compute radiance along rays in a scene.
+///
+/// Integrators are responsible for tracing rays through the scene, handling light interactions with
+/// surfaces and materials, and returning the resulting color. They may also provide background
+/// radiance for rays that miss all geometry.
 pub trait Integrator: Send + Sync {
     /// Default background radiance for a ray that missed all geometry.
     fn background(&self, direction: Direction3) -> Color3 {

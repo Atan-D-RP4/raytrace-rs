@@ -29,18 +29,17 @@ use crate::material::Material;
 /// Diffuse (Lambertian) surface.
 #[derive(Clone)]
 pub struct LambertianMaterial {
-    /// Fraction of light reflected at each wavelength. Used as fallback when `tex` is set,
-    /// and as the GPU serialization color (textures are CPU-only).
+    /// Fraction of light reflected at each wavelength. Used as fallback when `tex` is set, and as
+    /// the GPU serialization color (textures are CPU-only).
     pub albedo: Color3,
-    /// Optional texture for spatial albedo variation. When set, `value()` is
-    /// evaluated at the hit point instead of using `albedo`.
+    /// Optional texture for spatial albedo variation. When set, `value()` is evaluated at the hit
+    /// point instead of using `albedo`.
     pub tex: Option<Arc<dyn Texture>>,
 }
 
 impl Bsdf for LambertianMaterial {
-    /// Returns `Vec3::ZERO` as a direction placeholder. The integrator samples
-    /// the actual direction from the cosine-weighted hemisphere PDF indicated by
-    /// `pdf_kind`. The `f_cos` field carries the albedo (texture or solid color).
+    /// The integrator samples the actual direction from the cosine-weighted hemisphere PDF
+    /// indicated by `pdf_kind`. The `f_cos` field carries the albedo (texture or solid color).
     fn scatter(
         &self,
         _wo: Direction3,
@@ -100,8 +99,8 @@ impl LambertianMaterial {
         Self { albedo, tex: None }
     }
 
-    /// Create a lambertian material with a texture. `albedo` is used as
-    /// fallback when tex is None (e.g., GPU serialization).
+    /// Create a lambertian material with a texture. `albedo` is used as fallback when tex is None
+    /// (e.g., GPU serialization).
     pub fn with_texture(albedo: Color3, tex: Arc<dyn Texture>) -> Self {
         Self {
             albedo,

@@ -7,6 +7,12 @@ use std::sync::Arc;
 use crate::camera::Camera;
 use crate::film::{Film, SharedFramebuffer};
 use crate::hittable::{Intersectable, Sampleable};
+
+/// A trait for rendering a scene with a given camera and film.
+///
+/// The renderer is responsible for generating pixel data from the scene geometry and materials,
+/// using the camera's projection and the film's output format. It can optionally support
+/// progressive rendering by publishing intermediate frames to a shared framebuffer.
 pub trait Renderer<W, C, F>: Send + Sync
 where
     W: Intersectable,

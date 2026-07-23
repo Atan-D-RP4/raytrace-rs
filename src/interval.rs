@@ -1,6 +1,9 @@
+/// A simple interval struct that represents a range of values between a minimum and maximum value.
 #[derive(Debug, Clone, Copy)]
 pub struct Interval {
+    /// The minimum value of the interval.
     pub min: f32,
+    /// The maximum value of the interval.
     pub max: f32,
 }
 

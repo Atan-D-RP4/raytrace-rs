@@ -24,6 +24,10 @@ pub use impls::{
 
 use crate::vec3::{Color3, Direction3, Point3};
 
+/// A trait for surfaces that can provide UV coordinates and their derivatives.
+///
+/// This is used for texture filtering and mipmap selection. Surfaces that do not provide UV
+/// coordinates will default to zero derivatives, which disables filtering.
 pub trait UVDifferentiable {
     /// Returns the UV coordinates and their screen-space derivatives.
     ///

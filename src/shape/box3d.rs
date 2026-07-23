@@ -19,7 +19,9 @@ use super::{Shape3D, ShapeObject};
 ///
 /// Wrap via `ShapeObject<BoxShape, M>` or use [`shape_box3d`].
 pub struct BoxShape {
+    /// The minimum corner of the box (smallest x, y, z).
     min: Point3,
+    /// The maximum corner of the box (largest x, y, z).
     max: Point3,
     /// Face areas for sampling: [±x, ±y, ±z].
     face_areas: [f32; 6],
@@ -39,6 +41,7 @@ impl BoxShape {
         let min = Point3::new(a.x().min(b.x()), a.y().min(b.y()), a.z().min(b.z()));
         let max = Point3::new(a.x().max(b.x()), a.y().max(b.y()), a.z().max(b.z()));
 
+        // Compute side lengths for UV mapping and area calculations.
         let dx = max.x() - min.x();
         let dy = max.y() - min.y();
         let dz = max.z() - min.z();
@@ -71,8 +74,7 @@ impl BoxShape {
     /// three axis intervals. The axis that produced `t_enter` tells us which face
     /// was hit.
     fn intersect_faces(&self, ray: &Ray, ray_t: Interval) -> Option<(usize, f32, f32, f32)> {
-        let dir = ray.direction.into_inner();
-        let inv_d = Vec3::new(1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z);
+        let inv_d = ray.inverse_direction.into_inner();
 
         let origin = ray.origin.into_inner();
 
@@ -80,21 +82,27 @@ impl BoxShape {
         let t1 = (self.min.into_inner() - origin) * inv_d;
         let t2 = (self.max.into_inner() - origin) * inv_d;
 
+        // Compute the near and far intersection distances along each axis.
         let t_near = Vec3::new(t1.x.min(t2.x), t1.y.min(t2.y), t1.z.min(t2.z));
         let t_far = Vec3::new(t1.x.max(t2.x), t1.y.max(t2.y), t1.z.max(t2.z));
 
+        // The overall entry and exit distances are the max of the near distances
+        // and the min of the far distances. If they don't overlap, there's no hit.
         let t_enter = t_near.x.max(t_near.y).max(t_near.z);
         let t_exit = t_far.x.min(t_far.y).min(t_far.z);
 
+        // If the ray misses the box or is outside the valid t range, return None.
         if t_enter >= t_exit || t_exit <= ray_t.min || t_enter >= ray_t.max {
             return None;
         }
 
+        // Determine the actual hit time within the ray's valid interval.
         let t = if t_enter > ray_t.min { t_enter } else { t_exit };
         if t <= ray_t.min || t >= ray_t.max {
             return None;
         }
 
+        // Compute the hit point in world space.
         let hit_point = origin + ray.direction.into_inner() * t;
 
         // Determine which face was hit by tracking which axis produced t_enter

@@ -19,6 +19,7 @@ pub struct AabbPacked<const W: usize> {
 }
 
 impl<const W: usize> AabbPacked<W> {
+    /// A small delta to pad the bounding box when its size is too small.
     const DELTA: f32 = 0.0001;
 
     #[inline]
@@ -209,7 +210,7 @@ impl<const W: usize> AabbPacked<W> {
 
     /// Branchless slab test against all W children for a single ray.
     ///
-    /// Returns `[bool; W]` where `mask[i]` is true if the ray segment
+    /// Returns a u16 bitmask where bit `i` is set if the ray segment
     /// `[tmin, tmax]` intersects child i's AABB. Uses explicit `std::simd`
     /// for guaranteed packed AABB testing.
     #[inline]

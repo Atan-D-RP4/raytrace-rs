@@ -1,7 +1,7 @@
-//! Cache-friendly flat BVH for fast ray-scene intersection.
+//! Cache-friendly BVH for fast ray-scene intersection.
 //!
-//! [`FlatBvh`] is a linearised version of [`BvhNode`] stored as a contiguous
-//! array of [`FlatBvhNode`]s. The layout is optimised for traversal:
+//! [`Bvh`] is a linearised version of [`BvhNode`] stored as a contiguous
+//! array of nodes. The layout is optimised for traversal:
 //!
 //! - Each node is cache-line-aligned: W=2 → 64 bytes (1 CL), W=4 → 128 bytes (2 CL).
 //! - f32 AABB fields avoid precision loss at the BVH/primitive boundary.
@@ -15,19 +15,17 @@
 //!
 //! Traversal is iterative with an explicit stack (no recursion). The stack
 //! depth is fixed at 64 entries — sufficient for any practical BVH depth.
-
-/*
-References for optimizing BVH traversal and flat layouts on the CPU:
-1. Embree architecture: Wald et al., "Embree: A Kernel Framework for Efficient CPU Ray Tracing," SIGGRAPH 2014 — embree.org/papers/2014-Siggraph-Embree.pdf (https://www.embree.org/papers/2014-Siggraph-Embree.pdf)
-2. Embree source: kernels/bvh/bvh.h and kernels/bvh/bvh_node_aabb.h — github.com/RenderKit/embree (https://github.com/RenderKit/embree)
-3. WiVe algorithm: Fuetterling et al., "Accelerated Single-Ray Tracing for Wide Vector Units," HPG 2017
-4. PBRT BVH chapter: pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies (https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies)
-5. Psychopath BVH4 analysis: psychopath.io/post/2017_08_03_bvh4_without_simd (https://psychopath.io/post/2017_08_03_bvh4_without_simd)
-6. tinybvh: github.com/jbikker/tinybvh (https://github.com/jbikker/tinybvh) — includes BVH4_CPU, BVH8_CPU, CWBVH implementations
-7. CLPT paper (coherent packets for BVH4): jcgt.org/published/0004/04/05/
-8. Stackless BVH traversal: Hapala et al., "Efficient Stack-less BVH Traversal for Ray Tracing," SCCG 2011
-9. DRST (dynamic ray stream tracing): Barringer & Akenine-Möller, 2014
-*/
+//!
+//! References for optimizing BVH traversal and flat layouts on the CPU:
+//! 1. Embree architecture: Wald et al., "Embree: A Kernel Framework for Efficient CPU Ray Tracing," SIGGRAPH 2014 — embree.org/papers/2014-Siggraph-Embree.pdf (https://www.embree.org/papers/2014-Siggraph-Embree.pdf)
+//! 2. Embree source: kernels/bvh/bvh.h and kernels/bvh/bvh_node_aabb.h — github.com/RenderKit/embree (https://github.com/RenderKit/embree)
+//! 3. WiVe algorithm: Fuetterling et al., "Accelerated Single-Ray Tracing for Wide Vector Units," HPG 2017
+//! 4. PBRT BVH chapter: pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies (https://www.pbr-book.org/4ed/Primitives_and_Intersection_Acceleration/Bounding_Volume_Hierarchies)
+//! 5. Psychopath BVH4 analysis: psychopath.io/post/2017_08_03_bvh4_without_simd (https://psychopath.io/post/2017_08_03_bvh4_without_simd)
+//! 6. tinybvh: github.com/jbikker/tinybvh (https://github.com/jbikker/tinybvh) — includes BVH4_CPU, BVH8_CPU, CWBVH implementations
+//! 7. CLPT paper (coherent packets for BVH4): jcgt.org/published/0004/04/05/
+//! 8. Stackless BVH traversal: Hapala et al., "Efficient Stack-less BVH Traversal for Ray Tracing," SCCG 2011
+//! 9. DRST (dynamic ray stream tracing): Barringer & Akenine-Möller, 2014
 
 pub mod aabb;
 pub mod builder;
@@ -83,7 +81,6 @@ fn slab_aabb_test(min: [f32; 3], max: [f32; 3], ray: &Ray, tmin: f32, tmax: f32)
     // Z slab
     let t0 = (min[2] - oz) * idz;
     let t1 = (max[2] - oz) * idz;
-    //
     // Update lo/hi with the intersection interval of the Z slab.
     lo = lo.max(t0.min(t1));
     hi = hi.min(t0.max(t1));

@@ -60,8 +60,11 @@ impl TextureMapping3D {
 pub enum TextureMapping2D {
     /// No transformation — use the UV coordinates as-is.
     Identity,
+    /// Scale the UV coordinates by the given factors.
     ScaleUV {
+        /// Scale factor for the U coordinate.
         su: f32,
+        /// Scale factor for the V coordinate.
         sv: f32,
     },
 }

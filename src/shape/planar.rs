@@ -38,11 +38,16 @@ pub struct PlanarShape<R: Region2D> {
     region: R,
 }
 
+/// A hit record for a ray-plane intersection, including the parametric (a, b) coordinates
 #[derive(Clone, Copy)]
 struct PlanarHit {
+    /// The time `t` along the ray where the intersection occurs.
     time: f32,
+    /// The intersection point in world space.
     point: Point3,
+    /// The parametric coordinate `a` in the planar patch's local space.
     a: f32,
+    /// The parametric coordinate `b` in the planar patch's local space.
     b: f32,
 }
 

@@ -1,20 +1,35 @@
 use crate::bvh::aabb::Aabb;
 use crate::vec3::{Direction3, Point3};
 
+/// Ray differentials for computing pixel footprints and texture filtering.
 #[derive(Debug, Clone, Copy)]
 pub struct RayDifferentials {
+    /// The origin of the ray differential in the x direction.
     pub rx_origin: Point3,
+    /// The origin of the ray differential in the y direction.
     pub ry_origin: Point3,
+    /// The direction of the ray differential in the x direction.
     pub rx_direction: Direction3,
+    /// The direction of the ray differential in the y direction.
     pub ry_direction: Direction3,
 }
 
+/// A ray in 3D space, defined by an origin point and a direction vector, with optional ray
+/// differentials for computing pixel footprints and texture filtering.
+///
+/// The ray can also have an associated time value, which is useful for motion blur and
+/// time-dependent effects.
 #[derive(Debug, Clone, Copy)]
 pub struct Ray {
+    /// The origin point of the ray.
     pub origin: Point3,
+    /// The direction vector of the ray. Should be normalized.
     pub direction: Direction3,
+    /// The time at which the ray exists, useful for motion blur and time-dependent effects.
     pub time: f32,
+    /// The inverse of the direction vector, used for efficient ray-box intersection tests.
     pub inverse_direction: Direction3,
+    /// Optional ray differentials for computing pixel footprints and texture filtering.
     pub differentials: Option<RayDifferentials>,
 }
 
@@ -94,7 +109,7 @@ impl Ray {
             // Fall back to the bounded t_hit estimate.
             return (rx_origin - primary_origin) + t_hit * (rx_direction - primary_direction);
         }
-        let t = normal.dot(hit_point.into_inner() - rx_origin.into_inner()) / denom;
+        let t = normal.dot((hit_point - rx_origin).into_inner()) / denom;
         (rx_origin + rx_direction * t) - hit_point
     }
 
@@ -143,9 +158,11 @@ impl Ray {
         let dpdx_tan = dpdx - dpdx.dot(n.into_inner()) * n;
         let dn_dx = dpdx_tan * curvature;
 
+        // dn/dy = (dpdy - (dpdy.n)n) · curvature  (tangent-plane projection × curvature)
         let dpdy_tan = dpdy - dpdy.dot(n.into_inner()) * n;
         let dn_dy = dpdy_tan * curvature;
 
+        //
         if let Some(eta) = eta {
             // --- Refraction correction (Igehy 1999 eqs. 16–19 / pbrt-v4) ---
             let n_raw = n;
@@ -186,6 +203,8 @@ impl Ray {
             } else {
                 1.0 / eta + wo_dot_n / (eta * eta * wic_dot_n)
             };
+
+            // dμ/dx = d(wo·n)/dx · (1/η + wo·n/(η²·wi·n))
             let dmudx = dwo_dot_n_dx * mu_factor;
             let dmudy = dwo_dot_n_dy * mu_factor;
 

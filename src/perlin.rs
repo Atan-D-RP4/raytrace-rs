@@ -3,6 +3,8 @@ use rand::RngExt;
 
 use crate::vec3::Point3;
 
+/// Trilinear interpolation of a 2x2x2 grid of values `c` at the point `(u, v, w)` in [0, 1]^3.
+/// Legacy implementation, not used in the current codebase. Kept for reference.
 #[allow(dead_code)]
 fn trilinear_interp(c: [[[f32; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {
     (0..2)
@@ -15,6 +17,7 @@ fn trilinear_interp(c: [[[f32; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {
         })
 }
 
+/// Perlin interpolation of a 2x2x2 grid of gradient vectors `c` at the point `(u, v, w)` in [0, 1]^3.
 pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {
     // Hermite smoothing
     let u = u * u * (3.0 - 2.0 * u);
@@ -37,13 +40,19 @@ pub fn perlin_interp(c: [[[Vec3; 2]; 2]; 2], u: f32, v: f32, w: f32) -> f32 {
     accum
 }
 
+/// A Perlin noise generator.
 pub struct Perlin {
+    /// Random gradient vectors used for noise generation.
     randvec: [Vec3; Self::POINT_COUNT],
+    /// Permutation table for x coordinates to shuffle the gradient vectors.
     perm_x: [usize; Self::POINT_COUNT],
+    /// Permutation table for y coordinates to shuffle the gradient vectors.
     perm_y: [usize; Self::POINT_COUNT],
+    /// Permutation table for z coordinates to shuffle the gradient vectors.
     perm_z: [usize; Self::POINT_COUNT],
 }
 
+/// Default implementation for Perlin noise generator, which initializes it with random gradient vectors and permutation tables.
 impl Default for Perlin {
     fn default() -> Self {
         Self::new()
@@ -51,6 +60,7 @@ impl Default for Perlin {
 }
 
 impl Perlin {
+    /// The number of random gradient vectors and the size of the permutation tables.
     const POINT_COUNT: usize = 256;
 
     pub fn new() -> Self {
@@ -73,17 +83,23 @@ impl Perlin {
         }
     }
 
+    /// Computes the Perlin noise value at a given point `p` in 3D space.
     pub fn noise(&self, p: &Point3) -> f32 {
+        // Computes the floor of the components of the point `p` for interpolation.
         let i = p.x().floor() as i32;
         let j = p.y().floor() as i32;
         let k = p.z().floor() as i32;
 
+        // Computes the fractional part of the components of the point `p` for interpolation.
         let u = p.x() - i as f32;
         let v = p.y() - j as f32;
         let w = p.z() - k as f32;
 
+        // Creates a 2x2x2 grid of gradient vectors for interpolation.
         let mut c = [[[Vec3::ZERO; 2]; 2]; 2];
 
+        /// Fills the 2x2x2 grid of gradient vectors `c` using the permutation tables and the random
+        /// gradient vectors.
         c.iter_mut().enumerate().for_each(|(di, x)| {
             x.iter_mut().enumerate().for_each(|(dj, y)| {
                 y.iter_mut().enumerate().for_each(|(dk, z)| {
@@ -96,14 +112,20 @@ impl Perlin {
             });
         });
 
+        // Performs Perlin interpolation on the grid of gradient vectors `c` at the fractional
+        // coordinates `(u, v, w)`.
         perlin_interp(c, u, v, w)
     }
 
+    /// Computes the turbulence value at a given point `point` in 3D space, with a specified depth
+    /// of recursion.
     pub fn turbulence(&self, point: Point3, depth: i32) -> f32 {
         let mut tmp_point = point;
         let mut weight = 1.;
         let mut accum = 0.0;
 
+        // Performs a recursive accumulation of noise values at scaled versions of the input point,
+        // weighted by decreasing factors.
         for _ in 0..depth {
             accum += weight * self.noise(&tmp_point);
             weight *= 0.5;
@@ -113,12 +135,15 @@ impl Perlin {
         accum
     }
 
+    /// Generates a random permutation of integers from 0 to POINT_COUNT - 1.
     fn generate_perm() -> [usize; Self::POINT_COUNT] {
         let mut p = std::array::from_fn(|i| i);
         Self::permute(&mut p);
         p
     }
 
+    /// Randomly permutes the elements of the input array `p` in place using the Fisher-Yates
+    /// shuffle
     fn permute(p: &mut [usize; Self::POINT_COUNT]) {
         let mut rng = rand::rng();
         (1..Self::POINT_COUNT).rev().for_each(|i| {

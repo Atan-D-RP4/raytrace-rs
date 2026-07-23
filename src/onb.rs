@@ -1,6 +1,10 @@
 use crate::vec3::Direction3;
 use glam::Vec3;
 
+/// An orthonormal basis (ONB) represented by three mutually perpendicular unit vectors: u, v, and w.
+///
+/// The ONB is constructed such that w is aligned with a given normal vector, and u and v are
+/// tangent and bitangent vectors, respectively.
 #[derive(Clone)]
 pub struct Onb {
     /// u is bitangent

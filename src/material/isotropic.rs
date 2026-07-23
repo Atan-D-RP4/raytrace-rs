@@ -34,9 +34,8 @@ pub struct IsotropicMaterial {
 }
 
 impl Bsdf for IsotropicMaterial {
-    /// Returns the attenuation color (texture or solid albedo) with `Vec3::ZERO`
-    /// as a placeholder direction. The integrator generates the actual scattered
-    /// direction.
+    /// Isotropic scattering is non-directional, so the BSDF does not depend on the outgoing
+    /// direction `wo`. The integrator generates the actual scattered direction.
     fn scatter(
         &self,
         _wo: Direction3,

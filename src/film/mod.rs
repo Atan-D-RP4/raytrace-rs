@@ -12,6 +12,10 @@ use image::{ImageResult, RgbImage};
 
 use crate::vec3::Color3;
 
+/// Post-process a linear RGB color to sRGB8 with exposure and optional tone mapping.
+/// - `color`: linear RGB color in [0,1] range.
+/// - `exposure`: exposure multiplier.
+/// - `tone_map`: whether to apply tone mapping (Reinhard) before gamma correction
 #[inline(always)]
 fn post_process(color: Color3, exposure: f32, tone_map: bool) -> [u8; 3] {
     // Scale by sample count, exposure, and apply gamma correction.
@@ -30,6 +34,9 @@ fn post_process(color: Color3, exposure: f32, tone_map: bool) -> [u8; 3] {
     ]
 }
 
+/// Reinhard tone mapping operator for HDR to LDR conversion.
+/// - `exposure`: exposure multiplier.
+/// - `color`: linear RGB color in [0,1] range.
 #[inline(always)]
 const fn reinhard_tone_map(exposure: f32, color: Color3) -> Color3 {
     let mapped = Vec3::new(
@@ -44,8 +51,8 @@ const fn reinhard_tone_map(exposure: f32, color: Color3) -> Color3 {
     )
 }
 
+///
 #[inline(always)]
-/// Converts a linear color channel to gamma-corrected (gamma=2) space.
 fn linear_to_gamma(linear_component: f32) -> f32 {
     if linear_component > 0. {
         linear_component.sqrt()
@@ -91,10 +98,11 @@ pub trait Film: Send + Sync {
         min_samples: u32,
     ) -> Vec<bool>;
 
-    /// Refills an existing convergence mask `out` in place, avoiding allocation.
-    /// The slice must have length == pixel count.
-    /// Returns `true` if every pixel converged (allows early exit without a
-    /// separate `all()` scan over the mask).
+    /// Refills an existing convergence mask `out` in place, avoiding allocation. The slice must
+    /// have length == pixel count.
+    ///
+    /// Returns `true` if every pixel converged (allows early exit without a separate `all()` scan
+    /// over the mask).
     fn reset_convergence_mask(
         &self,
         threshold_rel: f32,

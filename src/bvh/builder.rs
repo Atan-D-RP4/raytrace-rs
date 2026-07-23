@@ -23,19 +23,31 @@ const BVH_LEAF_THRESHOLD: usize = 4;
 /// No generic parameter needed — leaf objects are trait-object slices
 /// that provide both `Intersectable` and `Bounded`.
 pub enum TreeBuilder {
+    /// An empty BVH node, used for empty scenes or empty child nodes.
     Empty,
+    /// An interior BVH node with two child nodes and a bounding box that encloses both children.
     Interior {
+        /// The left child node.
         left: Box<TreeBuilder>,
+        /// The right child node.
         right: Box<TreeBuilder>,
+        /// The bounding box that encloses both child nodes.
         bbox: Aabb,
     },
+    /// A leaf BVH node that contains multiple objects and a bounding box that encloses all of them.
     LeafN {
+        /// The objects contained in this leaf node.
         objects: [Arc<dyn Intersectable>; BVH_LEAF_THRESHOLD],
+        /// The number of objects contained in this leaf node.
         count: usize,
+        /// The bounding box that encloses all objects in this leaf node.
         bbox: Aabb,
     },
+    /// A leaf BVH node that contains a single object and a bounding box that encloses it.
     Leaf {
+        /// The object contained in this leaf node.
         object: Arc<dyn Intersectable>,
+        /// The bounding box that encloses the object in this leaf node.
         bbox: Aabb,
     },
 }
