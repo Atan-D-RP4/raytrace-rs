@@ -22,6 +22,7 @@ const BVH_LEAF_THRESHOLD: usize = 4;
 ///
 /// No generic parameter needed — leaf objects are trait-object slices
 /// that provide both `Intersectable` and `Bounded`.
+#[derive(Clone)]
 pub enum TreeBuilder {
     /// An empty BVH node, used for empty scenes or empty child nodes.
     Empty,

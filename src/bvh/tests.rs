@@ -158,7 +158,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
 
     let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];
     let bvh = TreeBuilder::new(&mut objects);
-    let flat = Bvh::<2>::from(bvh);
+    let flat = Bvh::<2>::from(bvh.clone());
 
     // Test several rays: some hit, some miss.
     let test_rays = vec![
@@ -189,7 +189,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
     // Verify that widening to W=4 produces identical intersection results.
     let wide: Bvh<4> = flat.widen();
     for &(origin, direction, should_hit) in &test_rays {
-        let ray = Ray::new_with_time(Point3(origin), Direction3(direction), 0.0);
+        let ray = Ray::new_with_time(origin.into(), direction.into(), 0.0);
         let wide_result = wide.intersect(&ray, Interval::from(0.001, f32::INFINITY));
         assert_eq!(
             wide_result.is_some(),
@@ -198,6 +198,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
         );
     }
 
+    let flat = Bvh::<2>::from(bvh);
     // Wide node count should be ≤ original binary node count.
     assert!(
         wide.node_count() <= flat.node_count(),

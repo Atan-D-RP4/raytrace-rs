@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use glam::Vec3;
+use glam::{Affine3A, Vec3};
 use rand::RngExt;
 use tracing::{info, trace};
 
@@ -25,7 +25,7 @@ use crate::texture::{
     CheckerTexture, ImageTexture, NoiseTexture, SolidColor, SphericalUvMapping, Texture,
     TriplanarMapping, UvCheckerTexture, WorldSpaceMapping,
 };
-use crate::transform::{RotateY, TransformObject, Translate};
+use crate::transform::{StaticTransform, TransformObject};
 use crate::vec3::{Color3, Direction3, Point3};
 
 pub struct Scene {
@@ -363,7 +363,7 @@ impl Scene {
             )));
         }
 
-        let cluster: TransformObject<Translate, TransformObject<RotateY, TreeBuilder>> = {
+        let cluster = {
             let mut boxes = boxes2;
             let boxes_len = boxes.len();
             info!(
@@ -371,8 +371,11 @@ impl Scene {
                 "assembled complex_scene sphere cluster"
             );
             TransformObject::new(
-                Translate::new(Vec3::new(-100., 270., 395.)),
-                TransformObject::new(RotateY::new(15.), TreeBuilder::new(&mut boxes)),
+                // Translate::new(Vec3::new(-100., 270., 395.)),
+                StaticTransform::from_affine3a(Affine3A::from_translation(Vec3::new(
+                    -100., 270., 395.,
+                ))),
+                TransformObject::new(StaticTransform::rotation_y(15.), TreeBuilder::new(&mut boxes)),
             )
         };
         scene.objects.push(Arc::new(cluster));
@@ -418,9 +421,13 @@ impl Scene {
             .map(|(size, translate_vec, rotate_angle, mat, phase_fn)| {
                 let quad_box = shape_box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
 
-                let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
+                let rotated =
+                    TransformObject::new(StaticTransform::rotation_y(*rotate_angle), quad_box);
 
-                let wrapped = TransformObject::new(Translate::new(*translate_vec), rotated);
+                let wrapped = TransformObject::new(
+                    StaticTransform::from_affine3a(Affine3A::from_translation(*translate_vec)),
+                    rotated,
+                );
                 let const_medium = ConstantMedium::new(Arc::new(wrapped), 0.01, phase_fn.clone());
 
                 Arc::new(const_medium) as Arc<dyn Intersectable>
@@ -465,8 +472,12 @@ impl Scene {
             .map(|(size, translate_vec, rotate_angle, mat)| {
                 let quad_box = shape_box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
 
-                let rotated = TransformObject::new(RotateY::new(*rotate_angle), quad_box);
-                let wrapped = TransformObject::new(Translate::new(*translate_vec), rotated);
+                let rotated =
+                    TransformObject::new(StaticTransform::rotation_y(*rotate_angle), quad_box);
+                let wrapped = TransformObject::new(
+                    StaticTransform::from_affine3a(Affine3A::from_translation(*translate_vec)),
+                    rotated,
+                );
 
                 Arc::new(wrapped) as Arc<dyn Intersectable>
             });

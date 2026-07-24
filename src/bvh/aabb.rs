@@ -199,7 +199,7 @@ impl<const W: usize> AabbPacked<W> {
         for axis in 0..3 {
             for i in 0..W {
                 let size = self.max[axis][i] - self.min[axis][i];
-                if size < Self::DELTA {
+                if size.is_finite() && size < Self::DELTA {
                     let mid = 0.5 * (self.min[axis][i] + self.max[axis][i]);
                     self.min[axis][i] = mid - 0.5 * Self::DELTA;
                     self.max[axis][i] = mid + 0.5 * Self::DELTA;

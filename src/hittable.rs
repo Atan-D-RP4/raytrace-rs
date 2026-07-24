@@ -26,9 +26,11 @@ pub struct Hit {
     /// so this decouples world-space translation from the texture coordinate frame.
     pub mapping_point: Point3,
     /// Optional UV coordinates for the hit point. `None` for Volume or other primitives that may
-    /// not have UVs.
+    /// not have UVs. For surfaces with UVs, this is typically in the range [0, 1] for both u and v.
     pub uv: Option<(f32, f32)>,
-    // Optional UV gradient for texture filtering. `None` if not computed.
+    /// Optional UV gradient for texture filtering. `None` if not computed. `du_dp` and `dv_dp` are
+    /// the partial derivatives of the UV coordinates with respect to the world-space position. Used
+    /// for texture filtering (e.g., MIP mapping).
     pub uv_gradients: Option<(Direction3, Direction3)>,
 
     /// Local surface curvature: how fast the surface normal changes per unit distance
