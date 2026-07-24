@@ -1,10 +1,37 @@
-# Mesh Feature: Shape3D + Internal BVH
+# Mesh Feature: MeshShape + Internal BVH
 
-## Design v7 — Codebase Reconciliation: BVH, Sampleable, glam/f32
+## Design v9 — Architecture Restored: MeshShape + Internal BVH with v8 Improvements
 
 ______________________________________________________________________
 
 ## Changelog
+
+- **v9 (2026-07-24)** — MeshShape + internal BVH restored. v8's Triangle-as-Shape
+  over-corrected: our `Bvh<W>` stores `Arc<dyn Intersectable>` at leaves (not inline
+  8-byte index pairs like pbrt-v4), making per-triangle `Arc` allocation + vtable
+  dispatch expensive. MeshShape wraps shared `MeshData` with an always-on
+  `MeshBvh` (`BvhNode<2>` over triangle AABBs) for tight spatial clustering and
+  one scene entry per mesh (not per triangle). v8 improvements retained:
+  From impls (Tessellatable → MeshData), per-triangle materials buffer, clean
+  `src/mesh/{mod,data,shape}.rs` structure, transform sharing via `Arc<MeshShape>`.
+
+- **v8 (2026-07-24)** — Architecture pivot: triangles in scene BVH, no internal mesh BVH.
+  - **Mesh is shared data, not a Shape.** Individual `TriangleShape` instances
+    (8 bytes: `Arc<MeshData>` + tri_index) implement `Shape3D` and go directly
+    into the scene BVH. No `MeshShape`, no `MeshBvh`.
+  - **No separate mesh-internal BVH.** Triangles live in the scene BVH like
+    any other shape. This matches pbrt-v4's `Triangle` + `TriangleMesh` pattern
+    and eliminates the two-level BVH complexity.
+  - **From impls for Tessellatable.** `PlanarShape<R>` collections and
+    `Tessellatable` regions convert into `MeshData` via `From` impls, enabling
+    procedural → mesh conversion for batching, instancing, or file export.
+  - **Per-triangle materials.** `MeshData` gains an optional `materials: Vec<Arc<Material>>`
+    buffer. When present, each triangle references its own material.
+  - **All `PlanarPatch` references removed from body** (kept in changelog only).
+  - **§2.3 flipped:** Individual triangles as Shapes is now the *goal*, not a non-goal.
+  - **§3 rewritten:** `TriangleShape` replaces `MeshShape` + `MeshBvh`.
+  - **§4 updated:** Comparison table now favors Triangle-as-Shape.
+  - **§5/§6/§7/§8 updated** for new architecture.
 
 - **v7 (2026-07-23)** — Codebase reconciliation: BVH restructure, Sampleable decoupling, glam/f32.
   - **BVH module restructured.** `src/bvh.rs` + `src/flat_bvh.rs` merged into
@@ -85,7 +112,7 @@ ______________________________________________________________________
 ## 0. Problem Statement
 
 The renderer supports spheres (`SphereShape`) and planar primitives
-(`PlanarPatch<R>` for quads, triangles, ellipses, etc.). It has no way to
+(`PlanarShape<R>` for quads, triangles, ellipses, etc.). It has no way to
 represent a **triangle mesh** — a collection of thousands of triangles sharing
 vertex data and (typically) a single material.
 
@@ -99,8 +126,9 @@ A mesh is architecturally different from a sphere or a quad:
 | **Material** | Single (always) | Typically single, occasionally per-face |
 | **Data sharing** | None | Vertex/index buffers shared across all triangles |
 
-A mesh cannot be a `PlanarPatch<TriRegion>` — that represents a single
-triangle on a plane, not a collection with shared acceleration.
+A single triangle on a plane is a `PlanarShape<TriRegion>` — that's a
+self-contained shape with no shared data. A mesh is different: thousands of
+triangles sharing vertex/index buffers, referenced by lightweight index pairs.
 
 ______________________________________________________________________
 
@@ -178,12 +206,9 @@ Bvh<W> (src/bvh/mod.rs)
 
 ### 2.2 Key Constraints
 
-- **`Bvh<W>` leaf primitives are `Arc<dyn Intersectable>`**, returning
-  `MaterialHit` (geometry + material reference). For mesh-internal BVH
-  we need geometry-only intersection (`Hit`, no material). `Bvh<W>` stores
-  `Vec<Arc<dyn Intersectable>>` and can't be directly reused — `MeshBvh`
-  uses the same `BvhNode<W>` node format but with `Vec<u32>` tri_indices
-  and its own construction pipeline (not `TreeBuilder`).
+- **`Bvh<W>` leaf primitives are `Arc<dyn Intersectable>`** — mesh is
+  a single `MeshShape` in the scene BVH, not per-triangle `Arc` entries.
+  Triangles are an internal detail of the mesh's `MeshBvh`.
 
 - **`Hit::geometric_normal` is `pub(crate)`** — must use `Hit::new()` or
   `set_geometric_normal()`.
@@ -199,67 +224,52 @@ Bvh<W> (src/bvh/mod.rs)
   `Point3`, `Direction3`, `Color3` are newtype wrappers in `src/vec3.rs`.
   `MeshData.positions` stores `Point3` (wraps `glam::Vec3`).
 
-### 2.3 Non-Goal: Individual Mesh Triangles as Shape3Ds
+### 2.3 Non-Goal: Individual Triangles as Shape3Ds
 
-We will NOT create a pbrt-style `MeshTriangle` index-pair that implements
-`Shape3D` and gets individually wrapped in `ShapeObject`. The reasons:
+Unlike pbrt-v4, individual mesh triangles are **not** registered as separate
+`Shape3D` instances in the scene BVH. This is an architectural consequence of
+our BVH storing `Arc<dyn Intersectable>` at leaves — pbrt-v4's `Triangle`
+works as a separate `Shape` because it stores 8-byte index pairs inline in a
+flat `GeometricPrimitive` array. Our `Bvh<W>` allocates one heap `Arc` per
+primitive, making 100K triangles incur ~1.6 MB of `Arc` overhead plus vtable
+dispatch per intersection. Not acceptable for the core mesh path.
 
-1. **`Arc<dyn Intersectable>` overhead.** Each triangle would need a heap
-   allocation for the `ShapeObject` + `Arc`. At 100K triangles this is
-   prohibitive — memory pressure, cache misses, BVH construction time.
+Instead:
 
-2. **No per-triangle material use case yet.** The codebase always assigns
-   one material per shape. Per-face materials can be added later via a
-   material-index buffer + `Sampleable` override.
+1. **Mesh is a single Shape3D (`MeshShape`).** Contains an always-on internal
+   BVH (`MeshBvh`) over its triangle AABBs. Triangles are an implementation
+   detail — not exposed as public `Shape3D` instances.
 
-3. **`Bvh<W>` stores `Vec<Arc<dyn Intersectable>>`.** The parametric wide BVH
-   is designed for scene-level objects (hundreds), not mesh-level triangles
-   (hundreds of thousands). Each triangle needs geometry-only intersection
-   without vtable overhead. A mesh needs its own internal accelerator using
-   the same `BvhNode<W>` format but with triangle indices.
+2. **One scene entry per mesh.** `ShapeObject<MeshShape, M>` registers once
+   in the scene BVH, in both `Intersectable` and `Sampleable` lists if
+   emissive. No per-triangle `Arc` overhead.
+
+3. **Per-triangle materials via buffer, not individual shapes.** `MeshData`
+   carries an optional `per_tri_material: Vec<Arc<Material>>` buffer. The
+   material is selected at intersection time within `MeshShape`'s traversal —
+   no `Sampleable` override needed.
+
+4. **MeshBvh is always-on** — even for small meshes the overhead is
+   negligible (a 2-triangle quad produces ~3 BVH nodes × 64 bytes ~192 bytes).
+   The single `Bvh<2>` (binary BVH) provides tighter spatial clustering than
+   distributing triangles across scene BVH leaves.
+
+The `Tessellatable`/`PlanarShape` → `MeshData` conversion path (v8 addition)
+is retained: procedural shapes can be converted into shared mesh data, and
+the resulting `MeshShape` is registered as a single scene entry.
 
 ______________________________________________________________________
 
-### 2.4 PlanarPatch / Region2D → PlanarShape Unification
+### 2.4 PlanarShape vs Mesh — When to Use Which
 
-**(This fork has been resolved.)** The renderer originally had two structurally
-separate object models that converged at the scene level but shared zero
-implementation beneath it. The `Region2D` + `PlanarPatch<R, M>` system handled
-planar primitives; `Shape3D` + `ShapeObject<Sh, M>` handled analytic
-(SphereShape) and future mesh shapes. The `PlanarShape<R>` type was created
-to bridge them: it takes the geometry of `PlanarPatch` (corner, side_a, side_b,
-region) and implements `Shape3D`, so `ShapeObject<PlanarShape<R>, M>` replaces
-`PlanarPatch<R, M>` entirely.
+`PlanarShape<R>` and mesh triangles serve different use cases. They share the
+`Shape3D` → `ShapeObject` pipeline and are interchangeable at the scene level.
 
-`PlanarPatch` has been **deleted** (no deprecation period). `Region2D` and all
-region implementations (`QuadRegion`, `TriRegion`, etc.) now live in
-`src/shape/regions/` alongside `PlanarShape` in `src/shape/planar.rs`.
-
-The unification diagram was:
-
-```
-Scene BVH: Arc<dyn Intersectable> / Arc<dyn Sampleable>
-                    │
-            ┌───────┴───────┐
-            │               │
-       Shape3D trait    Region2D trait (implementation detail of PlanarShape)
-            │
-    ShapeObject<Sh, M>
-            │
-       ┌────┴────┐
-       │         │
-   SphereShape  PlanarShape<R>
-                (all Region2D types)
-```
-
-Both ends up as `Arc<dyn Intersectable>` in the scene BVH via `ShapeObject`,
-so at the *scene* level they remain interchangeable.
-
-The trait-level relationship after unification:
+The trait-level relationship:
 
 | Layer | Shape3D + ShapeObject | Region2D (inside PlanarShape) |
 |---|---|---|
-| **Intersection strategy** | Analytic (sphere/box) or BVH + Möller–Trumbore (mesh, future) | Plane intersection + `R::contains(a,b)` containment test |
+| **Intersection strategy** | Analytic (sphere/box) or BVH + Möller–Trumbore (mesh) | Plane intersection + `R::contains(a,b)` containment test |
 | **Shape definition** | Parametric surface or vertex/index buffer | Parametric `Region2D` trait with `(a,b) → bool` |
 | **UV mapping** | Analytic (sphere/box) or barycentric (mesh) | `R::uv(a,b)` from plane basis vectors |
 | **UV gradients** | Analytic (constant for planar/box) or barycentric (mesh) | Analytic from `side_a`/`side_b` (exact, smooth, free) |
@@ -271,16 +281,15 @@ The trait-level relationship after unification:
 
 | Shape Category | Example | Route | Reason |
 |---|---|---|---|
-| **Large flat surface** | Wall, floor, ceiling | `PlanarShape<QuadRegion>` → `ShapeObject` | Single plane intersection vs 2 mesh triangles + BVH. Faster, no approximation. |
-| **Curved planar boundary** | Ellipse, annulus, rounded rect, superellipse | `PlanarShape<R>` → `ShapeObject` | Exact mathematical containment. Mesh requires tessellation → approximation error. |
-| **Arbitrary boolean region** | Logo silhouette, fractal, function-defined mask | `PlanarShape<FunctionRegion>` → `ShapeObject` | Zero discretization error — evaluates closure at intersection time. |
-| **Single procedural triangle** | Custom triangle in code | `PlanarShape<TriRegion>` → `ShapeObject` | One triangle, no index buffer, no BVH overhead. |
-| **Complex concave polygon** | Cookie-cutter mask, architectural detail | `PlanarShape<PolygonRegion>` → `ShapeObject` | Exact ear-clipping intersection, no tessellation needed. |
-| **Per-face materials** | Box with different materials per face | 6× `quad()` calls (via `box3d()`) | Face-level granularity. Mesh has one material per triangle group. |
-| **File-loaded geometry** | glTF/OBJ scene, 100K triangles | `MeshShape` | Cannot construct by hand. Shared vertex buffers, two-level BVH. |
-| **Complex surfaces** | Furniture, characters, organic | `MeshShape` | Smooth normals via per-vertex interpolation. Barycentric UVs. |
-| **Instancing (many copies)** | Forest, cityscape | `Arc<MeshShape>` + `TransformObject` | One BVH shared by all instances via `Arc`. Planar shapes duplicate all data. |
-| **Large procedural batches** | Voxel structure, grid of identical elements | `MeshShape` (with procedural `MeshData::*` constructor) | Single scene-BVH entry per batch. Internal BVH at mesh granularity. |
+| **Large flat surface** | Wall, floor, ceiling | `PlanarShape<QuadRegion>` → `ShapeObject` | Single plane intersection vs 2 mesh triangles. Faster, exact. |
+| **Curved planar boundary** | Ellipse, annulus, rounded rect | `PlanarShape<R>` → `ShapeObject` | Exact mathematical containment. Mesh requires tessellation. |
+| **Arbitrary boolean region** | Logo silhouette, fractal mask | `PlanarShape<FunctionRegion>` → `ShapeObject` | Zero discretization error — evaluates closure at intersection time. |
+| **Single procedural triangle** | Custom triangle in code | `PlanarShape<TriRegion>` → `ShapeObject` | One triangle, no index buffer, no sharing overhead. |
+| **Per-face materials** | Box with different materials per face | 6× `quad()` calls (via `box3d()`) | Face-level granularity. |
+| **File-loaded geometry** | glTF/OBJ scene, 100K triangles | `MeshShape` via `add_mesh()` | Cannot construct by hand. Shared vertex buffers. |
+| **Complex surfaces** | Furniture, characters, organic | `MeshShape` via `add_mesh()` | Smooth normals via per-vertex interpolation. Barycentric UVs. |
+| **Instancing (many copies)** | Forest, cityscape | `Arc<MeshShape>` + `TransformObject` | One `MeshShape` shared by all instances. |
+| **Large procedural batches** | Voxel structure, grid of elements | `MeshShape` via `add_mesh()` | Many triangles, single scene entry. |
 
 #### The `FunctionRegion` Clarification
 
@@ -293,9 +302,9 @@ mathematical objects:
 | **Signature** | `(a, b) → bool` | `z = f(x, y)` |
 | **Defines** | Which (a,b) points are "in" on a flat plane | A displaced surface via z-offset per (x,y) |
 | **Mesh representation** | Requires marching-squares boundary approximation (lossy) | Well-represented by grid tessellation (exact at sample points) |
-| **Best representation** | Keep as `PlanarPatch<FunctionRegion>` (exact) | Tessellated mesh (standard approach, used by pbrt Heightfield → triangle mesh conversion) |
+| **Best representation** | Keep as `PlanarShape<FunctionRegion>` (exact) | Tessellated mesh (standard approach, used by pbrt Heightfield → triangle mesh conversion) |
 
-The conclusion (keep `FunctionRegion` as `PlanarPatch`) is correct; the
+The conclusion (keep `FunctionRegion` as `PlanarShape`) is correct; the
 height-field case cuts the other way (a height field is well-represented as
 a mesh). The `FunctionRegion` case is actually the *strongest* argument for
 keeping the planar system — an arbitrary boolean boundary (possibly fractal,
@@ -304,12 +313,12 @@ intersection time, which no finite triangle tessellation can match.
 
 #### Summary
 
-`PlanarPatch<R>` stays as the procedural/analytical/primitive system.
+`PlanarShape<R>` stays as the procedural/analytical/primitive system.
 `MeshShape` is the file-loaded/complex/instanced system. They overlap only
 at the scene traits and should not share code below that — forcing them
 to unify would be a net loss of expressiveness or performance for both.
 
-## 3. Design: Mesh as Shape3D with Internal BVH
+## 3. Design: MeshShape with Internal BVH
 
 ### 3.1 Data Structures
 
@@ -319,18 +328,18 @@ to unify would be a net loss of expressiveness or performance for both.
 /// Shared mesh vertex/index data. Cheaply cloneable via Arc.
 pub struct MeshData {
     pub positions: Vec<Point3>,
-    pub normals: Vec<Direction3>,  // per-vertex, may be empty
-    pub uvs: Vec<(f32, f32)>,     // per-vertex UVs, may be empty
-    pub indices: Vec<[u32; 3]>,  // triangle vertex indices
+    pub normals: Vec<Direction3>,       // per-vertex, may be empty
+    pub uvs: Vec<(f32, f32)>,          // per-vertex UVs, may be empty
+    pub indices: Vec<[u32; 3]>,        // triangle vertex indices
+    pub per_tri_material: Option<Vec<Arc<Material>>>,  // per-triangle materials
 }
 ```
 
 `MeshData` is the `TriangleMesh` equivalent from pbrt. Stored in an `Arc`
-and shared by all references to the mesh geometry. Immutable after
-construction.
+and shared by all triangles in the mesh. Immutable after construction.
 
 ```rust
-// ─── src/bvh/mesh.rs ───
+// ─── src/bvh/bvh.rs ─── (or src/mesh/bvh.rs)
 
 /// Internal wide BVH over mesh triangles. Geometry-only.
 ///
@@ -347,7 +356,7 @@ construction.
 pub struct MeshBvh {
     nodes: Vec<BvhNode<2>>,      // same BvhNode<W> format as scene BVH
     tri_indices: Vec<u32>,       // triangle indices in traversal order
-    mesh_data: Arc<MeshData>,    // source vertex data
+    leaf_counts: Vec<u32>,       // primitive count per leaf node
 }
 ```
 
@@ -370,17 +379,16 @@ with a 64K-node BVH costs ~4 MB for nodes + ~400 KB for tri_indices.
 ///       MeshShape::from_data(data),
 ///       material,
 ///   ));
+///
+/// Or, for instancing, wrap Arc<MeshShape> directly:
+///   let shape: Arc<dyn Intersectable> = Arc::new(MeshShape::from_data(data));
 pub struct MeshShape {
     data: Arc<MeshData>,
     bvh: MeshBvh,
-    bbox: Aabb,          // precomputed from all triangle AABBs
-    area: f32,            // precomputed sum of triangle areas
+    bbox: Aabb,            // precomputed from all triangle AABBs
+    area: f32,              // precomputed sum of triangle areas
 }
-```
 
-### 3.2 Shape3D Implementation
-
-```rust
 impl Shape3D for MeshShape {
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
         // Traverse MeshBvh:
@@ -393,13 +401,9 @@ impl Shape3D for MeshShape {
         self.bvh.intersect(ray, ray_t)
     }
 
-    fn bounding_box(&self) -> Aabb {
-        self.bbox
-    }
+    fn bounding_box(&self) -> Aabb { self.bbox }
 
-    fn area(&self) -> f32 {
-        self.area
-    }
+    fn area(&self) -> f32 { self.area }
 
     fn sample(&self, u: f32, v: f32, time: f32) -> (Point3, Direction3) {
         // Uniform triangle sampling:
@@ -409,49 +413,76 @@ impl Shape3D for MeshShape {
         //   4. Return (point, normal)
     }
 
-    // sample_direction  — uses default (area-based) ⇒ fine for meshes
-    // pdf_direction     — uses default (area-to-solid-angle) ⇒ fine for meshes
+    // Uses default area-to-solid-angle conversion — fine for meshes.
+    // Shape-specific ONB-based sampling can override for lower variance
+    // on emissive meshes, but the default is correct for all shapes.
 }
 ```
 
-### 3.3 `MeshHit` Struct (Internal)
+`MeshShape` bundles all mesh data:
+- **`Arc<MeshData>`** — shared vertex data, cloneable for instancing.
+- **`MeshBvh`** — a `Bvh<2>` (binary BVH) over triangle AABBs, constructed
+  once during `MeshShape::new()`. Always-on: even a 2-triangle quad needs
+  only ~3 nodes × 64 bytes ≈ 192 bytes.
+- **`bbox` / `area`** — precomputed at construction for O(1) access.
+
+### 3.2 MeshBvh — Internal Acceleration
+
+`MeshBvh` is a `Bvh<2>` built from triangle AABBs during `MeshShape` construction.
+`TreeBuilder` (scene BVH) is not reusable — it stores `Arc<dyn Intersectable>` at
+leaves. `MeshBvh` has its own SAH construction over triangle-index AABBs:
+
+- **Primitive**: triangle index range, not `Arc<dyn Intersectable>`.
+- **AABB computation**: fetches vertex positions from `MeshData`.
+- **Centroid**: triangle centroid (average of 3 vertices).
+- **Parallel**: `rayon::join` for recursive splitting (same pattern as scene BVH).
+- **Output**: flat `BvhNode<2>` array + triangle index array.
+
+Internal intersection returns an intermediate result before material resolution:
 
 ```rust
-/// Intermediate hit result produced by MeshBvh traversal.
-/// Converted to `Hit` before returning from `intersect_shape`.
+/// Intermediate hit from MeshBvh traversal. Converted to Hit by MeshShape.
 struct MeshHit {
     t: f32,
     point: Point3,
     normal: Direction3,  // geometric normal (unit length)
     uv: (f32, f32),      // barycentric → texture UV
-    tri_index: u32,
+    tri_index: u32,      // for per-triangle material lookup
 }
 ```
 
-### 3.4 Möller–Trumbore Integration
+```rust
+// ─── src/mesh/bvh.rs ───
 
-The triangle intersection routine needs to handle:
+/// Geometry-only BVH traversal — returns (t, tri_index, barycentric).
+/// Struct defined in §3.1. See that section for fields.
+impl MeshBvh {
+    fn intersect(&self, ray: &Ray, ray_t: Interval) -> Option<MeshHit> { ... }
+}
+```
 
-- **Watertight intersection** via pbrt-v4's two-layer approach:
-  1. **Primary: ray-space permute + shear transform.** Find the ray's dominant
-     axis (`kz`), permute vertices so `kz` is the shear axis, then shear the
-     transformed 2D coordinates so the ray is axis-aligned. This uses
-     `DifferenceOfProducts` (a fused multiply-subtract that reduces catastrophic
-     cancellation) for edge function evaluation.
-  2. **Secondary: double-precision fallback.** When edge coefficients `e0`, `e1`,
-     or `e2` are exactly zero in single precision, re-evaluate the problematic
-     terms using double-precision arithmetic.
-  
-  The key insight: the permute+shear transform itself makes intersection robust
-  by simplifying the math. The double-precision fallback is only triggered at
-  edges where single precision produces exact zero. This is required for
-  production quality — **do not defer** to Phase 2.
-- **Back-face culling** is NOT performed — the `set_face_normal` logic
-  in `SurfaceInteraction` handles front-face determination.
-- **UV interpolation** when `mesh.normals` / `mesh.uvs` are present.
-- **Shading normal interpolation** from per-vertex normals when available.
+Traversal:
+```
+1. Node stack traversal (max depth ≈ 2·log₂(N))
+2. Interior node: test ray against AABB of each child (SIMD via AabbPacked<2>)
+3. Push hit children onto stack, closest-first
+4. Leaf node: iterate tri_indices[offset..offset + count]
+5. For each triangle: fetch vertices from MeshData, run Moller–Trumbore
+6. Track closest t, interpolate normal/UV
+```
 
-The intersection function is:
+Key choices:
+- **Binary (`W=2`)** — mesh triangles are cheap to intersect; wide BVH SIMD
+  benefits are outweighed by leaf decompression overhead.
+- **Geometry-only** — returns `(t, tri_index, barycentric)`, not `MaterialHit`.
+  Material resolved after traversal from `ShapeObject`'s material or
+  `MeshData.per_tri_material`.
+- **Always-on** — ~3 nodes for a 2-triangle quad; ~200K nodes for 100K
+  triangles (~12.8 MB). No threshold needed.
+
+### 3.3 Moller–Trumbore Integration
+
+Each leaf triangle uses pbrt-v4 watertight intersection:
 
 ```rust
 fn intersect_triangle(
@@ -460,110 +491,153 @@ fn intersect_triangle(
 ) -> Option<(f32, f32, f32, f32)>  // (t, b0, b1, b2) barycentric coords
 ```
 
-### 3.5 BVH Construction
+Two-layer watertight approach:
 
-The mesh BVH construction uses SAH binning (same algorithm as `TreeBuilder`) but:
+1. **Primary: ray-space permute + shear.** Find the ray's dominant axis (`kz`),
+   permute vertices so `kz` is the shear axis, then shear the transformed 2D
+   coordinates so the ray is axis-aligned. Edge function evaluation uses
+   `DifferenceOfProducts` (a fused multiply-subtract that reduces catastrophic
+   cancellation at shared edges).
 
-- Primitives are triangle index ranges, not `Arc<dyn Intersectable>`
-- AABB computation fetches vertex positions from `MeshData`
-- Centroid computation uses the triangle's centroid (average of 3 vertices)
-- Uses `rayon::join` for parallel construction (same as scene BVH). A separate `MeshTreeBuilder` or equivalent handles triangle AABBs without `Arc<dyn Intersectable>` overhead.
+2. **Secondary: double-precision fallback** — when edge coefficients `e0`, `e1`,
+   or `e2` are exactly zero in single precision, re-evaluate the problematic
+   terms using double precision.
 
-The output is a `MeshBvh` (flat BVH node array + triangle index array).
+The key insight: the permute+shear transform itself makes intersection robust
+by simplifying the math. The double-precision fallback only fires when single
+precision produces exact zero at edges — it is NOT the primary technique.
+Production renderers require both layers for watertight results — **do not defer** to Phase 2.
 
-### 3.6 Scene Integration
+No back-face culling — `set_face_normal` handles orientation. UV interpolation
+from `mesh.uvs` and shading normal from `mesh.normals` when present.
 
-```rust
-// In src/shape/mod.rs — blanket impl so Arc<MeshShape> can be used in ShapeObject
+### 3.4 Scene Integration
 
-impl Shape3D for Arc<MeshShape> {
-    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
-        self.as_ref().intersect_shape(ray, ray_t)
-    }
-    fn bounding_box(&self) -> Aabb { self.as_ref().bounding_box() }
-    fn area(&self) -> f32 { self.as_ref().area() }
-    fn sample(&self, u: f32, v: f32, time: f32) -> (Point3, Direction3) {
-        self.as_ref().sample(u, v, time)
-    }
-    fn sample_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
-        self.as_ref().sample_direction(origin, u, v, time)
-    }
-    fn pdf_direction(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
-        self.as_ref().pdf_direction(origin, direction, time)
-    }
-}
-```
-
-This enables dual registration without deep-copying the mesh BVH:
+`add_mesh()` creates one `ShapeObject<MeshShape>` per mesh. For single
+meshes (no instancing), the `MeshShape` is owned directly by `ShapeObject`:
 
 ```rust
-// In src/scene.rs — following add_sphere pattern, shares BVH via Arc
-
 impl Scene {
-    pub fn add_mesh(&mut self, data: Arc<MeshData>, material: impl Into<Material>) {
+    pub fn add_mesh(
+        &mut self,
+        data: Arc<MeshData>,
+        material: impl Into<Material>,
+    ) {
         let material = Arc::new(material.into());
-        let mesh_shape = Arc::new(MeshShape::from_data(data));
-        // First ShapeObject consumes mesh_shape.clone() (cheap Arc increment)
-        let obj: Arc<dyn Intersectable> = Arc::new(
-            ShapeObject::new(mesh_shape.clone(), material.clone()),
-        );
-        if material.is_emissive() {
-            // Second ShapeObject shares the same MeshShape + BVH via second Arc increment
-            let light: Arc<dyn Sampleable> = Arc::new(
-                ShapeObject::new(mesh_shape, material),
-            );
-            self.add_intersectable(obj, Some(light));
-        } else {
-            self.add_intersectable(obj, None);
-        }
+        let mesh = MeshShape::new(data);
+        let so: Arc<dyn Intersectable> =
+            Arc::new(ShapeObject::new(mesh, material));
+        self.add_intersectable(so, None);
     }
 }
 ```
 
-Key points:
+One `Arc<dyn Intersectable>` per mesh. The material goes into `ShapeObject`,
+not `MeshShape`. `MeshShape` stays pure geometry.
 
-- `MeshShape::from_data` builds the BVH exactly once.
-- `Arc::clone(&mesh_shape)` is a cheap atomic ref-count increment.
-- `Arc<MeshShape>: Shape3D` via the delegation impl above.
-- Two `ShapeObject<Arc<MeshShape>, Arc<Material>>` instances share the same
-  `MeshShape` and BVH arrays — no deep-copy.
-
-### 3.7 Transform Sharing via Arc\<MeshShape\>
-
-Multiple transforms can share the same mesh geometry via `Arc<MeshShape>`:
+If emissive, the same `Arc<dyn Intersectable>` serves both lists (box pattern):
 
 ```rust
-// Build once
-let mesh_shape = Arc::new(MeshShape::from_data(data));
-
-// Use at multiple transforms — cheap Arc::clone(), no BVH duplication
-TransformObject<Translate, ShapeObject<Arc<MeshShape>, Arc<Material>>>
-TransformObject<RotateY,   ShapeObject<Arc<MeshShape>, Arc<Material>>>
+let so = Arc::new(ShapeObject::new(MeshShape::new(data), material));
+self.add_intersectable(so.clone(), Some(so));
 ```
 
-This enables forest scenes, cityscapes, etc. where one mesh appears many times.
+For instancing (multiple meshes sharing one `MeshData`), see §3.5.
 
-`ShapeObject<Arc<MeshShape>, Arc<Material>>` works because:
-- `Arc<MeshShape>: Shape3D` via the delegation impl (§3.6).
-- `Arc<Material>: Borrow<Material>` via standard library impl.
-- `ShapeObject` types with `Arc<MeshShape>` implement `Intersectable`,
-  so `TransformObject<...>` accepts them.
+### 3.5 Transform Sharing via Arc\<MeshShape\>
 
-`TransformObject` implements `Intersectable` by:
+Multiple transforms share the same mesh geometry via `Arc<MeshShape>`:
 
-1. Transform ray → object space via `world_to_object_point`
-2. Intersect mesh in object space
-3. Transform hit back via `Transform::hit()`
+```rust
+let mesh_data = Arc::new(MeshData::from_obj(path));
+let mesh_shape = Arc::new(MeshShape::new(mesh_data));
 
-______________________________________________________________________
+// Each TransformObject gets its own ShapeObject, but both share
+// the same Arc<MeshShape> — no deep-copy of the MeshBvh:
+let so1 = ShapeObject::new(mesh_shape.clone(), material.clone());
+let so2 = ShapeObject::new(mesh_shape, material);
+
+let tree1 = TransformObject::new(
+    Translate(glam::vec3(0.0, 0.0, 5.0)), so1,
+);
+let tree2 = TransformObject::new(
+    Translate(glam::vec3(2.0, 0.0, 5.0)), so2,
+);
+```
+
+The `Arc<MeshShape>` is shared. Each `TransformObject` is a single scene
+BVH entry — no per-triangle overhead for instancing.
+
+`TransformObject` delegates through the mesh generically:
+1. Transform ray → object space via `Transform::ray()` / `world_to_object_point`.
+2. Intersect the child in object space (ShapeObject → MeshShape → MeshBvh).
+3. Transform hit back to world space via `Transform::hit()`.
+
+This works for any `Transform` implementation (`Translate`, `RotateY`,
+future `Affine3A`) — the mesh shape is agnostic to the transform.
+
+`MeshShape` is pure geometry — material always comes from `ShapeObject`,
+whether single (`ShapeObject<MeshShape, M>`) or instanced
+(`ShapeObject<Arc<MeshShape>, M>`).
+
+### 3.6 From Impls — Tessellatable → MeshData
+
+`Tessellatable` converts a planar region into triangles. The conversion
+chain is: region → `MeshData` → `MeshShape` → scene BVH.
+
+```rust
+/// A geometry-only triangle from tessellation (no MeshData reference yet).
+pub struct TriangleGeometry {
+    pub positions: [Point3; 3],
+    pub normals: [Direction3; 3],
+    pub uvs: [(f32, f32); 3],
+}
+```
+
+`Tessellatable::tessellate()` returns `Vec<TriangleGeometry>`:
+
+```rust
+pub trait Tessellatable: Region2D {
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, max_error: f32)
+        -> Vec<TriangleGeometry>;
+}
+```
+
+From impls collect tessellated triangles into `MeshData`:
+
+```rust
+impl From<Vec<TriangleGeometry>> for MeshData {
+    fn from(tris: Vec<TriangleGeometry>) -> Self {
+        // Collect unique vertices via hash dedup
+        // Build positions, normals, uvs, indices
+    }
+}
+
+impl<R: Tessellatable> PlanarShape<R> {
+    pub fn to_mesh_data(&self, max_error: f32) -> MeshData {
+        let tris = self.region.tessellate(&self.geometry(), max_error);
+        MeshData::from(tris)
+    }
+}
+```
+
+### 3.7 Per-Triangle Materials
+
+The `MeshData` struct (§3.1) carries an optional per-triangle material buffer.
+When `per_tri_material` is `Some`, `MeshShape::intersect_shape` selects the material from the
+buffer at intersection time (after MeshBvh returns `tri_index`). When
+`None`, `ShapeObject`'s single `M: Borrow<Material>` is used — no
+per-triangle overhead for the common case.
+
+For emissive per-triangle materials, emission is resolved through the
+selected material's `emitted()` at hit time — no `Sampleable` override
+needed.
 
 ### 3.8 BoxShape — Procedural Shape3D for Boxes
 
 `BoxShape` provides a single-entry uniform-material axis-aligned box as a
-`Shape3D` implementor. It currently coexists with the `box3d()` helper
-(which returns 6 independent `Arc<dyn Intersectable>` for per-face materials).
-
-#### BoxShape Design
+`Shape3D` implementor. Coexists with `box3d()` (6 `Arc<dyn Intersectable>`
+via 6× `quad()` calls for per-face materials).
 
 ```rust
 // ─── src/shape/box3d.rs ───
@@ -578,7 +652,7 @@ pub struct BoxShape {
 impl Shape3D for BoxShape {
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
         // Standard AABB ray-slab intersection on all 3 axes.
-        // t_enter = entry point (potential hit)
+        // t_enter = entry point on box (potential hit)
         // t_exit = exit point
         // The entry face is determined by which axis produced t_enter,
         // giving the correct outward normal.
@@ -592,260 +666,178 @@ impl Shape3D for BoxShape {
 }
 ```
 
-`BoxShape` uses a single type (no generic scalar parameter — always `f32`).
-The intersection uses the standard ray-slab method: compute `t_near` and `t_far`
-for each axis, take the overlap interval, and the entry face determines the
-normal and UV mapping. Face detection for UV gradients is done by checking
-which coordinate of the hit point is at the min/max boundary.
-
-#### Scene Integration
-
-```rust
-// In src/scene.rs
-
-impl Scene {
-    pub fn add_box(&mut self, a: Point3, b: Point3, material: impl Into<Material>) {
-        let material = Arc::new(material.into());
-        let box_3d: Box3D = shape_box3d(a, b, material.clone());
-        if material.is_emissive() {
-            self.add_intersectable(
-                Arc::new(box_3d),
-                Some(Arc::new(shape_box3d(a, b, material))),
-            );
-        } else {
-            self.add_intersectable(Arc::new(box_3d), None);
-        }
-    }
-}
-```
-
-#### Relationship to `box3d()`
-
-Both coexist:
-
-| | `box3d()` (6× quad calls) | `Scene::add_box` (BoxShape) |
+| | `box3d()` (6× quad) | `Scene::add_box` (BoxShape) |
 |---|---|---|
-| **Materials** | Per-face (six independent materials) | Single uniform material for whole box |
+| **Materials** | Per-face (six independent materials) | Single uniform material |
 | **Scene BVH entries** | 6 per box | 1 per box |
 | **Intersection cost** | 6 plane-intersection tests | 6 plane-intersection tests (identical) |
-| **Per-face material flexibility** | ✅ Full | ❌ None |
-| **Best for** | Multi-material boxes (decorative, mixed surfaces) | Uniform-material boxes (crates, walls, architectural volumes) |
+| **Per-face material flexibility** | ✓ Full | ✗ None |
+| **Best for** | Multi-material boxes | Uniform boxes (crates, walls) |
 
 Use `box3d()` when you need different materials on different faces. Use
-`add_box()` / `BoxShape` for the common uniform-material case as an
+`BoxShape` / `Scene::add_box()` for the common uniform-material case as an
 optimization that also strengthens the `Shape3D` pattern.
-
-______________________________________________________________________
 
 ### 3.9 Tessellatable Trait — Bridging Planar Shapes to Mesh Data
 
-**(Not yet implemented — deferred.)** This section references the old `PlanarPatch<Self, ()>`
-type which has been deleted. The design needs updating to use `PlanarShape<R>` / `PlanarShapeGeometry`
-before implementation. The two object models (§2.4) can be
-bridged for one specific operation: converting a `PlanarShape<R>` into mesh
-triangles for use in a `MeshShape`.
-This is useful for:
+**(Not yet implemented — deferred.)** Converts a `PlanarShape<R>` into
+mesh triangles via the `Tessellatable` trait on `Region2D`. Output feeds
+into `MeshData` → `MeshShape` → scene BVH.
 
-- Combining procedural and file-loaded geometry in the same mesh BVH
-- Applying mesh-only operations (e.g., simplification, displacement) to
-  procedural shapes
-- Feeding procedural shapes into the rasterizer pipeline via
-  `MeshShape::triangles()`
+Useful for combining procedural and file-loaded geometry in the same
+acceleration structure; applying mesh-only operations (simplification,
+displacement) to procedural shapes; and feeding the rasterizer pipeline.
 
-#### Design
-
-Rather than a conditional `From` impl (which would require unstable negative
+Rather than a conditional `From` impl (which would need unstable negative
 trait bounds or specialization), every `Region2D` impl gets a universal
 `tessellate()` method. The distinction between exact and approximate
-conversion is handled by a **mandatory `max_error` parameter** that is simply
+conversion uses a **mandatory `max_error` parameter** that is simply
 ignored by regions that tessellate exactly:
 
 ```rust
-// ─── src/planar/tessellate.rs (new) ───
+// ─── src/shape/tessellate.rs (new) ───
 
 /// Maximum sagitta (boundary deviation) for curved-region tessellation.
-/// Ignored by regions that tessellate exactly.
-///
-/// Lower values produce more segments, increasing triangle count but
-/// reducing approximation error. A reasonable default for production
-/// is 0.01 × the patch's longest bounding dimension.
+/// Ignored by exact regions. Reasonable default: 0.01 × patch's longest dimension.
 const DEFAULT_MAX_ERROR: f32 = 0.01;
+
+// TriangleGeometry struct defined in §3.6.
 
 /// A planar region that can be tessellated into mesh triangles.
 pub trait Tessellatable: Region2D {
-    /// Returns mesh triangles approximating (or exactly representing)
-    /// this region, bounded by the given max_error.
     fn tessellate(
         &self,
-        patch: &PlanarPatch<Self, ()>,
+        geometry: &PlanarShapeGeometry,
         max_error: f32,
-    ) -> Vec<MeshTriangle>;
+    ) -> Vec<TriangleGeometry>;
 }
 ```
 
-Every existing `Region2D` implementor implements `Tessellatable`:
+Each `Region2D` implementor implements `Tessellatable` with its own strategy:
 
 ```rust
 impl Tessellatable for TriRegion {
-    fn tessellate(&self, _patch: &PlanarPatch<Self, ()>, _max_error: f32) -> Vec<MeshTriangle> {
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, _max_error: f32) -> Vec<TriangleGeometry> {
         // Exact: one triangle from the patch's corner/side_a/side_b.
         // Barycentric (a,b) = (0,0), (1,0), (0,1) map to the 3 vertices.
-        // UVs are the analytic region-space coords.
     }
 }
 
 impl Tessellatable for QuadRegion {
-    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, _max_error: f32) -> Vec<MeshTriangle> {
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, _max_error: f32) -> Vec<TriangleGeometry> {
         // Exact: two triangles from the 4 quad corners via side_a/side_b.
-        // (0,0), (1,0), (0,1) → tri 1; (1,0), (1,1), (0,1) → tri 2.
     }
 }
 
 impl Tessellatable for PolygonRegion {
-    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, _max_error: f32) -> Vec<MeshTriangle> {
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, _max_error: f32) -> Vec<TriangleGeometry> {
         // Exact: ear-clipping fan of the polygon's actual vertices.
     }
 }
 
 impl Tessellatable for EllipseRegion {
-    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
-        // Approximate: segment count derived from sagitta formula
-        // given max_error and the ellipse's semi-axes.
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, max_error: f32) -> Vec<TriangleGeometry> {
+        // Approximate: segment count from sagitta formula + semi-axes.
     }
 }
 
 impl Tessellatable for AnnulusRegion {
-    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, max_error: f32) -> Vec<TriangleGeometry> {
         // Approximate: concentric rings + radial segments, sagitta-bounded.
     }
 }
 
 impl Tessellatable for SuperellipseRegion {
-    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, max_error: f32) -> Vec<TriangleGeometry> {
         // Approximate: marching-squares boundary sampling.
     }
 }
 
 impl Tessellatable for FunctionRegion {
-    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, max_error: f32) -> Vec<TriangleGeometry> {
         // Approximate: marching-squares or Monte Carlo boundary sampling.
-        // The boolean predicate is sampled on a grid of resolution derived
-        // from max_error, then the isosurface is extracted.
+        // Grid resolution derived from max_error, then isosurface extraction.
     }
 }
 
 impl Tessellatable for RoundedRectRegion {
-    fn tessellate(&self, patch: &PlanarPatch<Self, ()>, max_error: f32) -> Vec<MeshTriangle> {
-        // Approximate: straight sides are exact (quads), corners are
-        // circular arcs tessellated at sagitta-bounded segment count.
+    fn tessellate(&self, geometry: &PlanarShapeGeometry, max_error: f32) -> Vec<TriangleGeometry> {
+        // Approximate: straight sides exact (quads), corners are circular arcs
+        // tessellated at sagitta-bounded segment count.
     }
 }
 ```
 
-#### From Impl with Mandatory Error Parameter
+The `PlanarShape<R>::to_mesh_data(max_error)` conversion is defined in §3.6.
 
-The `From` conversion takes `max_error` as an explicit parameter to force
-the caller to consciously acknowledge the potential approximation:
-
-```rust
-impl<R: Tessellatable, M: Borrow<Material> + Clone> PlanarPatch<R, M> {
-    /// Convert this patch into mesh data, tessellating the region
-    /// with the given max_error bound.
-    pub fn to_mesh_data(&self, max_error: f32) -> MeshData {
-        let triangles = self.region().tessellate(&self.without_material(), max_error);
-        let positions: Vec<Point3> = triangles.iter().flat_map(|t| t.positions()).collect();
-        let normals: Vec<Direction3> = triangles.iter().flat_map(|t| t.normals()).collect();
-        let uvs: Vec<(f32, f32)> = triangles.iter().flat_map(|t| t.uvs()).collect();
-        let indices: Vec<[u32; 3]> = (0..triangles.len())
-            .map(|i| [i as u32 * 3, i as u32 * 3 + 1, i as u32 * 3 + 2])
-            .collect();
-        MeshData { positions, normals, uvs, indices }
-    }
-}
-```
-
-There is no blanket `From<PlanarPatch<R, M>> for MeshData` — the conversion
-always requires an explicit `max_error` parameter, making approximation
-visible at the call site. This avoids the `!Tessellatable` coherence problem
-entirely (no negative trait bounds needed) and ensures the caller always
-acknowledges the approximation risk, even for regions that turn out to be
-exact (where the parameter is silently ignored).
-
-If compile-time prevention of approximate conversions is needed later, the
-idiomatic pattern is an `Exact<R>` / `Approximate<R>` newtype split:
+The `max_error` parameter is mandatory — approximation is always explicit at
+the call site. If compile-time prevention of approximate conversions is needed
+later, an `Exact<R>` / `Approximate<R>` newtype split is the standard pattern:
 
 ```rust
-pub struct Exact<R>(R);           // only implemented for Tri/Quad/Polygon
-pub struct Approximate<R>(R);     // implemented for all regions
+pub struct Exact<R>(R);           // only for Tri/Quad/Polygon
+pub struct Approximate<R>(R);     // for all regions
 
-impl<R: Tessellatable> From<PlanarPatch<Exact<R>, M>> for MeshData { /* infallible */ }
-impl<R: Tessellatable> From<PlanarPatch<Approximate<R>, M>> for MeshData { /* with max_error */ }
+impl<R: Tessellatable> From<Exact<R>> for MeshData { /* infallible */ }
+impl<R: Tessellatable> From<Approximate<R>> for MeshData { /* requires max_error */ }
 ```
 
 This compiles on stable Rust — no coherence conflict, since `Exact<R>` and
-`Approximate<R>` are genuinely different concrete types. Only worth reaching
-for if the mandatory `max_error` parameter is found to be too easy to ignore
-in practice.
+`Approximate<R>` are genuinely different concrete types.
 
 ## 4. Option Comparison
 
-| Criterion | Individual Tri Shapes (pbrt) | MeshShape + Internal BVH (ours) |
+| Criterion | MeshShape + Internal BVH (v9, chosen) | Triangle-as-Shape (v8, rejected) |
 |---|---|---|
-| **Per-triangle material** | ✅ Natural | ❌ Single material (can add later) |
-| **Per-triangle memory** | 8 bytes (Triangle) + Shape (16B) + Material (16B) = ~40B/tri | 0 bytes/tri (data in shared MeshData) |
-| **Vtable dispatch** | Per-triangle via TaggedPointer (fast) | Per-mesh via Shape3D (faster) |
-| **BVH construction** | Scene BVH handles all (tens of K objects) | Two-level: scene BVH over meshes, mesh BVH over tris |
-| **Cache behavior** | Triangles scattered in scene BVH leaves | Mesh triangles in compact MeshBvh = better locality |
-| **Implementation cost** | Moderate (needs Shape3D triangle, global mesh registry) | Moderate (needs MeshBvh, Möller–Trumbore) |
-| **Scene building speed** | O(N log N) scene BVH over N triangles | O(N log N) mesh BVH + O(M log M) scene BVH over M meshes |
+| **Per-triangle material** | ✅ Buffer per-triangle, resolves at intersect time | ✅ Natural — `MeshData.per_tri_material` |
+| **Per-triangle memory** | 0 bytes/tri (data in shared MeshData + MeshBvh) | ~16B (TriangleShape: Arc + u32) + Arc for ShapeObject |
+| **Vtable dispatch** | Per-mesh via Shape3D (single dispatch) | Per-triangle via Arc<dyn Intersectable> (100K dispatches) |
+| **BVH structure** | Two-level: scene BVH over meshes, MeshBvh over tris | Single-level: scene BVH over all triangles (SAH over N) |
+| **Cache behavior** | Mesh triangles in compact MeshBvh = better locality | Triangles distributed in scene BVH leaves |
+| **Implementation cost** | Moderate: MeshShape + MeshBvh + SAH construction | Low: TriangleShape (100 LOC) + add_mesh() loop |
+| **Scene building** | O(N log N) mesh BVH + O(M log M) scene BVH | O(N log N) scene BVH |
+| **Memory efficiency** | ~4 MB for nodes + ~400 KB for tri_indices at 100K tri | ~1.6 MB Arc overhead per 100K triangles |
 
-The internal BVH approach is preferred because:
+The **MeshShape + Internal BVH** approach is chosen because:
 
-1. **Memory efficiency** dominates at 100K+ triangles — no per-triangle
-   allocations, no Arc overhead, no vtable pointers.
+1. **No per-triangle `Arc` overhead.** Our `Bvh<W>` stores `Arc<dyn Intersectable>`
+   at leaves. Each TriangleShape would need its own heap allocation + vtable
+   dispatch — 100K extra allocations for a 100K triangle mesh. MeshShape has one.
 
-2. **Cache-friendly traversal** — the mesh BVH stores triangle indices
-   compactly, and the BvhNode<W> layout is cache-line-aligned (64B for W=2).
+2. **Tighter spatial clustering.** The MeshBvh is built from ONLY the mesh's
+   triangles — its SAH produces tighter nodes than distributing triangles across
+   the scene BVH (which must mix mesh triangles with spheres, quads, and boxes).
 
-3. **Fits the Shape3D abstraction** — `MeshShape` is just another shape
-   to `ShapeObject`. No new trait, no new wrapper, no architecture break.
+3. **Better cache behavior.** MeshBvh stores triangle indices contiguously in
+   `Vec<u32>`, and `MeshData` vertices are compact. Traversing a small subset of
+   triangles within one mesh stays hot in cache vs jumping across scene BVH leaves.
 
-4. **Two-level BVH is standard practice** — Embree, OptiX, and most
-   production renderers use two-level acceleration (scene BVH over
-   instance BVHs per mesh).
+4. **Always-on internal BVH is cheap.** A 2-triangle quad produces ~3 BVH nodes
+   (192 bytes). At 100K triangles, ~4 MB for nodes + ~400 KB for tri_indices. No
+   threshold needed.
+
+5. **Per-triangle materials via buffer, not individual shapes.** The
+   `MeshData.per_tri_material` buffer works with either architecture. In v9,
+   the material is selected within `MeshShape::intersect_shape` after the
+   MeshBvh returns the tri_index — no extra allocations.
+
+**When to reconsider:** If a future BVH refactor stores primitives inline
+(like pbrt-v4's flat `GeometricPrimitive` array) rather than `Arc<dyn>`,
+Triangle-as-Shape becomes viable. Until then, MeshShape + internal BVH is
+the right architecture for our BVH design.
 
 ______________________________________________________________________
 
 ## 5. Files to Create / Modify
 
-### Deleted (PlanarPatch removal — Phase 0)
-
-| File | Reason |
-|---|---|
-| `src/planar/mod.rs` | Entire planar module deleted. PlanarPatch, PlanarHit, type aliases removed. |
-| `src/planar/box.rs` | `box3d()` moved to `src/shape/constructors.rs`. |
-
-### BVH module restructure (COMPLETED)
-
-The BVH module has already been restructured into `src/bvh/`:
-
-| File | Contents |
-|---|---|
-| `src/bvh/mod.rs` | `Bvh<W>` (wide BVH), `BvhNode<W>` (SoA layout, SIMD hit_mask) |
-| `src/bvh/builder.rs` | `TreeBuilder` (SAH-binned binary construction with rayon) |
-| `src/bvh/aabb.rs` | `Aabb`, `AabbPacked<W>` (SIMD-ready SoA bounding boxes) |
-| `src/bvh/tests.rs` | BVH tests |
-
-`MeshBvh` will live in `src/bvh/mesh.rs` as a parallel structure using
-`BvhNode<W>` nodes with triangle-index leaves.
-
 ### New mesh files
 
 | File | Contents |
 |---|---|
-| `src/mesh/mod.rs` | Module root: re-exports from data, shape |
-| `src/mesh/data.rs` | `MeshData` struct + OBJ/PLY parsing + `MeshShape::triangles()` |
-| `src/mesh/shape.rs` | `MeshShape` struct + `Shape3D` impl + free `mesh()` constructor |
+| `src/mesh/mod.rs` | Module root: re-exports |
+| `src/mesh/data.rs` | `MeshData` struct + `From<TriangleGeometry>` + OBJ/PLY parsing |
+| `src/mesh/shape.rs` | `MeshShape` struct + `Shape3D` impl. Internal MeshBvh traversal. |
+| `src/mesh/bvh.rs` | `MeshBvh` — `Bvh<2>` over triangle AABBs, SAH construction, traversal. |
 
 ### New shape files
 
@@ -853,25 +845,26 @@ The BVH module has already been restructured into `src/bvh/`:
 |---|---|
 | `src/shape/box3d.rs` | `BoxShape` struct + `Shape3D` impl for uniform-material AABB. `shape_box3d()` constructor + `Box3D` type alias. |
 | `src/shape/planar.rs` | `PlanarShape<R>` struct + `Shape3D` impl for planar primitives (replaces PlanarPatch's geometry role). |
-| `src/shape/constructors.rs` | Free construction functions: `quad()`, `ellipse()`, `tri()`, etc. + `box3d()` per-face helper. |
+| `src/shape/constructors.rs` | Free construction functions: `quad()`, `tri()`, `annulus()`, `ellipse()`, `rounded_rect()`, `superellipse()`, `polygon()`, `function_patch()`, `shape_box3d()` |
 | `src/shape/regions/mod.rs` | Module root: declares and re-exports all 8 region types from `src/shape/regions/`. |
 
 ### Modified files
 
 | File | Change |
 |---|---|
-| `src/lib.rs` | Add `pub mod mesh;`. BVH module restructuring already done. |
-| `src/shape/mod.rs` | Add `impl Shape3D for Arc<MeshShape>` (delegation blanket). Add `mod box3d;`, `mod constructors;`, mod re-exports. Region2D trait lives here. |
-| `src/scene.rs` | Add `add_mesh()` with Arc-based BVH sharing. Add `add_box()` for uniform-material BoxShape. `add_quad()` + friends transitively use PlanarShape via constructors module. |
-| All files importing `crate::bvh` | Update imports to `crate::bvh::*`. (Already done.) |
-| All files importing `crate::planar::quad` | Update to `crate::shape::quad` (constructors module). |
+| `src/lib.rs` | Add `pub mod mesh;` |
+| `src/scene.rs` | Add `add_mesh()` — creates one `ShapeObject<MeshShape>` per mesh. Also `add_box()` for uniform-material BoxShape. |
+| `src/shape/mod.rs` | Shape3D trait, ShapeObject, Region2D already defined. No changes needed for mesh. `impl Shape3D for Arc<MeshShape>` lives in `src/mesh/shape.rs` alongside the struct. |
+| All files importing `crate::planar::quad` | Update to `crate::shape::quad` (constructors module). (Already done.) |
 
 ### No changes needed
 
 | File | Reason |
 |---|---|
-| `src/hittable.rs` | Traits: `Sampleable` decoupled from `Intersectable`. `Hit`, `MaterialHit` unchanged. |
+| `src/hittable.rs` | Traits unchanged. `Sampleable` already decoupled. |
 | `src/vec3.rs` | Point3, Direction3, Color3 unchanged. |
+| `src/shape/mod.rs` | No changes — MeshShape is in `src/mesh/`, not a new `Shape3D` impl in `src/shape/`. The `Shape3D` trait is used, not modified. |
+| `src/bvh/` | `BvhNode<2>` and `AabbPacked<2>` reused via `use crate::bvh::{...}` in `src/mesh/bvh.rs`. No changes to the scene BVH module. |
 
 ______________________________________________________________________
 
@@ -879,139 +872,99 @@ ______________________________________________________________________
 
 ### Phase 0 — PlanarShape Unification (completed)
 
-0. **Prerequisite: Region2D migration.** Move `Region2D` trait and all 8 region
-   types from `src/planar/` into `src/shape/regions/`. Update all imports.
-1. **PlanarShape creation.** Extract PlanarPatch's geometry fields into
-   `PlanarShape<R>` implementing `Shape3D`. `src/shape/planar.rs`.
-2. **BoxShape implementation.** `BoxShape` as Shape3D for uniform-material AABB.
-   `src/shape/box3d.rs`.
-3. **Construction functions.** Move `quad()`, `ellipse()`, `tri()`, etc. and
-   `box3d()` into `src/shape/constructors.rs`. All return
-   `ShapeObject<PlanarShape<R>, Material>`.
-4. **PlanarPatch deletion.** Remove `src/planar/` entirely. All callers updated
-   to import from `crate::shape::*`.
+Already done: PlanarShape, BoxShape, Region2D migration, constructors module.
 
-### Phase 1 — Core Geometry (pending)
+### Phase 1 — Core Geometry
 
-Phase 1 steps 1–6 are the main mesh feature and remain unchanged:
-
-0. **Prerequisite: BVH module restructure.** ✅ COMPLETED. `src/bvh/` module
-   with `BvhNode<W>`, `Bvh<W>`, `TreeBuilder`, `AabbPacked<W>`. MeshBvh will
-   reuse `BvhNode<W>` node format in `src/bvh/mesh.rs`.
-1. `MeshData` — positions, normals, uvs, indices. OBJ file format parser.
-2. `MeshBvh` — SAH construction, flat-node iterative traversal. `src/bvh/mesh.rs`.
-3. `MeshShape: Shape3D` — intersection via internal BVH + Möller–Trumbore
-   with watertight permute+shear + double-precision fallback.
-4. `impl Shape3D for Arc<MeshShape>` — delegation impl for dual registration
-   and transform sharing. `src/shape/mod.rs`.
-5. `mesh()` constructor + `add_mesh()` scene method.
-6. Integration test: Cornell box mesh variant with a single quad/tri mesh.
-
-Phase 0 step 7 (BoxShape) has been completed and moved up.
+1. **`MeshData`** — positions, normals, uvs, indices. Freeze the struct layout.
+   `From<Vec<TriangleGeometry>>` for dedup vertex construction.
+2. **`MeshBvh`** — `Bvh<2>` over triangle AABBs, SAH construction, node traversal.
+   `src/mesh/bvh.rs`.
+3. **`MeshShape`** — wraps `MeshData` + `MeshBvh`, implements `Shape3D`.
+   Watertight Möller–Trumbore per triangle within MeshBvh traversal.
+   `src/mesh/shape.rs`.
+4. **`add_mesh()`** — scene method that creates one `ShapeObject<MeshShape>`,
+   registers in scene BVH. `src/scene.rs`.
+5. **Integration test** — Cornell box mesh variant with a single quad/tri mesh
+   loaded as a mesh (2 triangles, 4 vertices).
 
 ### Phase 2 — Sampling + Light Integration
 
-1. `MeshShape::sample()` — area-weighted triangle sampling.
-2. `MeshShape::area()` — precomputed sum.
-3. Verify emissive mesh integration via `Sampleable` (default delegation
-   via `ShapeObject` already works).
+1. `MeshShape::sample()` — face-area-weighted triangle selection, then uniform
+   sampling on the chosen face.
+2. `MeshShape::area()` — precomputed from triangle area sum.
+3. Verify emissive mesh via `add_mesh()` with emissive material → single
+   `ShapeObject<MeshShape>` registered in both `Intersectable` and `Sampleable` lists.
 
 ### Phase 3 — Normals + UV Interpolation
 
 1. Per-vertex normal interpolation with barycentric coordinates.
 2. Per-vertex UV interpolation.
-3. Auto-generated smooth normals when mesh has no normals.
+3. Auto-generated smooth normals when mesh has no normals (angle-weighted
+   face normal averaging).
 
 ### Phase 4 — File Format Support
 
-1. OBJ parser with material groups.
+1. OBJ parser — faces, vertices, normals, UVs, material groups → `MeshData`.
 2. PLY parser (binary + ASCII).
-3. Optional: material-index-per-face for per-face materials.
+3. Optional: per-face material groups from OBJ MTL → `per_tri_material` buffer.
 
-### Phase 5 — PlanarPatch Bridge (parallel, independent)
+### Phase 5 — Tessellatable + PlanarShape Bridge
 
-1. `Tessellatable` trait — `src/planar/tessellatable.rs`.
+1. `Tessellatable` trait — `src/shape/tessellate.rs`.
 2. `impl Tessellatable for` every existing `Region2D` type.
-3. `PlanarPatch::to_mesh_data(max_error)` conversion method.
-4. Integration: procedural planar shape → MeshData → MeshShape conversion
-   in scene construction.
+3. `PlanarShape<R>::to_mesh_data(max_error)` — conversion via Tessellatable.
+4. Integration: procedural planar shape → `MeshData` → `MeshShape` → scene BVH.
 
 ______________________________________________________________________
 
 ## 7. Open Questions
 
-1. ~~**BVH module restructure / BvhNode reuse.**~~ **RESOLVED.** BVH module
-   restructured into `src/bvh/{mod.rs, builder.rs, aabb.rs, tests.rs}`.
-   `FlatBvhNode` replaced by `BvhNode<W>` (parametric wide BVH with SoA
-   layout and SIMD hit_mask). `MeshBvh` will reuse `BvhNode<W>` format in
-   `src/bvh/mesh.rs` but with `Vec<u32>` tri_indices instead of
-   `Vec<Arc<dyn Intersectable>>`. Own SAH construction, not `TreeBuilder`.
+1. ~~**BVH module restructure.**~~ **RESOLVED in v7.** `src/bvh/` module
+   with `Bvh<W>`, `BvhNode<W>`, `TreeBuilder`, `AabbPacked<W>`. MeshBvh
+   reuses `BvhNode<2>` node format in `src/mesh/bvh.rs`.
 
-2. ~~**`MeshShape::clone()` for dual light registration.**~~ **RESOLVED in v2.**
-   The scene code (§3.6) uses `impl Shape3D for Arc<MeshShape>` so an
-   `Arc::clone` (cheap atomic increment) shares the BVH between two
-   `ShapeObject` instances. No deep-copy of the BVH array. Requires the
-   delegation impl in `src/shape/mod.rs`.
+2. ~~**Dual light registration.**~~ **RESOLVED in v9.** One `Arc<MeshShape>`
+   shared between `Intersectable` and `Sampleable` lists (box pattern).
+   `Arc::clone` for the other list — same allocation, two trait casts.
 
-3. **Two-level BVH vs single flat list.** For scenes with one mesh, a
-   single BVH is sufficient. For scenes with many meshes, two-level is
-   essential. The current design assumes two-level (scene BVH of meshes).
-   If a scene has only meshes (no spheres/quads), is two-level overhead
-   acceptable? Yes — each mesh's BVH is traversed once per ray, and the
-   scene BVH culls non-hit meshes.
+3. ~~**Two-level BVH vs single flat list.**~~ **RESOLVED in v9.** Two-level:
+   scene BVH over meshes, MeshBvh inside each MeshShape. The MeshBvh is
+   always-on (negligible overhead for small meshes).
 
-4. ~~**Watertight intersection.**~~ **UPDATED in v3.** Verified against pbrt-v4
-   source. The technique has two layers:
-   - **Primary: ray-space permute + shear transform.** Align the ray with its
-     dominant axis (`kz`), permute vertices so `kz` maps to z, then shear the
-     transformed 2D coordinates so the ray is axis-aligned. Edge functions use
-     `DifferenceOfProducts` (fused multiply-subtract) to reduce cancellation.
-   - **Secondary: double-precision fallback.** When `e0`, `e1`, or `e2` are
-     exactly zero in single precision, re-evaluate with `double`.
-   
-   The import: the permute+shear transform is the primary robustness mechanism,
-   not the double-precision fallback. The fallback only fires at exact-zero
-   edges. **This is required for production quality — do not defer.** Implement
-   in Phase 1 alongside Möller–Trumbore.
+4. ~~**Watertight intersection.**~~ **UPDATED in v3.** pbrt-v4 permute+shear
+   (primary) + double-precision edge fallback. **Required in Phase 1.**
 
-5. ~~**renderer_arch TriangleRasterizer ↔ mesh triangle access.**~~
-   **RESOLVED in v3.** `MeshShape` exposes a `triangles()` accessor/iterator
-   that yields triangle index + vertex positions. The rasterizer calls
-   `mesh.triangles()` to iterate, transform vertices, and rasterize.
-   This preserves `MeshShape` as a single `Shape3D` while enabling
-   rasterization. Not blocking Phase 1 — implement when rasterizer is built.
+5. ~~**TriangleRasterizer ↔ triangle access.**~~ **RESOLVED.** `MeshShape`
+   exposes the internal `MeshData` — the rasterizer iterates `MeshData.indices`
+   to access all triangles. `MeshData::triangles()` iterator yields
+   `(tri_index, p0, p1, p2)`.
 
-6. **`Primitive` / `GeoPrimitive` enum fork (from `renderer_arch.md`).**
-    **RESOLVED in v5 by PlanarShape unification.** The `PlanarPatch` ↔ `Shape3D`
-    fork that made a closed `Primitive` enum impossible has been resolved by
-    deleting `PlanarPatch` and routing all planar geometry through
-    `PlanarShape<R>: Shape3D` → `ShapeObject<PlanarShape<R>, M>`. Now every
-    scene object (spheres, boxes, planars) goes through `Shape3D` + `ShapeObject`,
-    so `Primitive` only needs variants per shape *category* (`Sphere`, `Box`,
-    `Planar`, `Mesh`) rather than per region *type*. The `Custom(Arc<dyn Intersectable>)`
-    escape hatch remains available as a safety net but is no longer needed for
-    the planar subsystem.
+6. **`Primitive` / `LightPrimitive` enum.** PlanarShape unification (v5) already
+   resolved the trait-level fork. With v9, every shape (Sphere, Planar, Mesh)
+   goes through `Shape3D` → `ShapeObject`, so `Primitive` needs variants per
+   *category* plus a `Custom(Arc<dyn Intersectable>)` escape hatch.
 
 ______________________________________________________________________
 
 ## 8. Cross-Document References
 
-### Existing design docs (bi-directional audit v2)
+### Existing design docs
 
 | Doc | Relationship to Mesh | Status |
 |---|---|---|
-| `renderer_arch.md` §2, §9 | `LightPrimitive` needs `Mesh` variant (additive). `TriangleRasterizer` uses `MeshShape::triangles()` (§7.5 — resolved in v3). Primitive registration pattern matches. | ✅ Compatible |
-| | **⚠ OQ6 resolved in v5.** PlanarShape unification means all scene objects route through Shape3D → ShapeObject, so Primitive only needs 4 variants (Sphere, Box, Planar, Mesh) instead of one per region type. | ✅ Resolved |
-| `denoiser.md` | Denoiser post-processes film output. Orthogonal to geometry. No shared interfaces. | ✅ No conflict |
-| `adaptive-sampling.md` | Variance estimation + convergence criteria. Orthogonal to geometry types. | ✅ No conflict |
-| `samplestream-refactor.md` | `SampleStreamEnum` replaces `DimCursor` in integrator signatures. Mesh uses `Sampleable` (non-generic, raw params). | ✅ No conflict |
-| `CORE_THESIS.md` §4 | SpatialDomain pattern, leaf sovereignty. (External reference, not in docs/). | ✅ Compatible |
+| `renderer_arch.md` §2, §9 | `LightPrimitive` needs `Mesh` variant (additive). Rasterizer iterates `MeshData.indices` for triangle access. | ✅ Compatible |
+| `denoiser.md` | Denoiser post-processes film. Orthogonal. | ✅ No conflict |
+| `adaptive-sampling.md` | Variance estimation. Orthogonal. | ✅ No conflict |
+| `samplestream-refactor.md` | `Sampleable` is non-generic (raw params). Unchanged. | ✅ No conflict |
+| `CORE_THESIS.md` §4 | SpatialDomain pattern, leaf sovereignty. Compatible. | ✅ Compatible |
 
 ### Codebase references
 
 - `src/shape/mod.rs` — Shape3D trait, ShapeObject wrapper, Region2D trait.
-- `src/shape/regions/` — All 8 region type implementations (QuadRegion, TriRegion, ...).
-- `src/shape/planar.rs` — PlanarShape\<R: Region2D\> implementing Shape3D (replaces PlanarPatch's geometry role).
-- `src/shape/constructors.rs` — Free construction functions (quad(), ellipse(), tri(), ..., box3d()).
-- `src/shape/box3d.rs` — BoxShape (AABB via slab intersection, uniform material).
-- `src/bvh/` — BVH module: `mod.rs` (`Bvh<W>`, `BvhNode<W>` with SoA layout), `builder.rs` (SAH `TreeBuilder`), `aabb.rs` (`Aabb`, `AabbPacked<W>`), `tests.rs`.
+- `src/shape/regions/` — All 8 region types.
+- `src/shape/planar.rs` — PlanarShape\<R: Region2D\>.
+- `src/shape/constructors.rs` — Free construction functions.
+- `src/shape/box3d.rs` — BoxShape.
+- `src/bvh/` — `Bvh<W>`, `BvhNode<W>`, `TreeBuilder`, `AabbPacked<W>`.
+- `src/mesh/` — **New module**: `data.rs`, `shape.rs`, `bvh.rs`.
