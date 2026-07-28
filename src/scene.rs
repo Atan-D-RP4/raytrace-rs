@@ -5,6 +5,7 @@ use rand::RngExt;
 use tracing::{info, trace};
 
 use crate::bvh::Bvh;
+use crate::bvh::aabb::Aabb;
 use crate::bvh::builder::TreeBuilder;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
@@ -18,8 +19,8 @@ use crate::material::{
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::shape::regions::FunctionRegion;
 use crate::shape::{
-    annulus, function_patch, moving_sphere, polygon, quad, rounded_rect, shape_box3d, sphere,
-    superellipse, tri,
+    Scalar, SdfFn, SdfShape, ShapeObject, annulus, function_patch, moving_sphere, polygon, quad,
+    rounded_rect, shape_box3d, sphere, superellipse, tri,
 };
 use crate::texture::{
     CheckerTexture, ImageTexture, NoiseTexture, SolidColor, SphericalUvMapping, Texture,
@@ -375,7 +376,10 @@ impl Scene {
                 StaticTransform::from_affine3a(Affine3A::from_translation(Vec3::new(
                     -100., 270., 395.,
                 ))),
-                TransformObject::new(StaticTransform::rotation_y(15.), TreeBuilder::new(&mut boxes)),
+                TransformObject::new(
+                    StaticTransform::rotation_y(15.),
+                    TreeBuilder::new(&mut boxes),
+                ),
             )
         };
         scene.objects.push(Arc::new(cluster));
@@ -503,6 +507,46 @@ impl Scene {
         scene.config.tone_map = true;
         scene.config.exposure = 1.8;
         scene.config.image_width = 600;
+
+        scene
+    }
+
+    pub fn sdf_test() -> Self {
+        let mut scene = Self::empty_cornell_box().with_env_map(Arc::new(EnvironmentMap::new(
+            image::open("./kiara_1_dawn_4k.hdr").unwrap().into(),
+        )));
+        struct CylinderSdf {
+            center: Point3,
+            radius: f32,
+            height: f32,
+        }
+        impl SdfFn for CylinderSdf {
+            fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+                let cx = x - T::from_f32(self.center.x());
+                let cy = y - T::from_f32(self.center.y());
+                let cz = z - T::from_f32(self.center.z());
+                let d = (cx * cx + cz * cz).sqrt() - T::from_f32(self.radius);
+                let h = cy.abs() - T::from_f32(self.height / 2.0);
+                d.max(h)
+            }
+        }
+
+        let center = Point3::new(278.0, 278.0, 278.0);
+        let half = Point3::splat(50.0);
+
+        // SDF shape
+        let material: Material = LambertianMaterial::new(Color3::new(0.8, 0.3, 0.3)).into();
+        let shape = SdfShape::new(
+            CylinderSdf {
+                center,
+                radius: 50.0,
+                height: 100.0,
+            },
+            Aabb::from_corners(center - half.into_inner(), center + half.into_inner()),
+        );
+        let sdf_shape = ShapeObject::new(shape, material);
+        let sdf_shape = TransformObject::new(StaticTransform::rotation_x(45.0), sdf_shape);
+        scene.add_intersectable(Arc::new(sdf_shape), None);
 
         scene
     }
@@ -760,7 +804,7 @@ impl Scene {
         .into();
         let ground_material = ground_material
             .coated(DielectricMaterial::tinted(1.2, Color3::new(0.8, 0.8, 1.0)).into());
-        scene.add_sphere(Point3::new(0., -1000., 0.), 1000., ground_material);
+        scene.add_sphere(Point3::new(0., -1000., 0.), 1000., ground_material.clone());
 
         for a in -21..21 {
             for b in -21..21 {

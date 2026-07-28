@@ -9,7 +9,7 @@ use crate::ray::Ray;
 use crate::texture::UVDifferentiable;
 use crate::vec3::{Direction3, Point3};
 
-use super::{Shape3D, ShapeObject};
+use super::{Shape3D, ShapeObject, ShapeSurfaceSampling};
 
 /// An axis-aligned box defined by its min and max corners.
 ///
@@ -196,7 +196,9 @@ impl Shape3D for BoxShape {
     fn bounding_box(&self) -> Aabb {
         Aabb::from_corners(self.min, self.max)
     }
+}
 
+impl ShapeSurfaceSampling for BoxShape {
     fn area(&self) -> f32 {
         self.total_area
     }

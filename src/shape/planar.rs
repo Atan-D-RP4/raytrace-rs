@@ -4,11 +4,9 @@ use crate::bvh::aabb::Aabb;
 use crate::hittable::{Hit, LightSample};
 use crate::interval::Interval;
 use crate::ray::Ray;
-use crate::shape::Region2D;
+use crate::shape::{Region2D, Shape3D, ShapeSurfaceSampling};
 use crate::texture::UVDifferentiable;
 use crate::vec3::{Color3, Direction3, Point3};
-
-use super::Shape3D;
 
 /// A planar shape that lives in a 3D plane, defined by a parallelogram (corner + two side vectors)
 /// and a `Region2D` that carves a 2D shape out of that parallelogram.
@@ -152,7 +150,9 @@ impl<R: Region2D> Shape3D for PlanarShape<R> {
     fn bounding_box(&self) -> Aabb {
         self.bbox
     }
+}
 
+impl<R: Region2D> ShapeSurfaceSampling for PlanarShape<R> {
     fn area(&self) -> f32 {
         self.area * self.region.area()
     }

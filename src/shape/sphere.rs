@@ -9,7 +9,7 @@ use crate::interval::Interval;
 use crate::material::Material;
 use crate::onb::Onb;
 use crate::ray::{ParametricCurve, Ray};
-use crate::shape::{Shape3D, ShapeObject};
+use crate::shape::{Shape3D, ShapeObject, ShapeSurfaceSampling};
 use crate::texture::UVDifferentiable;
 use crate::vec3::{Color3, Direction3, Point3};
 
@@ -159,7 +159,9 @@ impl Shape3D for SphereShape {
         let local = Aabb::from_corners(Point3(-rvec), Point3(rvec));
         self.center.sweep_aabb(&local)
     }
+}
 
+impl ShapeSurfaceSampling for SphereShape {
     fn area(&self) -> f32 {
         4.0 * PI * self.radius * self.radius
     }

@@ -33,6 +33,8 @@
     - This paper provides an overview of the state-of-the-art techniques for ray tracing animated scenes, including motion blur and temporal coherence.
 - **[Disney Research Publications](https://disneyanimation.com/publications/)** by Disney Research.
     - This collection of publications from Disney Research covers various topics in computer graphics, including ray tracing, rendering, and animation techniques.
+- **[Marching Cubes: A High Resolution 3D Surface Construction Algorithm](https://dl.acm.org/doi/10.1145/37402.37422)** by William E. Lorensen and Harvey E. Cline.
+    - This paper introduces the Marching Cubes algorithm, which is widely used for surface reconstruction in 3D graphics and can be relevant in ray tracing applications.
 
 # Online Resources
 - **[The Graphics Pipeline](https://fgiesen.wordpress.com/category/graphics-pipeline/)** by Fabian Giesen.

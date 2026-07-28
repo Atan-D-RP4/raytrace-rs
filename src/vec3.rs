@@ -469,52 +469,37 @@ impl std::ops::SubAssign<Direction3> for Point3 {
 // ── Direction3-specific ──────────────────────────────────────────────────
 
 impl Direction3 {
-    /// Returns the dot product of this direction vector with another vector.
-    ///
-    /// Forwards to `glam::Vec3::dot()`.
+    /// [`glam::Vec3::dot`]
     #[inline(always)]
     pub fn dot(self, other: glam::Vec3) -> f32 {
         self.0.dot(other)
     }
 
-    /// Returns the cross product of this direction vector with another vector.
-    ///
-    /// Forwards to `glam::Vec3::cross()`.
+    /// [`glam::Vec3::cross`]
     #[inline(always)]
     pub fn cross(self, other: glam::Vec3) -> Direction3 {
         Direction3(self.0.cross(other))
     }
 
-    /// Returns the reflection of this direction vector about a given normal vector.
-    ///
-    /// Forwards to `glam::Vec3::reflect()`.
+    /// [`glam::Vec3::reflect`]
     #[inline(always)]
     pub fn reflect(self, normal: glam::Vec3) -> Self {
         Self(self.0.reflect(normal))
     }
 
-    /// Returns the refraction of this direction vector through a surface with a given normal vector
-    /// and index of refraction ratio.
-    ///
-    /// Forwards to `glam::Vec3::refract()`.
+    /// [`glam::Vec3::refract`]
     #[inline(always)]
     pub fn refract(self, normal: glam::Vec3, eta: f32) -> Self {
         Self(self.0.refract(normal, eta))
     }
 
-    /// Returns the squared length of the direction vector. This is the sum of the squares of its
-    /// components.
-    ///
-    /// Forwards to `glam::Vec3::length_squared()`.
+    /// [`glam::Vec3::length_squared`]
     #[inline(always)]
     pub fn length_squared(self) -> f32 {
         self.0.length_squared()
     }
 
-    /// Returns the length of the direction vector. This is the Euclidean norm (or magnitude) of the
-    /// vector.
-    ///
-    /// Forwards to `glam::Vec3::length()`.
+    /// [`glam::Vec3::length`]
     #[inline(always)]
     pub fn length(self) -> f32 {
         self.0.length()

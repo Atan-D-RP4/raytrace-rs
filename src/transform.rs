@@ -47,6 +47,7 @@ pub struct StaticTransform {
 }
 
 impl StaticTransform {
+    /// Create an identity transform (no-op).
     pub fn identity() -> Self {
         Self::from_affine3a(Affine3A::IDENTITY)
     }
@@ -58,26 +59,32 @@ impl StaticTransform {
         }
     }
 
+    /// Create a translation transform that moves points by the given offset.
     pub fn translation(offset: Vec3) -> Self {
         Self::from_affine3a(Affine3A::from_translation(offset))
     }
 
+    /// Create a rotation transform around the Y axis by the given angle in degrees.
     pub fn rotation_y(degrees: f32) -> Self {
         Self::from_affine3a(Affine3A::from_rotation_y(degrees.to_radians()))
     }
 
+    /// Create a rotation transform around the X axis by the given angle in degrees.
     pub fn rotation_x(degrees: f32) -> Self {
         Self::from_affine3a(Affine3A::from_rotation_x(degrees.to_radians()))
     }
 
+    /// Create a rotation transform around the Z axis by the given angle in degrees.
     pub fn rotation_z(degrees: f32) -> Self {
         Self::from_affine3a(Affine3A::from_rotation_z(degrees.to_radians()))
     }
 
+    /// Create a rotation transform around the Y axis by the given angle in radians.
     pub fn rotation_x_axis(radians: f32) -> Self {
         Self::from_affine3a(Affine3A::from_rotation_x(radians))
     }
 
+    /// Create a rotation transform around the Y axis by the given angle in radians.
     pub fn scale(s: Vec3) -> Self {
         Self::from_affine3a(Affine3A::from_scale(s))
     }

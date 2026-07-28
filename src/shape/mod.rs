@@ -1,3 +1,10 @@
+mod box3d;
+mod constructors;
+mod planar;
+pub(crate) mod regions;
+mod sdf;
+mod sphere;
+
 use std::borrow::Borrow;
 
 use crate::bvh::aabb::Aabb;
@@ -11,17 +18,12 @@ use crate::ray::Ray;
 use crate::texture::UVDifferentiable;
 use crate::vec3::{Color3, Direction3, Point3};
 
-mod box3d;
-mod constructors;
-mod planar;
-pub(crate) mod regions;
-mod sphere;
-
-pub use sphere::{SphereShape, moving_sphere, sphere};
-
 pub use box3d::{Box3D, BoxShape, shape_box3d};
 pub use constructors::*;
 pub use planar::PlanarShape;
+pub use sdf::dual::Scalar;
+pub use sdf::{SdfFn, SdfShape};
+pub use sphere::{SphereShape, moving_sphere, sphere};
 
 /// Defines the 2D region test, UV mapping, area, and sampling for a planar shape.
 ///
@@ -56,24 +58,50 @@ pub trait Region2D: Send + Sync {
     }
 
     /// Samples `(a, b)` within the region from `(u, v)` ∈ [0,1]².
+    ///
+    /// Used for uniform surface sampling of the shape.
     fn sample(&self, u: f32, v: f32) -> (f32, f32);
 }
 
-/// 3D shape interface — the 3D analogue of [`Region2D`].
+/// Core shape geometry: ray intersection and bounding.
 ///
-/// Implementations provide pure-geometry intersection, bounding, area, and
-/// surface sampling in local space. Material assignment and trait derivation
-/// are handled by [`ShapeObject`].
-///
-/// [Region2D]: crate::shape::Region2D
+/// Every shape must support intersection and bounding; surface sampling
+/// (needed for area-light emission) is in the [`ShapeSurfaceSampling`]
+/// super-trait. Shapes that cannot provide correct surface-area-uniform
+/// sampling (e.g. generic SDFs) implement [`Shape3D`] only and are
+/// excluded from area-light use at compile time.
 pub trait Shape3D: UVDifferentiable + Send + Sync {
     /// Intersect a ray in local space. Returns a bare [`Hit`] for the
     /// caller to wrap in [`MaterialHit`].
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit>;
 
+    /// Returns true if the ray is occluded by the shape. Default implementation
+    /// calls [`intersect_shape`] and returns true if a hit is found.
+    fn occluded_shape(&self, ray: &Ray, ray_t: Interval) -> bool {
+        self.intersect_shape(ray, ray_t).is_some()
+    }
+
     /// Conservative AABB in local space.
     fn bounding_box(&self) -> Aabb;
+}
 
+/// Surface sampling for shapes — required for area-light support.
+///
+/// Provides surface-area, point sampling, direction sampling, and PDF
+/// evaluation for Monte Carlo light-source sampling. Shapes that cannot
+/// implement correct surface-area-uniform sampling (e.g. generic SDFs)
+/// do not implement this trait and are excluded from emission at compile time.
+///
+/// # Defaults
+/// * `sample_direction` — falls back to `sample` + normalize.
+/// * `pdf_direction` — area-to-solid-angle conversion via `intersect_shape`.
+/// * `sample_light` — uniform area sampling via `sample` + `area`.
+///
+/// Override `sample_direction` and `pdf_direction` for solid-angle-uniform
+/// sampling (less noise for small shapes like spheres). Override `sample_light`
+/// when the shape needs custom emission-aware light sampling (e.g. sphere
+/// cone sampling).
+pub trait ShapeSurfaceSampling: Shape3D {
     /// Surface area. Used for area-to-solid-angle PDF conversion.
     fn area(&self) -> f32;
 
@@ -84,9 +112,8 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
 
     /// Sample a direction toward this shape from `origin`.
     ///
-    /// Default fallback: uniform area sampling via [`sample()`]. Non-uniform
-    /// direction PDF for most shapes — override with solid-angle-uniform
-    /// sampling (less noise for small shapes like spheres).
+    /// Default: uniform area sampling via [`sample()`]. Override for
+    /// solid-angle-uniform sampling (less noise for small shapes).
     fn sample_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
         let (point, _normal) = self.sample(u, v, time);
         (point - origin).normalize()
@@ -95,13 +122,12 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
     /// Sample a point on the light and return a [`LightSample`] with direction,
     /// surface normal, distance, and area PDF.
     ///
-    /// Default fallback: uniform area sampling via [`sample()`]. Override for
-    /// solid-angle-uniform sampling (less noise for small shapes like spheres).
+    /// Default: uniform area sampling via [`sample()`]. Override for
+    /// solid-angle-uniform sampling (less noise for small shapes).
     fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
         let (point, normal) = self.sample(u, v, time);
         let offset = point - origin;
         let distance = offset.length();
-        // Area PDF: p_A(q) = 1 / area for uniform area sampling.
         let area_pdf = 1.0 / self.area();
         LightSample {
             direction: Direction3(offset.into_inner()),
@@ -114,10 +140,9 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
 
     /// PDF of sampling `direction` from `origin` toward this shape.
     ///
-    /// Default fallback: area-to-solid-angle conversion via [`intersect_shape`]:
+    /// Default: area-to-solid-angle conversion via [`intersect_shape`]:
     ///   p(ω) = distance² / (area · |cos θ|)
-    /// Only accurate for uniform area sampling — override for solid-angle-uniform
-    /// PDF (e.g. sphere uniform-cone).
+    /// Override for solid-angle-uniform PDF (e.g. sphere uniform-cone).
     fn pdf_direction(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
         let ray = Ray::new_with_time(origin, direction, time);
         let ray_t = Interval::from(0.001, f32::INFINITY);
@@ -138,16 +163,18 @@ pub trait Shape3D: UVDifferentiable + Send + Sync {
 
 /// A material-wrapped 3D shape — combines a [`Shape3D`] with a [`Material`],
 ///
-/// Combines a [`Shape3D`] with a [`Material`], deriving `Intersectable`,
-/// `Bounded`, and `Sampleable` generically. Adding a new shape only
-/// requires implementing [`Shape3D`].
+/// Combines a shape with a [`Material`], deriving `Intersectable`,
+/// `Bounded`, and `Sampleable` generically.
+///
+/// * `Intersectable` and `Bounded` — require only [`Shape3D`]; every shape qualifies.
+/// * `Sampleable` — additionally requires [`ShapeSurfaceSampling`]; shapes like
+///   generic SDFs that cannot implement correct surface sampling are excluded
+///   from area-light use at compile time.
 ///
 /// The caller chooses how to store the material: owned (`Material`),
 /// reference-counted (`Arc<Material>`), or borrowed (`&Material`).
 /// Default is `Arc<Material>`.
-///
-/// [PlanarPatch]: crate::planar::PlanarPatch
-pub struct ShapeObject<Sh: Shape3D, M: Borrow<Material>> {
+pub struct ShapeObject<Sh, M: Borrow<Material>> {
     shape: Sh,
     material: M,
     bbox: Aabb,
@@ -189,9 +216,15 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Intersectable for ShapeObje
             material: self.material.borrow(),
         })
     }
+
+    fn occluded(&self, ray: &Ray, ray_t: Interval) -> bool {
+        self.shape.occluded_shape(ray, ray_t)
+    }
 }
 
-impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<Sh, M> {
+impl<Sh: ShapeSurfaceSampling, M: Borrow<Material> + Send + Sync> Sampleable
+    for ShapeObject<Sh, M>
+{
     fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
         self.shape.pdf_direction(origin, direction, time)
     }
@@ -224,9 +257,10 @@ impl<Sh: Shape3D, M: Borrow<Material> + Send + Sync> Sampleable for ShapeObject<
             None,
         );
         let si = SurfaceInteraction::new(hit, sample.normal, front_face, self.material(), None);
-        // Direct call — no sentinel, no overwriting
+        // Compute the outgoing direction from the light to the shaded surface.
         let wo = -light_unit;
-        sample.emission = self.material().emitted(wo, &si);
+        // Evaluate the light's emission in that direction.
+        sample.emission = si.emitted(wo);
         sample
     }
 }
