@@ -1,12 +1,12 @@
-pub mod cpu;
-
-pub use cpu::CpuRenderer;
-
 use std::sync::Arc;
 
 use crate::camera::Camera;
 use crate::film::{Film, SharedFramebuffer};
 use crate::hittable::{Intersectable, Sampleable};
+
+pub mod cpu;
+
+pub use cpu::CpuRenderer;
 
 /// A trait for rendering a scene with a given camera and film.
 ///

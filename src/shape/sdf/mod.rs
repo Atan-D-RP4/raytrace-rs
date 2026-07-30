@@ -1,5 +1,3 @@
-pub mod dual;
-
 use std::sync::Arc;
 
 use glam::Vec3;
@@ -10,9 +8,12 @@ use crate::interval::Interval;
 use crate::ray::Ray;
 use crate::shape::Shape3D;
 use crate::shape::ShapeSurfaceSampling;
-use crate::shape::sdf::dual::{Dual, Scalar};
 use crate::texture::UVDifferentiable;
 use crate::vec3::{Direction3, Point3};
+
+pub mod dual;
+
+use dual::{Dual, Scalar};
 
 /// Maximum number of sphere-tracing steps before giving up. This is a hard limit to prevent
 /// infinite loops on degenerate SDFs (e.g., a "spike" with a very small SDF value that never
@@ -23,6 +24,8 @@ const MAX_MARCH_STEPS: usize = 64;
 /// small (noise, numerical imprecision).
 const MIN_PHYSICAL_STEP: f32 = 1e-3;
 
+/// Threshold for considering a sphere-tracing step to have "hit" the surface. If the SDF value
+/// at the current point is less than this threshold, we consider it a hit and stop marching.
 const HIT_EPSILON: f32 = 1e-3;
 
 /// Physical distance to advance past the ray origin for self-intersection guarding. Shadow/bounce

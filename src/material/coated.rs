@@ -15,13 +15,11 @@ use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
     Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
-    MAX_BSDF_STRATS, PdfKind, fresnel_r0, fresnel_schlick, ggx_sample_h,
+    MAX_BSDF_STRATS, Material, PdfKind, fresnel_r0, fresnel_schlick, ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::pdf::cosine_hemisphere_direction;
 use crate::vec3::{Color3, Direction3};
-
-use crate::material::Material;
 
 /// Maximum number of internal bounces for a Coated material. Each bounce
 /// gets a fresh dimension from `next_dim()` for the internal Fresnel split.

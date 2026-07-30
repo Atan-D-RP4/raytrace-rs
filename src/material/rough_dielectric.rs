@@ -11,18 +11,16 @@
 //! PDF: reflection `D(ω_h)·|ω_h·n| / (4·|wo·ω_h|)`, transmission Eq. 33.
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::gpu::{GPU_NONE, GpuSerializable};
+use crate::material::gpu::{
+    GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, GpuSerializable,
+};
 use crate::material::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
-    fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h,
+    Bsdf, BsdfScatter, MAX_BSDF_STRATS, MIRROR_THRESHOLD, Material, fresnel_schlick,
+    geometry_schlick_ggx, ggx_d, ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::pdf::PdfKind;
 use crate::vec3::{Color3, Direction3};
-
-use super::MIRROR_THRESHOLD;
-
-use crate::material::Material;
 
 /// Rough dielectric material with microfacet-based reflection and refraction.
 #[derive(Clone)]

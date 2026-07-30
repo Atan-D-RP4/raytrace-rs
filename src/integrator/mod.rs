@@ -3,12 +3,11 @@ use std::sync::Arc;
 use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable};
 use crate::ray::Ray;
+use crate::sampler::{SampleStream, SamplerRng};
 use crate::vec3::{Color3, Direction3};
 
-pub use crate::integrator::path_tracer::PathTracingIntegrator;
-pub use crate::sampler::{SampleStream, SamplerRng};
-
 pub mod path_tracer;
+pub use path_tracer::PathTracingIntegrator;
 
 /// A trait for integrators that compute radiance along rays in a scene.
 ///

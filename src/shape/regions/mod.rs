@@ -1,3 +1,5 @@
+use crate::shape::Region2D;
+
 mod annulus;
 mod ellipse;
 mod function;
@@ -15,8 +17,6 @@ pub use quad::QuadRegion;
 pub use rounded_rect::RoundedRectRegion;
 pub use superellipse::SuperellipseRegion;
 pub use triangle::TriRegion;
-
-use crate::shape::Region2D;
 
 /// Rejection sampling for arbitrary regions.
 ///

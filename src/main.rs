@@ -14,7 +14,7 @@ use winit::window::{Theme, Window, WindowId};
 use raytrace_rs::bvh::Bvh;
 use raytrace_rs::bvh::builder::TreeBuilder;
 use raytrace_rs::camera::Camera;
-use raytrace_rs::camera::PerspectiveCamera;
+use raytrace_rs::camera::perspective::PerspectiveCamera;
 use raytrace_rs::film::RgbFilm;
 use raytrace_rs::film::{Framebuffer, SharedFramebuffer};
 use raytrace_rs::integrator::PathTracingIntegrator;

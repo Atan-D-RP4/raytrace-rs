@@ -1,10 +1,3 @@
-mod box3d;
-mod constructors;
-mod planar;
-pub(crate) mod regions;
-mod sdf;
-mod sphere;
-
 use std::borrow::Borrow;
 
 use crate::bvh::aabb::Aabb;
@@ -17,6 +10,13 @@ use crate::ray::Ray;
 
 use crate::texture::UVDifferentiable;
 use crate::vec3::{Color3, Direction3, Point3};
+
+mod box3d;
+mod constructors;
+mod planar;
+pub(crate) mod regions;
+mod sdf;
+mod sphere;
 
 pub use box3d::{Box3D, BoxShape, shape_box3d};
 pub use constructors::*;

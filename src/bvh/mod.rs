@@ -27,10 +27,6 @@
 //! 8. Stackless BVH traversal: Hapala et al., "Efficient Stack-less BVH Traversal for Ray Tracing," SCCG 2011
 //! 9. DRST (dynamic ray stream tracing): Barringer & Akenine-Möller, 2014
 
-pub mod aabb;
-pub mod builder;
-#[cfg(test)]
-mod tests;
 use std::simd::num::SimdFloat;
 use std::simd::prelude::*;
 use std::simd::{Mask, Simd};
@@ -38,11 +34,17 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use crate::bvh::aabb::{Aabb, AabbPacked};
-use crate::bvh::builder::TreeBuilder;
 use crate::hittable::{Bounded, Intersectable, MaterialHit};
 use crate::interval::Interval;
 use crate::ray::Ray;
+
+pub mod aabb;
+pub mod builder;
+#[cfg(test)]
+mod tests;
+
+use aabb::{Aabb, AabbPacked};
+use builder::TreeBuilder;
 
 /// Maximum traversal stack depth. 64 handles BVHs with up to 2^64 primitives.
 const MAX_STACK: usize = 64;

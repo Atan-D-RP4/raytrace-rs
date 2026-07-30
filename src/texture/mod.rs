@@ -12,6 +12,8 @@
 //! TODO(renderer-agnostic): replace direct path-tracer handoff with
 //! `SurfaceInteraction` so rasterizer/GPU/hybrid/SDF backends share this API.
 
+use crate::vec3::{Color3, Direction3, Point3};
+
 mod gpu;
 mod impls;
 pub mod mapping;
@@ -21,8 +23,6 @@ pub use impls::{
     CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, SphericalUvMapping,
     TriplanarMapping, UvCheckerTexture, WorldSpaceMapping,
 };
-
-use crate::vec3::{Color3, Direction3, Point3};
 
 /// A trait for surfaces that can provide UV coordinates and their derivatives.
 ///

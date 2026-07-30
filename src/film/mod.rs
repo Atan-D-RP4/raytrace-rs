@@ -1,9 +1,3 @@
-pub mod rgb;
-pub mod tile;
-
-pub use rgb::RgbFilm;
-pub use tile::FilmTile;
-
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -11,6 +5,12 @@ use glam::Vec3;
 use image::{ImageResult, RgbImage};
 
 use crate::vec3::Color3;
+
+pub mod rgb;
+pub mod tile;
+
+pub use rgb::RgbFilm;
+pub use tile::FilmTile;
 
 /// Post-process a linear RGB color to sRGB8 with exposure and optional tone mapping.
 /// - `color`: linear RGB color in [0,1] range.

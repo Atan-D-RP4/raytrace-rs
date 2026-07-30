@@ -32,6 +32,12 @@
 //! Flatten via [`Material::to_gpu_buffer`] into [`GpuMaterialNode`]s with
 //! child indices. Custom materials serialize as `Passthrough` (not uploaded).
 
+use std::sync::Arc;
+
+use crate::hittable::SurfaceInteraction;
+use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
+use crate::vec3::{Color3, Direction3};
+
 mod coated;
 mod dielectric;
 mod diffuse_light;
@@ -43,27 +49,18 @@ mod metal;
 mod mix;
 mod rough_dielectric;
 
-pub use gpu::{GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
+use gpu::GPU_NONE;
 
 pub use coated::CoatedMaterial;
 pub use dielectric::DielectricMaterial;
 pub use diffuse_light::DiffuseLightMaterial;
 pub use glossy::GlossyMaterial;
+pub use gpu::{GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, GpuSerializable};
 pub use isotropic::IsotropicMaterial;
 pub use lambertian::LambertianMaterial;
 pub use metal::MetalMaterial;
 pub use mix::MixMaterial;
 pub use rough_dielectric::RoughDielectricMaterial;
-
-use std::sync::Arc;
-
-pub use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
-
-use crate::hittable::SurfaceInteraction;
-use crate::vec3::{Color3, Direction3};
-
-use self::gpu::GpuSerializable;
-use gpu::GPU_NONE;
 
 /// Maximum number of BSDF sampling strategies produced by any material.
 /// Used as the fixed capacity for `BsdfScatter::NonDelta` / `Split`.

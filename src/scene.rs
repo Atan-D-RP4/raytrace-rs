@@ -570,7 +570,14 @@ impl Scene {
         let mut scene = Self::new().with_env_map(Arc::new(EnvironmentMap::new(
             image::open("./kiara_1_dawn_4k.hdr").unwrap().into(),
         )));
-        let material: Material = DielectricMaterial::tinted(1.5, Color3::new(0.6, 0.6, 1.0)).into();
+        let material: Material = LambertianMaterial::with_texture(
+            Color3::new(0.1, 0.2, 0.5),
+            Arc::new(CheckerTexture::new(
+                Arc::new(SolidColor::new(Color3::new(0.1, 0.2, 0.5))),
+                Arc::new(SolidColor::new(Color3::new(0.9, 0.9, 0.9))),
+            )),
+        )
+        .into();
 
         scene.config.aspect_ratio = 1.0;
         scene.config.image_width = 800;
@@ -584,6 +591,11 @@ impl Scene {
         scene.config.focus_distance = 800.0;
         scene.config.background = Color3::new(0.0, 0.0, 0.0);
         scene.config.samples_per_pixel = 256;
+
+        let camera_offset = scene.config.look_at - scene.config.look_from;
+        let rotation = glam::Quat::from_rotation_y(30.0_f32.to_radians());
+        let rotated_offset = rotation * camera_offset.into_inner();
+        scene.config.look_from = scene.config.look_at + rotated_offset;
 
         struct MandelbulbSdf {
             power: i32,
@@ -676,7 +688,7 @@ impl Scene {
         // The Mandelbulb SDF evaluates around the origin in local space, so the
         // AABB must be centered at the origin.  TransformObject translates the
         // shape to look_at in world space.
-        let half = 120.0_f32; // Mandelbulb radius is ~1.5 at power=8, bailout=2
+        let half = 1.5_f32; // Mandelbulb radius is ~1.5 at power=8, bailout=2
         let corner_min = Point3::splat(-half);
         let corner_max = Point3::splat(half);
         let mandelbulb = SdfShape::new(
@@ -692,7 +704,7 @@ impl Scene {
         // then translate to the look_at point.
         let xform = StaticTransform::from_affine3a(
             Affine3A::from_translation(scene.config.look_at.into_inner())
-                * Affine3A::from_scale(Vec3::splat(20.0)),
+                * Affine3A::from_scale(Vec3::splat(100.0)),
         );
         let sdf_shape = TransformObject::new(xform, sdf_shape);
         scene.add_intersectable(Arc::new(sdf_shape), None);
