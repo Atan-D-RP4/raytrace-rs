@@ -512,14 +512,18 @@ impl Scene {
     }
 
     pub fn sdf_test() -> Self {
-        let mut scene = Self::empty_cornell_box().with_env_map(Arc::new(EnvironmentMap::new(
+        let mut scene = Self::new().with_env_map(Arc::new(EnvironmentMap::new(
             image::open("./kiara_1_dawn_4k.hdr").unwrap().into(),
         )));
+        let material: Material =
+            RoughDielectricMaterial::tinted(1.5, 0.1, Color3::new(0.8, 0.8, 1.0)).into();
+
         struct CylinderSdf {
             center: Point3,
             radius: f32,
             height: f32,
         }
+
         impl SdfFn for CylinderSdf {
             fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
                 let cx = x - T::from_f32(self.center.x());
@@ -535,7 +539,6 @@ impl Scene {
         let half = Point3::splat(50.0);
 
         // SDF shape
-        let material: Material = LambertianMaterial::new(Color3::new(0.8, 0.3, 0.3)).into();
         let shape = SdfShape::new(
             CylinderSdf {
                 center,
@@ -546,6 +549,152 @@ impl Scene {
         );
         let sdf_shape = ShapeObject::new(shape, material);
         let sdf_shape = TransformObject::new(StaticTransform::rotation_x(45.0), sdf_shape);
+        scene.add_intersectable(Arc::new(sdf_shape), None);
+
+        scene.config.aspect_ratio = 1.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 50;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 40.0;
+        scene.config.look_from = Point3::new(278., 278., -800.);
+        scene.config.look_at = Point3::new(278., 278., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.defocus_angle = 0.0;
+        scene.config.focus_distance = 800.0;
+        scene.config.background = Color3::new(0.0, 0.0, 0.0);
+
+        scene
+    }
+
+    pub fn mandlebulb_sdf() -> Self {
+        let mut scene = Self::new().with_env_map(Arc::new(EnvironmentMap::new(
+            image::open("./kiara_1_dawn_4k.hdr").unwrap().into(),
+        )));
+        let material: Material = DielectricMaterial::tinted(1.5, Color3::new(0.6, 0.6, 1.0)).into();
+
+        scene.config.aspect_ratio = 1.0;
+        scene.config.image_width = 800;
+        scene.config.samples_per_pixel = 100;
+        scene.config.max_depth = 50;
+        scene.config.vfov = 30.0;
+        scene.config.look_from = Point3::new(278., 278., -800.);
+        scene.config.look_at = Point3::new(278., 278., 0.);
+        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.defocus_angle = 0.0;
+        scene.config.focus_distance = 800.0;
+        scene.config.background = Color3::new(0.0, 0.0, 0.0);
+        scene.config.samples_per_pixel = 256;
+
+        struct MandelbulbSdf {
+            power: i32,
+            iters: usize,
+            bailout: f32,
+        }
+        impl SdfFn for MandelbulbSdf {
+            fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+                let mut zx = x;
+                let mut zy = y;
+                let mut zz = z;
+                let mut dr = T::one();
+                let mut escaped = false;
+                let mut did_iterate = false;
+
+                for _ in 0..self.iters {
+                    let r2 = zx * zx + zy * zy + zz * zz;
+                    if r2 > T::from_f32(self.bailout * self.bailout) {
+                        // Already outside the bailout sphere — point is outside the set.
+                        escaped = true;
+                        break;
+                    }
+
+                    did_iterate = true;
+                    let r = r2.sqrt();
+                    // Guard against polar singularity r ≈ 0.
+                    let r_safe = r.max(T::from_f32(1e-8));
+                    let inv_r = T::one() / r_safe;
+                    let r_xy = (zx * zx + zy * zy).sqrt();
+
+                    let ct = zz * inv_r;
+                    let st = r_xy * inv_r;
+
+                    let (cp, sp) = if r_xy >= T::from_f32(f32::EPSILON) {
+                        (zx / r_xy, zy / r_xy)
+                    } else {
+                        (T::one(), T::zero())
+                    };
+
+                    // Multiple-angle iteration for power n
+                    let mut cos_nt = ct;
+                    let mut sin_nt = st;
+                    for _ in 1..self.power {
+                        (cos_nt, sin_nt) = (cos_nt * ct - sin_nt * st, sin_nt * ct + cos_nt * st);
+                    }
+
+                    let mut cos_np = cp;
+                    let mut sin_np = sp;
+                    for _ in 1..self.power {
+                        (cos_np, sin_np) = (cos_np * cp - sin_np * sp, sin_np * cp + cos_np * sp);
+                    }
+
+                    dr = T::from_f32(self.power as f32) * r.powi(self.power - 1) * dr + T::one();
+
+                    let rn = r.powi(self.power);
+                    zx = rn * sin_nt * cos_np + x;
+                    zy = rn * sin_nt * sin_np + y;
+                    zz = rn * cos_nt + z;
+
+                    // Check bailout on the NEW z (after iteration) so dr is from the
+                    // iteration that caused escape, not the one before it.
+                    let r2_new = zx * zx + zy * zy + zz * zz;
+                    if r2_new > T::from_f32(self.bailout * self.bailout) {
+                        escaped = true;
+                        break;
+                    }
+                }
+
+                let r = (zx * zx + zy * zy + zz * zz).sqrt().max(T::from_f32(1e-8));
+                // Exterior distance estimate (common for all paths so Dual AD
+                // differentiates the same expression regardless of escape status).
+                let mut de = T::from_f32(0.5) * r / dr;
+
+                if did_iterate && !escaped {
+                    // Inside the set — negate the distance; the derivative of
+                    // -(0.5·r/dr) = -(0.5·dr⁻¹)·dr/dp which is continuous
+                    // across the surface boundary.
+                    de = -de;
+                } else if !did_iterate {
+                    // No iteration ran — started outside the bailout sphere.
+                    // dr = 1, so de = 0.5·r.  Use Euclidean distance to bailout
+                    // sphere instead: same far-field limit, tighter near the
+                    // bailout sphere.  Negligible for gradient (never hit surface).
+                    de = (r - T::from_f32(self.bailout)).max(T::from_f32(1e-3));
+                }
+                de
+            }
+        }
+
+        // The Mandelbulb SDF evaluates around the origin in local space, so the
+        // AABB must be centered at the origin.  TransformObject translates the
+        // shape to look_at in world space.
+        let half = 120.0_f32; // Mandelbulb radius is ~1.5 at power=8, bailout=2
+        let corner_min = Point3::splat(-half);
+        let corner_max = Point3::splat(half);
+        let mandelbulb = SdfShape::new(
+            MandelbulbSdf {
+                power: 8,
+                iters: 20,
+                bailout: 2.0,
+            },
+            Aabb::from_corners(corner_min, corner_max),
+        );
+        let sdf_shape = ShapeObject::new(mandelbulb, material);
+        // Scale the Mandelbulb up from its natural ~3-unit diameter to ~60 units,
+        // then translate to the look_at point.
+        let xform = StaticTransform::from_affine3a(
+            Affine3A::from_translation(scene.config.look_at.into_inner())
+                * Affine3A::from_scale(Vec3::splat(20.0)),
+        );
+        let sdf_shape = TransformObject::new(xform, sdf_shape);
         scene.add_intersectable(Arc::new(sdf_shape), None);
 
         scene

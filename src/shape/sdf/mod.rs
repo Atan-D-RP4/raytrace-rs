@@ -2,6 +2,8 @@ pub mod dual;
 
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::bvh::aabb::Aabb;
 use crate::hittable::Hit;
 use crate::interval::Interval;
@@ -15,7 +17,7 @@ use crate::vec3::{Direction3, Point3};
 /// Maximum number of sphere-tracing steps before giving up. This is a hard limit to prevent
 /// infinite loops on degenerate SDFs (e.g., a "spike" with a very small SDF value that never
 /// reaches the surface).
-const MAX_MARCH_STEPS: usize = 32;
+const MAX_MARCH_STEPS: usize = 64;
 
 /// Minimum physical-distance step to prevent sphere-tracing stall when the SDF value is extremely
 /// small (noise, numerical imprecision).
@@ -38,8 +40,7 @@ const SOR_DIST_THRESHOLD: f32 = 1.0;
 
 /// An SDF evaluation function, generic over scalar type.
 ///
-/// `eval::<f64>(...)`   → value path (sphere tracing) `eval::<Dual<3>>(...)` → value + gradient
-/// (normal)
+/// `eval::<f64>(...)` → value path (sphere tracing) `eval::<Dual<3>>(...)` → value + gradient (normal)
 pub trait SdfFn: Send + Sync {
     fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T;
 }
@@ -72,13 +73,44 @@ impl<F: SdfFn> SdfShape<F> {
         Self { sdf, bbox }
     }
 
-    /// Compute gradient at a world-space point using Dual<3> — 1 evaluation.
+    /// Gradient via forward-mode AD (Dual<3>), fallback to central finite differences.
+    ///
+    /// Dual AD requires the SDF to use a single expression for both interior and exterior (e.g.
+    /// `0.5·r/dr` negated inside vs outside) so the derivative path is the same regardless of
+    /// escape status — see `scene.rs` Mandelbulb eval for the pattern.
     fn gradient(&self, p: Point3) -> Direction3 {
+        // Dual AD: 1 eval, exact gradient.  Works when the SDF unifies interior/exterior
+        // expressions (so Dual differentiates the same path regardless of escape status).
         let x = Dual::<f32, 3>::variable(0, p.x());
         let y = Dual::<f32, 3>::variable(1, p.y());
         let z = Dual::<f32, 3>::variable(2, p.z());
         let r = self.sdf.eval(x, y, z);
-        Direction3::new(r.tangent(0), r.tangent(1), r.tangent(2)).normalize()
+        let n = Direction3::new(r.tangent(0), r.tangent(1), r.tangent(2));
+        let len = n.length();
+        if len > 1e-4 {
+            return n / len;
+        }
+
+        // Dual AD failed (singularity at this evaluation point) — finite differences.
+        // 3 axes × 2 evals = 6 evaluations, works regardless of branching.
+        let eps = 1e-4_f32;
+        let px: [f32; 3] = [p.x(), p.y(), p.z()];
+        let mut g = [0.0_f32; 3];
+        for axis in 0..3 {
+            let mut p_lo = px;
+            p_lo[axis] -= eps;
+            let mut p_hi = px;
+            p_hi[axis] += eps;
+            let d_lo = self.sdf.eval::<f32>(p_lo[0], p_lo[1], p_lo[2]);
+            let d_hi = self.sdf.eval::<f32>(p_hi[0], p_hi[1], p_hi[2]);
+            g[axis] = (d_hi - d_lo) / (2.0 * eps);
+        }
+        let len = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+        if len < 1e-10 {
+            Vec3::from((0.0, 1.0, 0.0)).into() // still degenerate — arbitrary fallbac
+        } else {
+            (Vec3::from_slice(&g) / len).into()
+        }
     }
 
     /// Compute mean curvature at a world-space point using single-pass second-order AD.
@@ -87,9 +119,8 @@ impl<F: SdfFn> SdfShape<F> {
     /// - first partials (gradient): `result.v.d[i]`
     /// - second partials (Hessian): `result.d[i].d[j]`
     ///
-    /// Curvature is then κ = (∇fᵀ·H·∇f − |∇f|²·tr(H)) / (2·|∇f|³),
-    /// which for unit-gradient SDFs (|∇f| ≈ 1 at the surface) simplifies to
-    /// κ = (nᵀ·H·n − tr(H)) / 2.
+    /// Curvature is then κ = (∇fᵀ·H·∇f − |∇f|²·tr(H)) / (2·|∇f|³), which for unit-gradient SDFs
+    /// (|∇f| ≈ 1 at the surface) simplifies to κ = (nᵀ·H·n − tr(H)) / 2.
     fn mean_curvature(&self, p: Point3) -> f32 {
         let result = self.sdf.eval::<Dual<Dual<f32, 3>, 3>>(
             Dual::<Dual<f32, 3>, 3>::variable(0, Dual::<f32, 3>::variable(0, p.x())),
@@ -129,10 +160,22 @@ impl<F: SdfFn> SdfShape<F> {
     }
 
     /// Sphere-tracing intersection test. Returns the first hit (t, p) if any.
+    ///
+    /// Handles several edge cases common in fractal DE rendering:
+    /// **Non-unit ray direction** — steps are scaled by 1/|dir| because SDF distances are physical
+    /// units but we march in ray-parameter space.
+    /// **Self-intersection guard** — bounce rays start at the surface where |d| < HIT_EPSILON and
+    /// would immediately self-intersect. A warmup loop advances past this zone before the main
+    /// march.
+    /// **Fractal DE overshoot** — the Mandelbulb's distance estimate is not a true SDF (|∇f| ≠ 1).
+    /// The backward step from an interior point can re-overshoot the surface, creating a limit
+    /// cycle. Bisection between the last outside `t` and the current inside `t` guarantees
+    /// convergence.
+    /// **Fractal DE overestimation** — camera rays from far away converge to a point where d
+    /// approaches 0 from above (never crosses into negative). Without the `guard_broke_early` flag,
+    /// these hits would be rejected.
     fn march(&self, ray: &Ray, ray_t: Interval) -> Option<(f32, Point3)> {
-        // Ray direction may not be unit-length (e.g., camera rays from perspective cameras). SDF
-        // values are in physical distance units, so the sphere-tracing step must be scaled by
-        // 1/|dir|.
+        // SDF distances are physical; scale steps by 1/|dir| (ray-parameter space).
         let dir_len = ray.direction.length();
         if dir_len <= 0.0 {
             return None;
@@ -140,20 +183,26 @@ impl<F: SdfFn> SdfShape<F> {
         let inv_dir_len = 1.0 / dir_len;
 
         let mut t = ray_t.min;
-        // Tracks whether the ray was ever OUTSIDE the SDF (d > 0) during this intersection test.
-        // Surface-originating inward rays never escape the interior; outside→inside overshoots are
-        // distinguished so the step direction is correct in both cases.
+
+        // Ray was ever outside (d > 0). Surface-originating inward rays never escape the interior —
+        // this flag distinguishes overshoot from inward.
         let mut was_outside = false;
 
-        // Self-intersection guard: advance past the near-surface zone. Shadow/bounce rays start at
-        // the SDF surface where |d| < HIT_EPSILON at t ≈ ray_t.min. Without this warmup, every such
-        // ray immediately self-intersects, killing NEE and indirect illumination.
-        let guard_end = ray_t.min + SELF_INTERSECTION_GUARD;
+        // Last outside t — bisection anchor for fractal DE overshoot (Mandelbulb's backward-step
+        // oscillates on interior points).
+        let mut t_outside = t;
+
+        // Warmup: advance past the |d| < HIT_EPSILON zone near ray_t.min
+        // (bounce rays start at the surface and would self-intersect otherwise).
+        let guard_end = ray_t.min + SELF_INTERSECTION_GUARD * inv_dir_len;
         while t < guard_end {
             let p = ray.at(t);
             let d = self.sdf.eval::<f32>(p.x(), p.y(), p.z());
+            // Small d > 0 (DE underestimates) still counts as outside.
+            if d > 0.0 {
+                was_outside = true;
+            }
             if d.abs() >= HIT_EPSILON {
-                was_outside = d > 0.0;
                 break;
             }
             t += MIN_PHYSICAL_STEP * inv_dir_len;
@@ -161,33 +210,38 @@ impl<F: SdfFn> SdfShape<F> {
                 return None;
             }
         }
+        // Camera rays break early (far start); surface rays run full course.
+        let guard_broke_early = t < guard_end; // false → surface ray (full warmup)
 
         for _ in 0..MAX_MARCH_STEPS {
             let p = ray.at(t);
-            // Value path: f32 evaluation → zero-cost, plain float std::ops
             let d = self.sdf.eval::<f32>(p.x(), p.y(), p.z());
 
             if d.abs() < HIT_EPSILON {
-                // Report the hit as a simple (t, p) pair; the caller can compute the normal if needed.
-                return Some((t, p));
+                if t <= guard_end {
+                    t += MIN_PHYSICAL_STEP * inv_dir_len;
+                    continue;
+                }
+                // Accept: crossed into set (d < 0) or camera ray (d ≥ 0 but far start).
+                // Without the camera-ray case, fractal DE overestimation would reject
+                // every hit — convergence approaches from above and never crosses d < 0.
+                if d < 0.0 || guard_broke_early {
+                    return Some((t, p));
+                }
+                // Outward surface ray still near start — not a real hit.
+                t += MIN_PHYSICAL_STEP * inv_dir_len;
+                continue;
             }
 
             if t > ray_t.max {
                 return None;
             }
 
-            // Step strategy with SOR (Successive Over-Relaxation):
-            //   d > 0, d <= SOR_DIST_THRESHOLD: over-relaxed step — SOR
-            //     accelerates convergence on near-flat/grazing surfaces where
-            //     the standard step is small
-            //   d > 0, d > SOR_DIST_THRESHOLD: standard step — far from the
-            //     surface, the SDF already gives the optimal distance; SOR
-            //     would risk overshooting the surface entirely
-            //   d < 0, never been outside (inward surface-originating): forward
-            //     step into interior — standard t += d would go backward
-            //   d < 0, was outside (overshoot): standard backward step
             if d > 0.0 {
+                t_outside = t;
                 let std_step = d.max(MIN_PHYSICAL_STEP);
+                // Over-relaxed step (SOR) accelerates grazing convergence when
+                // close to the surface; far from the surface use standard step.
                 let step = if d <= SOR_DIST_THRESHOLD {
                     std_step * SOR_FACTOR
                 } else {
@@ -195,13 +249,12 @@ impl<F: SdfFn> SdfShape<F> {
                 };
                 t += step * inv_dir_len;
             } else if d < 0.0 && !was_outside {
-                // Surface-originating inward: always step forward
+                // Surface-originating inward: step forward (standard would go backward)
                 t += (-d).max(MIN_PHYSICAL_STEP) * inv_dir_len;
             } else {
-                // Standard sphere tracing: backward for overshoot, forward otherwise.
-                // No SOR here — under-relaxing the backward step can produce
-                // oscillation that fails to converge within MAX_MARCH_STEPS.
-                t += d * inv_dir_len;
+                // Overshoot: bisect — fractal DE inside-distance oscillates,
+                // halving the interval guarantees convergence.
+                t = (t_outside + t) * 0.5;
             }
         }
         None
@@ -212,13 +265,23 @@ impl<F: SdfFn> Shape3D for SdfShape<F> {
     /// Intersection test: returns the first hit if any.
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
         if let Some((t, p)) = self.march(ray, ray_t) {
-            // Compute the normal at the hit point using Dual<3> to get the gradient in one
-            // evaluation.
-            let normal = self.gradient(p);
+            // Compute the normal at the hit point
+            let mut normal = self.gradient(p);
+            // For fractal DEs (Mandelbulb, etc.), bisection may converge to a point slightly inside
+            // the set where the Dual gradient follows the inside branch and points inward.
+            // Orient the normal to face against the incoming ray (standard ray tracing convention:
+            // normal · ray_direction < 0).
+            normal *= normal.dot(ray.direction.into_inner()).signum();
+            // Nudge the hit point slightly outward along the normal. Bisection converges to a point
+            // that may be slightly inside the set (negative SDF). Without this, downstream rays
+            // (NEE shadows, scatter bounces) start interior and immediately exit the far side,
+            // causing self-occlusion that kills all illumination.
+            let hit_point = p + normal.into_inner() * 1e-3;
+
             // Fill in the Hit record with the intersection details. SDFs do not have natural UV
             // coordinates, so we leave them as None.
             let mut hit = Hit::new(
-                t, p, p, normal, None, // UV — SDFs have no natural UV
+                t, hit_point, hit_point, normal, None, // UV — SDFs have no natural UV
                 None,
             );
             // Fill in curvature if requested (e.g., for bump mapping or shading effects)
