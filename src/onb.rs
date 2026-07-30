@@ -1,5 +1,5 @@
 use crate::vec3::Direction3;
-use glam::Vec3;
+use glam::{Mat3, Vec3};
 
 /// An orthonormal basis (ONB) represented by three mutually perpendicular unit vectors: u, v, and w.
 ///
@@ -68,7 +68,12 @@ impl Onb {
 
     /// Transforms a local-space vector (in tangent space) to world-space using the ONB basis.
     pub fn local_to_world(&self, local: Direction3) -> Direction3 {
-        local.x() * self.u + local.y() * self.v + local.z() * self.w
+        (Mat3::from_cols(
+            self.u.into_inner(),
+            self.v.into_inner(),
+            self.w.into_inner(),
+        ) * local.into_inner())
+        .into()
     }
 
     /// Transforms a world-space vector to local-space (in tangent space) using the ONB basis.

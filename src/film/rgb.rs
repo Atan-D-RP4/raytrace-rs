@@ -262,8 +262,7 @@ impl Film for RgbFilm {
                 } else {
                     self.pixels[idx]
                 };
-                let luminance = LUMINANCE * mean;
-                let luminance = luminance.x() + luminance.y() + luminance.z();
+                let luminance = LUMINANCE.into_inner().dot(mean.into_inner());
 
                 sample_count >= min_samples
                     && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel)

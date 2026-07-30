@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-use glam::Vec3;
+use glam::{Mat3, Vec3};
 
 use crate::hittable::Intersectable;
 use crate::material::Material;
@@ -126,12 +126,13 @@ pub fn box3d(a: Point3, b: Point3, material: impl Into<Material>) -> Vec<Arc<dyn
     let material: Material = material.into();
     let mut sides: Vec<Arc<dyn Intersectable>> = Vec::with_capacity(6);
 
-    let min = Point3::new(a.x().min(b.x()), a.y().min(b.y()), a.z().min(b.z()));
-    let max = Point3::new(a.x().max(b.x()), a.y().max(b.y()), a.z().max(b.z()));
+    let min = a.min(b.into_inner());
+    let max = a.max(b.into_inner());
 
-    let dx = Vec3::new(max.x() - min.x(), 0., 0.);
-    let dy = Vec3::new(0., max.y() - min.y(), 0.);
-    let dz = Vec3::new(0., 0., max.z() - min.z());
+    let d = Mat3::ZERO.mul_diagonal_scale((max - min).into_inner());
+    let dx = d.x_axis;
+    let dy = d.y_axis;
+    let dz = d.z_axis;
 
     // Front face is CCW from outside, so normal points outwards.
     sides.push(Arc::new(quad(

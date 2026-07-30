@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use glam::Vec3;
+use glam::{Mat3, Vec3};
 
 use crate::bvh::aabb::Aabb;
 use crate::hittable::Hit;
@@ -97,29 +97,31 @@ impl<F: SdfFn> SdfShape<F> {
         let r = self.sdf.eval(x, y, z);
         let n = Direction3::new(r.tangent(0), r.tangent(1), r.tangent(2));
         let len = n.length();
-        if len > 1e-4 {
+        if len.is_finite() && len > 1e-4 {
             return n / len;
         }
 
         // Dual AD failed (singularity at this evaluation point) — finite differences.
         // 3 axes × 2 evals = 6 evaluations, works regardless of branching.
         let eps = 1e-4_f32;
-        let px: [f32; 3] = [p.x(), p.y(), p.z()];
-        let mut g = [0.0_f32; 3];
-        for axis in 0..3 {
-            let mut p_lo = px;
-            p_lo[axis] -= eps;
-            let mut p_hi = px;
-            p_hi[axis] += eps;
-            let d_lo = self.sdf.eval::<f32>(p_lo[0], p_lo[1], p_lo[2]);
-            let d_hi = self.sdf.eval::<f32>(p_hi[0], p_hi[1], p_hi[2]);
-            g[axis] = (d_hi - d_lo) / (2.0 * eps);
-        }
-        let len = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt();
+        let px: [f32; 3] = p.into_inner().to_array();
+        let hi = Vec3::new(
+            self.sdf.eval::<f32>(px[0] + eps, px[1], px[2]),
+            self.sdf.eval::<f32>(px[0], px[1] + eps, px[2]),
+            self.sdf.eval::<f32>(px[0], px[1], px[2] + eps),
+        );
+        let lo = Vec3::new(
+            self.sdf.eval::<f32>(px[0] - eps, px[1], px[2]),
+            self.sdf.eval::<f32>(px[0], px[1] - eps, px[2]),
+            self.sdf.eval::<f32>(px[0], px[1], px[2] - eps),
+        );
+        let gradient = (hi - lo) / (2.0 * eps);
+        let len = gradient.length();
+
         if len < 1e-10 {
-            Vec3::from((0.0, 1.0, 0.0)).into() // still degenerate — arbitrary fallbac
+            Direction3::new(0.0, 1.0, 0.0) // still degenerate — arbitrary fallbac
         } else {
-            (Vec3::from_slice(&g) / len).into()
+            (gradient / len).into()
         }
     }
 
@@ -139,31 +141,28 @@ impl<F: SdfFn> SdfShape<F> {
         );
 
         // Gradient ∇f
-        let gx = result.v.d[0];
-        let gy = result.v.d[1];
-        let gz = result.v.d[2];
-        let g_len_sq = gx * gx + gy * gy + gz * gz;
+        // The gradient is a 3D vector of first partial derivatives. We extract it from the nested
+        let g = Vec3::from(result.v.d);
+        let g_len_sq = g.length_squared();
         if g_len_sq <= f32::EPSILON {
-            return 0.0; // degenerate — flat or singularity
+            // Degenerate case: gradient is zero, cannot compute curvature. Return 0.0 as a fallback.
+            return 0.0;
         }
         let g_len = g_len_sq.sqrt();
         let g_len_cu = g_len_sq * g_len;
 
         // Hessian H (symmetric, ∂²f/∂xᵢ∂xⱼ)
-        let h00 = result.d[0].d[0];
-        let h01 = result.d[0].d[1];
-        let h02 = result.d[0].d[2];
-        let h11 = result.d[1].d[1];
-        let h12 = result.d[1].d[2];
-        let h22 = result.d[2].d[2];
+        // The Hessian is a 3x3 matrix of second partial derivatives. We extract it from the nested
+        // Dual structure.
+        let hessian = Mat3::from_cols_array_2d(&result.d.map(|row| row.d));
 
         // ∇fᵀ·H·∇f
-        let g_h_g = gx * (gx * h00 + gy * h01 + gz * h02)
-            + gy * (gx * h01 + gy * h11 + gz * h12)
-            + gz * (gx * h02 + gy * h12 + gz * h22);
+        // This is a quadratic form: gᵀ·H·g = Σᵢ Σⱼ gᵢ Hᵢⱼ gⱼ
+        let g_h_g = hessian.mul_vec3(g).dot(g);
 
-        // tr(H)
-        let trace = h00 + h11 + h22;
+        // tr(H) = ∂²f/∂x² + ∂²f/∂y² + ∂²f/∂z²
+        // The trace is the sum of the diagonal elements of the Hessian matrix.
+        let trace = hessian.diagonal().element_sum();
 
         // κ = (∇fᵀ·H·∇f − |∇f|²·tr(H)) / (2·|∇f|³)
         (g_h_g - g_len_sq * trace) / (2.0 * g_len_cu)
@@ -281,7 +280,8 @@ impl<F: SdfFn> Shape3D for SdfShape<F> {
             // the set where the Dual gradient follows the inside branch and points inward.
             // Orient the normal to face against the incoming ray (standard ray tracing convention:
             // normal · ray_direction < 0).
-            normal *= normal.dot(ray.direction.into_inner()).signum();
+            normal *= -normal.dot(ray.direction.into_inner()).signum();
+
             // Nudge the hit point slightly outward along the normal. Bisection converges to a point
             // that may be slightly inside the set (negative SDF). Without this, downstream rays
             // (NEE shadows, scatter bounces) start interior and immediately exit the far side,
@@ -297,7 +297,7 @@ impl<F: SdfFn> Shape3D for SdfShape<F> {
             // Fill in curvature if requested (e.g., for bump mapping or shading effects)
             if ray.differentials.is_some() {
                 let curvature = self.mean_curvature(p);
-                hit.curvature = curvature;
+                hit.curvature = -curvature;
             }
 
             Some(hit)

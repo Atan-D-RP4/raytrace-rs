@@ -38,8 +38,8 @@ impl BoxShape {
     /// The corners are sorted internally so `min` ≤ `max` on every axis.
     pub fn new(a: Point3, b: Point3) -> Self {
         // Sort corners so every axis has min ≤ max.
-        let min = Point3::new(a.x().min(b.x()), a.y().min(b.y()), a.z().min(b.z()));
-        let max = Point3::new(a.x().max(b.x()), a.y().max(b.y()), a.z().max(b.z()));
+        let min = a.min(b.into_inner());
+        let max = a.max(b.into_inner());
 
         // Compute side lengths for UV mapping and area calculations.
         let dx = max.x() - min.x();
@@ -83,8 +83,8 @@ impl BoxShape {
         let t2 = (self.max.into_inner() - origin) * inv_d;
 
         // Compute the near and far intersection distances along each axis.
-        let t_near = Vec3::new(t1.x.min(t2.x), t1.y.min(t2.y), t1.z.min(t2.z));
-        let t_far = Vec3::new(t1.x.max(t2.x), t1.y.max(t2.y), t1.z.max(t2.z));
+        let t_near = t1.min(t2);
+        let t_far = t1.max(t2);
 
         // The overall entry and exit distances are the max of the near distances
         // and the min of the far distances. If they don't overlap, there's no hit.

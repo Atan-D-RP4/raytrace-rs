@@ -1,4 +1,4 @@
-use glam::{Affine3A, Mat3, Mat3A, Quat, Vec3, Vec3A};
+use glam::{Affine3A, Mat3A, Quat, Vec3, Vec3A};
 
 use crate::bvh::aabb::Aabb;
 use crate::hittable::{Bounded, Hit, Intersectable, LightSample, MaterialHit, Sampleable};
@@ -204,14 +204,13 @@ impl Transform for StaticTransform {
         // Inverse-transpose: correct for non-uniform scale
         let n = normal.into_inner();
         let inv = self.inverse;
+
         // (M⁻¹)ᵀ · n = transpose(M⁻¹) · n
         // With Affine3A, extract the 3x3 upper-left, invert, transpose, apply
-        let inv_mat = Mat3::from_cols(
-            inv.matrix3.col(0).into(),
-            inv.matrix3.col(1).into(),
-            inv.matrix3.col(2).into(),
-        );
-        (inv_mat.transpose() * n).into()
+        let inv_mat = Mat3A::from_cols(inv.matrix3.col(0), inv.matrix3.col(1), inv.matrix3.col(2));
+
+        // Normalize the result to ensure it's a unit normal
+        Direction3((inv_mat.transpose() * n).normalize())
     }
 }
 
@@ -261,12 +260,14 @@ impl AnimatedTransform {
         }
     }
 }
+
 impl Transform for AnimatedTransform {
     #[inline]
     fn is_animated(&self) -> bool {
         true
     }
 
+    /// Evaluate the transform at a given time in [0, 1]. Linearly interpolate between start and end.
     fn eval(&self, time: f32) -> Affine3A {
         // For single-sample scenes (time is always 0.0 or 1.0),
         // just return the exact keyframe
@@ -280,6 +281,8 @@ impl Transform for AnimatedTransform {
         self.start_decomposed.lerp(&self.end_decomposed, time)
     }
 
+    /// Transform a ray from world space to object space using the inverse of the transform at
+    /// `ray.time`.
     fn ray(&self, ray: &Ray) -> Ray {
         let inv = self.eval(ray.time).inverse();
         let origin = inv.transform_point3(ray.origin.into_inner()).into();
@@ -301,6 +304,7 @@ impl Transform for AnimatedTransform {
         Ray::new_with_differentials(origin, direction, time, differentials)
     }
 
+    /// Transform a Hit from object space to world space (point, normals, mapping_point).
     fn hit(&self, hit: &mut Hit) {
         let m = self.eval(hit.time);
         hit.point = m.transform_point3(hit.point.into_inner()).into();
@@ -348,17 +352,20 @@ impl Transform for AnimatedTransform {
         result
     }
 
-    // transform_direction, transform_point, transform_normal: same pattern as StaticTransform
-    // but using self.eval(time) instead of self.forward
+    // transform_direction, transform_point, transform_normal: same pattern as StaticTransform but
+    // using self.eval(time) instead of self.forward
 
+    /// Transform a direction vector (no translation, may apply rotation + scale).
     fn transform_direction(&self, dir: Direction3, time: f32) -> Direction3 {
         self.eval(time).transform_vector3(dir.into_inner()).into()
     }
 
+    /// Transform a point (applies full affine: rotation + translation + scale).
     fn transform_point(&self, point: Point3, time: f32) -> Point3 {
         self.eval(time).transform_point3(point.into_inner()).into()
     }
 
+    /// Transform a normal vector using the inverse-transpose.
     fn transform_normal(&self, normal: Direction3, time: f32) -> Direction3 {
         let m = self.eval(time);
         let inv = m.inverse();
@@ -367,6 +374,8 @@ impl Transform for AnimatedTransform {
     }
 }
 
+/// Decomposed representation of an Affine3A transform into translation, rotation, and scale
+/// components.
 #[derive(Clone, Copy)]
 struct Decomposed {
     translation: Vec3,
@@ -375,15 +384,16 @@ struct Decomposed {
 }
 
 impl Decomposed {
+    /// Decompose an Affine3A into translation, rotation, and scale components.
     fn from_affine(m: Affine3A) -> Self {
-        // 1. Translation = last column of the 4×3 matrix
+        // Translation = last column of the 4×3 matrix
         let translation = m.translation.into();
 
-        // 2. Extract 3×3 upper-left (rotation × scale)
+        // Extract 3×3 upper-left (rotation × scale)
         let cols = [m.matrix3.col(0), m.matrix3.col(1), m.matrix3.col(2)];
 
-        // 3. Gram-Schmidt to separate rotation from scale
-        //    (pbrt-v4: `Orthogonalize()` — makes columns unit-length, captures scale)
+        // Gram-Schmidt to separate rotation from scale (pbrt-v4: `Orthogonalize()` — makes columns
+        // unit-length, captures scale)
         let x = cols[0];
         let xs = x.length();
         if xs < 1e-10 {
@@ -421,12 +431,16 @@ impl Decomposed {
         let zs = cols[2].dot(z); // signed scale
 
         // 4. Reconstruct rotation matrix from orthonormal basis
-        let rot_mat = Mat3::from_cols(x_normalized.into(), y_normalized.into(), z.into());
-        let rotation = Quat::from_mat3(&rot_mat);
+        let rot_mat = Mat3A::from_cols(x_normalized, y_normalized, z);
+        let rotation = Quat::from_mat3a(&rot_mat);
 
         // 5. Scale matrix
         let scale = Affine3A {
-            matrix3: Mat3A::from_cols(x_normalized * xs, y_normalized * ys, z * zs),
+            matrix3: Mat3A::from_cols(
+                Vec3A::new(xs, 0.0, 0.0),
+                Vec3A::new(dot_xy, ys, 0.0),
+                Vec3A::new(x_normalized.dot(cols[2]), y_normalized.dot(cols[2]), zs),
+            ),
             translation: Vec3::ZERO.into(),
         };
 

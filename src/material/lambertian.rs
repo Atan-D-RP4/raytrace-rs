@@ -89,7 +89,7 @@ impl Bsdf for LambertianMaterial {
             .unwrap_or(self.albedo);
         // Lambertian directional-hemispherical reflectance = albedo (exact:
         // ∫ (albedo/π) * cos θ dω = albedo). Average across RGB channels.
-        (albedo.x() + albedo.y() + albedo.z()) / 3.0
+        albedo.into_inner().element_sum() / 3.0
     }
 }
 

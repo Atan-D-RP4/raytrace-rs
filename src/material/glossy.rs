@@ -174,7 +174,7 @@ impl Bsdf for GlossyMaterial {
             .as_ref()
             .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
-        let albedo_avg = (albedo.x() + albedo.y() + albedo.z()) / 3.0;
+        let albedo_avg = albedo.into_inner().element_sum() / 3.0;
         let cos_theta = wo.dot(si.shading_normal().into_inner()).abs();
         let f = fresnel_schlick(cos_theta, self.r0);
         // Base color × Fresnel gives the specular reflectance; roughness adds

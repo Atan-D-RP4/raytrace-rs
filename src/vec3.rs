@@ -1,4 +1,5 @@
 use derive_more::{Display, From};
+use glam::Vec3;
 use rand::RngExt;
 use rand::distr::{Distribution, StandardUniform};
 
@@ -30,11 +31,11 @@ pub fn concentric_disk(u: f32, v: f32) -> (f32, f32) {
 /// Operations and constants mirror `Vec3`; use `.r()`, `.g()`, `.b()` for channel access.
 #[derive(Debug, Clone, Copy, PartialEq, From, Display)]
 #[display("{_0}")]
-pub struct Color3(pub glam::Vec3);
+pub struct Color3(pub Vec3);
 
 impl Default for Color3 {
     fn default() -> Self {
-        Self(glam::Vec3::ZERO)
+        Self(Vec3::ZERO)
     }
 }
 
@@ -61,22 +62,22 @@ impl Distribution<Direction3> for StandardUniform {
 /// 3D position in space wrapping `glam::Vec3`.
 #[derive(Debug, Clone, Copy, PartialEq, From, Display)]
 #[display("{_0}")]
-pub struct Point3(pub glam::Vec3);
+pub struct Point3(pub Vec3);
 
 impl Default for Point3 {
     fn default() -> Self {
-        Self(glam::Vec3::ZERO)
+        Self(Vec3::ZERO)
     }
 }
 
 /// 3D direction vector wrapping `glam::Vec3`.
 #[derive(Debug, Clone, Copy, PartialEq, From, Display)]
 #[display("{_0}")]
-pub struct Direction3(pub glam::Vec3);
+pub struct Direction3(pub Vec3);
 
 impl Default for Direction3 {
     fn default() -> Self {
-        Self(glam::Vec3::ZERO)
+        Self(Vec3::ZERO)
     }
 }
 
@@ -170,25 +171,25 @@ macro_rules! impl_constructors {
         impl $ty {
             #[inline(always)]
             pub const fn new(x: f32, y: f32, z: f32) -> Self {
-                Self(glam::Vec3::new(x, y, z))
+                Self(Vec3::new(x, y, z))
             }
             #[inline(always)]
             pub fn splat(v: f32) -> Self {
-                Self(glam::Vec3::splat(v))
+                Self(Vec3::splat(v))
             }
             #[inline(always)]
-            pub fn into_inner(self) -> glam::Vec3 {
+            pub fn into_inner(self) -> Vec3 {
                 self.0
             }
 
-            pub const ZERO: Self = Self(glam::Vec3::ZERO);
-            pub const ONE: Self = Self(glam::Vec3::ONE);
-            pub const X: Self = Self(glam::Vec3::X);
-            pub const Y: Self = Self(glam::Vec3::Y);
-            pub const Z: Self = Self(glam::Vec3::Z);
-            pub const NEG_X: Self = Self(glam::Vec3::NEG_X);
-            pub const NEG_Y: Self = Self(glam::Vec3::NEG_Y);
-            pub const NEG_Z: Self = Self(glam::Vec3::NEG_Z);
+            pub const ZERO: Self = Self(Vec3::ZERO);
+            pub const ONE: Self = Self(Vec3::ONE);
+            pub const X: Self = Self(Vec3::X);
+            pub const Y: Self = Self(Vec3::Y);
+            pub const Z: Self = Self(Vec3::Z);
+            pub const NEG_X: Self = Self(Vec3::NEG_X);
+            pub const NEG_Y: Self = Self(Vec3::NEG_Y);
+            pub const NEG_Z: Self = Self(Vec3::NEG_Z);
         }
     };
 }
@@ -319,51 +320,51 @@ impl_vec_methods!(
 
 impl Color3 {
     #[inline]
-    pub fn min(self, other: glam::Vec3) -> Self {
+    pub fn min(self, other: Vec3) -> Self {
         Self(self.0.min(other))
     }
 
     #[inline]
-    pub fn max(self, other: glam::Vec3) -> Self {
+    pub fn max(self, other: Vec3) -> Self {
         Self(self.0.max(other))
     }
 
     #[inline]
-    pub fn clamp(self, min: glam::Vec3, max: glam::Vec3) -> Self {
+    pub fn clamp(self, min: Vec3, max: Vec3) -> Self {
         Self(self.0.clamp(min, max))
     }
 }
 
 impl Point3 {
     #[inline]
-    pub fn min(self, other: glam::Vec3) -> Self {
+    pub fn min(self, other: Vec3) -> Self {
         Self(self.0.min(other))
     }
 
     #[inline]
-    pub fn max(self, other: glam::Vec3) -> Self {
+    pub fn max(self, other: Vec3) -> Self {
         Self(self.0.max(other))
     }
 
     #[inline]
-    pub fn clamp(self, min: glam::Vec3, max: glam::Vec3) -> Self {
+    pub fn clamp(self, min: Vec3, max: Vec3) -> Self {
         Self(self.0.clamp(min, max))
     }
 }
 
 impl Direction3 {
     #[inline]
-    pub fn min(self, other: glam::Vec3) -> Self {
+    pub fn min(self, other: Vec3) -> Self {
         Self(self.0.min(other))
     }
 
     #[inline]
-    pub fn max(self, other: glam::Vec3) -> Self {
+    pub fn max(self, other: Vec3) -> Self {
         Self(self.0.max(other))
     }
 
     #[inline]
-    pub fn clamp(self, min: glam::Vec3, max: glam::Vec3) -> Self {
+    pub fn clamp(self, min: Vec3, max: Vec3) -> Self {
         Self(self.0.clamp(min, max))
     }
 }
@@ -389,34 +390,34 @@ impl Color3 {
 
 // ── Point3-specific (affine ops) ─────────────────────────────────────────
 
-impl std::ops::Add<glam::Vec3> for Point3 {
+impl std::ops::Add<Vec3> for Point3 {
     type Output = Point3;
 
     #[inline(always)]
-    fn add(self, rhs: glam::Vec3) -> Point3 {
+    fn add(self, rhs: Vec3) -> Point3 {
         Point3(self.0 + rhs)
     }
 }
 
-impl std::ops::AddAssign<glam::Vec3> for Point3 {
+impl std::ops::AddAssign<Vec3> for Point3 {
     #[inline(always)]
-    fn add_assign(&mut self, rhs: glam::Vec3) {
+    fn add_assign(&mut self, rhs: Vec3) {
         self.0 += rhs;
     }
 }
 
-impl std::ops::Sub<glam::Vec3> for Point3 {
+impl std::ops::Sub<Vec3> for Point3 {
     type Output = Point3;
 
     #[inline(always)]
-    fn sub(self, rhs: glam::Vec3) -> Point3 {
+    fn sub(self, rhs: Vec3) -> Point3 {
         Point3(self.0 - rhs)
     }
 }
 
-impl std::ops::SubAssign<glam::Vec3> for Point3 {
+impl std::ops::SubAssign<Vec3> for Point3 {
     #[inline(always)]
-    fn sub_assign(&mut self, rhs: glam::Vec3) {
+    fn sub_assign(&mut self, rhs: Vec3) {
         self.0 -= rhs;
     }
 }
@@ -471,25 +472,25 @@ impl std::ops::SubAssign<Direction3> for Point3 {
 impl Direction3 {
     /// [`glam::Vec3::dot`]
     #[inline(always)]
-    pub fn dot(self, other: glam::Vec3) -> f32 {
+    pub fn dot(self, other: Vec3) -> f32 {
         self.0.dot(other)
     }
 
-    /// [`glam::Vec3::cross`]
+    /// [`Vec3::cross`]
     #[inline(always)]
-    pub fn cross(self, other: glam::Vec3) -> Direction3 {
+    pub fn cross(self, other: Vec3) -> Direction3 {
         Direction3(self.0.cross(other))
     }
 
     /// [`glam::Vec3::reflect`]
     #[inline(always)]
-    pub fn reflect(self, normal: glam::Vec3) -> Self {
+    pub fn reflect(self, normal: Vec3) -> Self {
         Self(self.0.reflect(normal))
     }
 
     /// [`glam::Vec3::refract`]
     #[inline(always)]
-    pub fn refract(self, normal: glam::Vec3, eta: f32) -> Self {
+    pub fn refract(self, normal: Vec3, eta: f32) -> Self {
         Self(self.0.refract(normal, eta))
     }
 

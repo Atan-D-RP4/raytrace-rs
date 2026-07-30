@@ -1,7 +1,10 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 
+use glam::Vec3;
 use image::Rgba32FImage;
+use rayon::iter::ParallelBridge;
+use rayon::iter::ParallelIterator;
 
 use crate::bvh::aabb::Aabb;
 use crate::distributions::Dist2D;
@@ -31,22 +34,25 @@ impl EnvironmentMap {
     pub fn new(image: Rgba32FImage) -> Self {
         let (width, height) = image.dimensions();
         let mut values = vec![0.0; (width * height) as usize];
-        let mut total_luminance = 0.0;
+        let total_luminance = values
+            .iter_mut()
+            .enumerate()
+            .map(|(index, value)| {
+                let i = (index as u32) % width;
+                let j = (index as u32) / width;
 
-        for j in 0..height {
-            for i in 0..width {
-                let pixel = image.get_pixel(i, j);
+                let pixel = Vec3::from_array(image.get_pixel(i, j).0[0..3].try_into().unwrap());
 
                 let luminance =
                     LUMINANCE.x() * pixel[0] + LUMINANCE.y() * pixel[1] + LUMINANCE.z() * pixel[2];
 
-                total_luminance += luminance;
-
                 let theta = (j as f32 + 0.5) / height as f32 * PI;
                 let weight = luminance * theta.sin();
-                values[(j * width + i) as usize] = weight
-            }
-        }
+                *value = weight;
+                luminance
+            })
+            .par_bridge()
+            .sum::<f32>();
 
         let distribution = Dist2D::new(&values, width as usize, height as usize);
 
