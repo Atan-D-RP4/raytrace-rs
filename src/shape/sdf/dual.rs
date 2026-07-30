@@ -1,5 +1,176 @@
 use std::cmp::Ordering;
-use std::ops::{Add, Div, Mul, Neg, Sub};
+use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
+
+/// A scalar type usable in SDF expressions.
+///
+/// Implemented for `f32` (zero-cost value path) and `Dual<N>` (forward-AD
+/// gradient path). Write SDF functions once generic over `T: Scalar`.
+pub trait Scalar:
+    Copy
+    + Send
+    + Sync
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Div<Output = Self>
+    + Neg<Output = Self>
+    + Rem<Output = Self>
+    + PartialEq
+    + PartialOrd
+{
+    // Construct a constant value of this scalar type from an f32.
+    fn constant(v: f32) -> Self;
+    fn from_f32(v: f32) -> Self {
+        Self::constant(v)
+    }
+
+    fn to_f32(self) -> f32;
+
+    // Math operations — sqrt/sin/cos/powi have no std trait equivalents and
+    // need custom AD rules.  abs/min/max are provided via PartialOrd + Neg.
+    fn sqrt(self) -> Self;
+    fn sin(self) -> Self;
+    fn cos(self) -> Self;
+    fn powi(self, n: i32) -> Self;
+    fn ln(self) -> Self;
+
+    #[inline(always)]
+    fn clamp(self, min: Self, max: Self) -> Self {
+        if self < min {
+            min
+        } else if self > max {
+            max
+        } else {
+            self
+        }
+    }
+
+    #[inline(always)]
+    fn floor(self) -> Self {
+        Self::constant(self.to_f32().floor())
+    }
+
+    #[inline(always)]
+    fn ceil(self) -> Self {
+        Self::constant(self.to_f32().ceil())
+    }
+
+    #[inline(always)]
+    fn round(self) -> Self {
+        Self::constant(self.to_f32().round())
+    }
+
+    #[inline(always)]
+    fn abs(self) -> Self {
+        if self >= Self::zero() { self } else { -self }
+    }
+
+    #[inline(always)]
+    fn min(self, other: Self) -> Self {
+        if self <= other { self } else { other }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        if self >= other { self } else { other }
+    }
+
+    // Misc
+    #[inline(always)]
+    fn zero() -> Self {
+        Self::constant(0.0)
+    }
+
+    #[inline(always)]
+    fn one() -> Self {
+        Self::constant(1.0)
+    }
+}
+
+macro_rules! impl_scalar {
+    ($t:ty) => {
+        impl Scalar for $t {
+            #[inline(always)]
+            fn to_f32(self) -> f32 {
+                self as f32
+            }
+            #[inline(always)]
+            fn constant(v: f32) -> Self {
+                v as $t
+            }
+
+            #[inline(always)]
+            fn sqrt(self) -> Self {
+                self.sqrt()
+            }
+
+            #[inline(always)]
+            fn sin(self) -> Self {
+                self.sin()
+            }
+
+            #[inline(always)]
+            fn cos(self) -> Self {
+                self.cos()
+            }
+
+            #[inline(always)]
+            fn powi(self, n: i32) -> Self {
+                self.powi(n)
+            }
+
+            #[inline(always)]
+            fn ln(self) -> Self {
+                self.ln()
+            }
+        }
+    };
+}
+
+macro_rules! impl_scalar_forward_ad {
+    ($t:ty) => {
+        impl<T: Scalar, const N: usize> Scalar for $t {
+            #[inline(always)]
+            fn to_f32(self) -> f32 {
+                self.v.to_f32()
+            }
+
+            #[inline(always)]
+            fn constant(v: f32) -> Self {
+                Self::constant(T::constant(v))
+            }
+
+            #[inline(always)]
+            fn sqrt(self) -> Self {
+                self.sqrt()
+            }
+
+            #[inline(always)]
+            fn sin(self) -> Self {
+                self.sin()
+            }
+
+            #[inline(always)]
+            fn cos(self) -> Self {
+                self.cos()
+            }
+
+            #[inline(always)]
+            fn powi(self, n: i32) -> Self {
+                self.powi(n)
+            }
+
+            #[inline(always)]
+            fn ln(self) -> Self {
+                self.ln()
+            }
+        }
+    };
+}
+
+impl_scalar!(f32);
+impl_scalar!(f64);
+impl_scalar_forward_ad!(Dual<T, N>);
 
 /// Forward-mode dual number with N tangent lanes and generic scalar type `T`.
 ///
@@ -135,6 +306,23 @@ impl<T: Scalar, const N: usize> std::ops::Neg for Dual<T, N> {
     }
 }
 
+impl<T: Scalar, const N: usize> std::ops::Rem for Dual<T, N> {
+    type Output = Self;
+    #[inline(always)]
+    fn rem(self, rhs: Self) -> Self {
+        let mut d = [T::constant(0.); N];
+        d.iter_mut()
+            .zip(self.d.iter().zip(rhs.d.iter()))
+            .for_each(|(di, (&self_di, &rhs_di))| {
+                *di = self_di - rhs_di * (self.v / rhs.v).floor();
+            });
+        Self {
+            v: self.v % rhs.v,
+            d,
+        }
+    }
+}
+
 /// PartialEq only compares the value, not the tangent lanes.
 impl<T: Scalar, const N: usize> PartialEq for Dual<T, N> {
     #[inline(always)]
@@ -216,132 +404,3 @@ impl<T: Scalar, const N: usize> Dual<T, N> {
         Self { v: s, d }
     }
 }
-
-/// A scalar type usable in SDF expressions.
-///
-/// Implemented for `f32` (zero-cost value path) and `Dual<N>` (forward-AD
-/// gradient path). Write SDF functions once generic over `T: Scalar`.
-pub trait Scalar:
-    Copy
-    + Send
-    + Sync
-    + Add<Output = Self>
-    + Sub<Output = Self>
-    + Mul<Output = Self>
-    + Div<Output = Self>
-    + Neg<Output = Self>
-    + PartialEq
-    + PartialOrd
-{
-    fn constant(v: f32) -> Self;
-    fn from_f32(v: f32) -> Self {
-        Self::constant(v)
-    }
-
-    // Math operations — sqrt/sin/cos/powi have no std trait equivalents and
-    // need custom AD rules.  abs/min/max are provided via PartialOrd + Neg.
-    fn sqrt(self) -> Self;
-    fn sin(self) -> Self;
-    fn cos(self) -> Self;
-    fn powi(self, n: i32) -> Self;
-    fn ln(self) -> Self;
-
-    #[inline(always)]
-    fn abs(self) -> Self {
-        if self >= Self::zero() { self } else { -self }
-    }
-
-    #[inline(always)]
-    fn min(self, other: Self) -> Self {
-        if self <= other { self } else { other }
-    }
-
-    #[inline(always)]
-    fn max(self, other: Self) -> Self {
-        if self >= other { self } else { other }
-    }
-
-    // Misc
-    fn zero() -> Self {
-        Self::constant(0.0)
-    }
-    fn one() -> Self {
-        Self::constant(1.0)
-    }
-}
-
-macro_rules! impl_scalar {
-    ($t:ty) => {
-        impl Scalar for $t {
-            #[inline(always)]
-            fn constant(v: f32) -> Self {
-                v as $t
-            }
-
-            #[inline(always)]
-            fn sqrt(self) -> Self {
-                self.sqrt()
-            }
-
-            #[inline(always)]
-            fn sin(self) -> Self {
-                self.sin()
-            }
-
-            #[inline(always)]
-            fn cos(self) -> Self {
-                self.cos()
-            }
-
-            #[inline(always)]
-            fn powi(self, n: i32) -> Self {
-                self.powi(n)
-            }
-
-            #[inline(always)]
-            fn ln(self) -> Self {
-                self.ln()
-            }
-        }
-    };
-}
-
-macro_rules! impl_scalar_forward_ad {
-    ($t:ty) => {
-        impl<T: Scalar, const N: usize> Scalar for $t {
-            #[inline(always)]
-            fn constant(v: f32) -> Self {
-                Self::constant(T::constant(v))
-            }
-
-            #[inline(always)]
-            fn sqrt(self) -> Self {
-                self.sqrt()
-            }
-
-            #[inline(always)]
-            fn sin(self) -> Self {
-                self.sin()
-            }
-
-            #[inline(always)]
-            fn cos(self) -> Self {
-                self.cos()
-            }
-
-            #[inline(always)]
-            fn powi(self, n: i32) -> Self {
-                self.powi(n)
-            }
-
-            #[inline(always)]
-            fn ln(self) -> Self {
-                self.ln()
-            }
-        }
-    };
-}
-
-impl_scalar!(f32);
-impl_scalar!(f64);
-impl_scalar_forward_ad!(Dual<T, N>);
