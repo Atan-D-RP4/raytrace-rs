@@ -1,4 +1,4 @@
-use crate::shape::sdf::{SdfFn, dispatch::DynSdfFn, dual::Scalar};
+use crate::shape::sdf::{DynEval, SdfFn, dispatch::DynSdfFn, dual::Scalar};
 
 pub enum SdfExpr {
     // ── CSG operators ──
@@ -16,7 +16,7 @@ pub enum SdfExpr {
 }
 
 impl SdfFn for SdfExpr {
-    fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+    fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
         match self {
             SdfExpr::Union(a, b) => {
                 let da = a.eval(x, y, z);
@@ -42,9 +42,7 @@ impl SdfFn for SdfExpr {
                 let smooth = T::from_f32(*k) * h * h * (T::constant(3.) - T::from_f32(2.) * h);
                 da.min(db) - smooth
             }
-            SdfExpr::Custom(sdf_fn) => {
-                T::from_f32(sdf_fn.eval_f32(x.to_f32(), y.to_f32(), z.to_f32()))
-            }
+            SdfExpr::Custom(sdf_fn) => DynEval::eval_dyn(&**sdf_fn, x, y, z),
         }
     }
 }

@@ -22,7 +22,7 @@ pub use box3d::{Box3D, BoxShape, shape_box3d};
 pub use constructors::*;
 pub use planar::PlanarShape;
 pub use sdf::dual::Scalar;
-pub use sdf::{SdfFn, SdfRepeat, SdfShape};
+pub use sdf::{DynEval, SdfFn, SdfRepeat, SdfShape};
 pub use sphere::{SphereShape, moving_sphere, sphere};
 
 /// Defines the 2D region test, UV mapping, area, and sampling for a planar shape.

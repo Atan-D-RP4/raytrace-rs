@@ -7,7 +7,7 @@ struct TestSphere {
 }
 
 impl SdfFn for TestSphere {
-    fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+    fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
         (x * x + y * y + z * z).sqrt() - T::from_f32(self.radius)
     }
 }
@@ -60,7 +60,7 @@ fn cylinder_sdf_hit_from_camera_angle() {
         h: f32,
     }
     impl SdfFn for Cylinder {
-        fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+        fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
             let d = (x * x + z * z).sqrt() - T::from_f32(self.r);
             let h = y.abs() - T::from_f32(self.h / 2.0);
             d.max(h)
@@ -106,7 +106,7 @@ fn cylinder_sdf_does_not_self_intersect_from_surface() {
         h: f32,
     }
     impl SdfFn for Cylinder {
-        fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+        fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
             let d = (x * x + z * z).sqrt() - T::from_f32(self.r);
             let h = y.abs() - T::from_f32(self.h / 2.0);
             d.max(h)
@@ -148,7 +148,7 @@ fn cylinder_sdf_non_normalized_camera_ray() {
         h: f32,
     }
     impl SdfFn for Cylinder {
-        fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+        fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
             let d = (x * x + z * z).sqrt() - T::from_f32(self.r);
             let h = y.abs() - T::from_f32(self.h / 2.0);
             d.max(h)
@@ -193,7 +193,7 @@ fn cylinder_sdf_self_intersection_guard_still_hits_real_surface() {
         h: f32,
     }
     impl SdfFn for Cylinder {
-        fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+        fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
             let d = (x * x + z * z).sqrt() - T::from_f32(self.r);
             let h = y.abs() - T::from_f32(self.h / 2.0);
             d.max(h)

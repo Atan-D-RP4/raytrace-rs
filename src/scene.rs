@@ -19,8 +19,8 @@ use crate::material::{
 use crate::material::{IsotropicMaterial, LambertianMaterial, Material};
 use crate::shape::regions::FunctionRegion;
 use crate::shape::{
-    Scalar, SdfFn, SdfShape, ShapeObject, annulus, function_patch, moving_sphere, polygon, quad,
-    rounded_rect, shape_box3d, sphere, superellipse, tri,
+    DynEval, Scalar, SdfFn, SdfShape, ShapeObject, annulus, function_patch, moving_sphere, polygon,
+    quad, rounded_rect, shape_box3d, sphere, superellipse, tri,
 };
 use crate::texture::{
     CheckerTexture, ImageTexture, NoiseTexture, SolidColor, SphericalUvMapping, Texture,
@@ -525,7 +525,7 @@ impl Scene {
         }
 
         impl SdfFn for CylinderSdf {
-            fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+            fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
                 let cx = x - T::from_f32(self.center.x());
                 let cy = y - T::from_f32(self.center.y());
                 let cz = z - T::from_f32(self.center.z());
@@ -603,7 +603,7 @@ impl Scene {
             bailout: f32,
         }
         impl SdfFn for MandelbulbSdf {
-            fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+            fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
                 let mut zx = x;
                 let mut zy = y;
                 let mut zz = z;

@@ -1,6 +1,7 @@
 use glam::Vec3;
 
-use super::SdfFn;
+use crate::shape::sdf::SdfFn;
+use crate::shape::sdf::dispatch::DynEval;
 use crate::shape::sdf::dual::Scalar;
 
 /// Space repetition — wraps any `SdfFn` into a periodic tiling.
@@ -31,7 +32,7 @@ impl<F: SdfFn> SdfRepeat<F> {
 impl<F: SdfFn> SdfFn for SdfRepeat<F> {
     /// Maps `(x,y,z)` into the nearest cell center using
     /// `q = p - period · round(p / period)`, then delegates to the inner SDF.
-    fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T {
+    fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
         let px = T::from_f32(self.period.x);
         let py = T::from_f32(self.period.y);
         let pz = T::from_f32(self.period.z);

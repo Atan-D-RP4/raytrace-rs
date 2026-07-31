@@ -18,6 +18,7 @@ mod impls;
 #[cfg(test)]
 mod tests;
 
+pub use dispatch::DynEval;
 pub use impls::SdfRepeat;
 
 use dual::{Dual, Scalar};
@@ -51,20 +52,25 @@ const SOR_DIST_THRESHOLD: f32 = 1.0;
 /// An SDF evaluation function, generic over scalar type.
 ///
 /// `eval::<f32>(...)` → value path (sphere tracing) `eval::<Dual<3>>(...)` → value + gradient (normal)
+///
+/// The `DynEval` bound enables the expression tree's `Custom` escape hatch to
+/// dispatch to the correct dual evaluation method for the concrete scalar
+/// type.  All scalar types the SDF pipeline uses (`f32`, `Dual<f32, 3>`,
+/// `Dual<Dual<f32, 3>, 3>`) implement it.
 pub trait SdfFn: Send + Sync {
-    fn eval<T: Scalar>(&self, x: T, y: T, z: T) -> T;
+    fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T;
 }
 
 /// Convenience blanket: any Box<dyn SdfFn> is itself SdfFn
 impl<T: SdfFn + ?Sized> SdfFn for Box<T> {
-    fn eval<U: Scalar>(&self, x: U, y: U, z: U) -> U {
+    fn eval<U: Scalar + DynEval>(&self, x: U, y: U, z: U) -> U {
         (**self).eval(x, y, z)
     }
 }
 
 /// Convenience blanket: Arc<dyn SdfFn> is itself SdfFn
 impl<T: SdfFn + ?Sized> SdfFn for Arc<T> {
-    fn eval<U: Scalar>(&self, x: U, y: U, z: U) -> U {
+    fn eval<U: Scalar + DynEval>(&self, x: U, y: U, z: U) -> U {
         (**self).eval(x, y, z)
     }
 }
@@ -118,7 +124,7 @@ impl<F: SdfFn> SdfShape<F> {
         let gradient = (hi - lo) / (2.0 * eps);
         let len = gradient.length();
 
-        if len < 1e-10 {
+        if !len.is_finite() || len <= 1e-4 {
             Direction3::new(0.0, 1.0, 0.0) // still degenerate — arbitrary fallbac
         } else {
             (gradient / len).into()
@@ -144,7 +150,7 @@ impl<F: SdfFn> SdfShape<F> {
         // The gradient is a 3D vector of first partial derivatives. We extract it from the nested
         let g = Vec3::from(result.v.d);
         let g_len_sq = g.length_squared();
-        if g_len_sq <= f32::EPSILON {
+        if !g_len_sq.is_finite() || g_len_sq <= f32::EPSILON {
             // Degenerate case: gradient is zero, cannot compute curvature. Return 0.0 as a fallback.
             return 0.0;
         }
