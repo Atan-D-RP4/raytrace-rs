@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use glam::Vec3;
 use image::{ImageResult, RgbImage};
+use rayon::prelude::*;
 
 use crate::vec3::Color3;
 
@@ -51,7 +52,7 @@ const fn reinhard_tone_map(exposure: f32, color: Color3) -> Color3 {
     )
 }
 
-///
+/// Linear to sRGB gamma correction. Converts linear RGB to sRGB for display.
 #[inline(always)]
 fn linear_to_gamma(linear_component: f32) -> f32 {
     if linear_component > 0. {
@@ -89,6 +90,16 @@ pub trait Film: Send + Sync {
     /// Returns `f32::INFINITY` if fewer than 2 samples for this pixel.
     fn pixel_variance(&self, idx: usize) -> f32;
 
+    fn pixel_converged(
+        &self,
+        _idx: usize,
+        _threshold_rel: f32,
+        _threshold_abs: f32,
+        _min_samples: u32,
+    ) -> bool {
+        false
+    }
+
     /// Returns a fresh convergence mask: `true` = pixel variance is below threshold
     /// with at least `min_samples` accumulated. Allocates a new `Vec<bool>`.
     fn convergence_mask(
@@ -96,7 +107,20 @@ pub trait Film: Send + Sync {
         threshold_rel: f32,
         threshold_abs: f32,
         min_samples: u32,
-    ) -> Vec<bool>;
+    ) -> Vec<bool> {
+        let (width, height) = self.resolution();
+        let pixel_count = (width * height) as usize;
+        let mut mask = vec![false; pixel_count];
+
+        mask.iter_mut()
+            .enumerate()
+            .par_bridge()
+            .for_each(|(idx, m)| {
+                *m = self.pixel_converged(idx, threshold_rel, threshold_abs, min_samples);
+            });
+
+        mask
+    }
 
     /// Refills an existing convergence mask `out` in place, avoiding allocation. The slice must
     /// have length == pixel count.
@@ -109,7 +133,19 @@ pub trait Film: Send + Sync {
         threshold_abs: f32,
         min_samples: u32,
         out: &mut [bool],
-    ) -> bool;
+    ) -> bool {
+        let (width, height) = self.resolution();
+        let pixel_count = (width * height) as usize;
+        assert_eq!(out.len(), pixel_count);
+
+        out.par_iter_mut()
+            .enumerate()
+            .map(|(idx, m)| {
+                *m = self.pixel_converged(idx, threshold_rel, threshold_abs, min_samples);
+                *m
+            })
+            .reduce(|| true, |a, b| a && b)
+    }
 }
 
 /// Thread-safe framebuffer shared between UI thread and render thread.

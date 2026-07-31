@@ -238,67 +238,33 @@ impl Film for RgbFilm {
             let variance = self.m_2[idx] / (n as f32 - 1.0);
             // Use max across RGB channels: a single noisy channel should prevent
             // convergence — averaging could hide it and produce visible artifacts.
-            variance.x().max(variance.y()).max(variance.z())
+            variance.into_inner().max_element()
         }
     }
 
-    fn convergence_mask(
+    fn pixel_converged(
         &self,
+        idx: usize,
         threshold_rel: f32,
         threshold_abs: f32,
         min_samples: u32,
-    ) -> Vec<bool> {
-        (0..self.pixels.len())
-            .map(|idx| {
-                let sample_count = self.sample_num[idx];
-                let variance = self.pixel_variance(idx);
-                let var_mean = if sample_count > 0 {
-                    variance / sample_count as f32
-                } else {
-                    f32::INFINITY
-                };
-                let mean = if sample_count > 0 {
-                    self.pixels[idx] / sample_count as f32
-                } else {
-                    self.pixels[idx]
-                };
-                let luminance = LUMINANCE.into_inner().dot(mean.into_inner());
-
-                sample_count >= min_samples
-                    && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel)
-            })
-            .collect()
-    }
-
-    fn reset_convergence_mask(
-        &self,
-        threshold_rel: f32,
-        threshold_abs: f32,
-        min_samples: u32,
-        out: &mut [bool],
     ) -> bool {
-        let mut all_converged = true;
-        for (idx, entry) in out.iter_mut().enumerate() {
-            let sample_count = self.sample_num[idx];
-            let variance = self.pixel_variance(idx);
-            let var_mean = if sample_count > 0 {
-                variance / sample_count as f32
-            } else {
-                f32::INFINITY
-            };
-            let mean = if sample_count > 0 {
-                self.pixels[idx] / sample_count as f32
-            } else {
-                self.pixels[idx]
-            };
-            let luminance = LUMINANCE * mean;
-            let luminance = luminance.x() + luminance.y() + luminance.z();
-            let converged = sample_count >= min_samples
-                && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel);
-            *entry = converged;
-            all_converged = all_converged && converged;
-        }
-        all_converged
+        let sample_count = self.sample_num[idx];
+        let variance = self.pixel_variance(idx);
+        let var_mean = if sample_count > 0 {
+            variance / sample_count as f32
+        } else {
+            f32::INFINITY
+        };
+        let mean = if sample_count > 0 {
+            self.pixels[idx] / sample_count as f32
+        } else {
+            self.pixels[idx]
+        };
+        let luminance = LUMINANCE.into_inner().dot(mean.into_inner());
+
+        sample_count >= min_samples
+            && (var_mean < threshold_abs || var_mean / luminance.max(1e-6) < threshold_rel)
     }
 }
 

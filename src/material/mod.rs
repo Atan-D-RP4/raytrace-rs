@@ -49,6 +49,7 @@ mod metal;
 mod mix;
 mod rough_dielectric;
 
+use glam::Vec3;
 use gpu::GPU_NONE;
 
 pub use coated::CoatedMaterial;
@@ -100,10 +101,10 @@ pub(super) fn blackbody(temp: f32) -> Color3 {
     // This is a simplified approximation for RGB color. For more accurate
     // rendering, use spectral rendering or a proper color matching function.
     let t = temp.clamp(1000.0, 10000.0);
-    let r = ((t / 1000.0).powf(3.0) * 0.5).clamp(0., 1.);
-    let g = ((t / 1000.0).powf(2.0) * 0.7).clamp(0., 1.);
-    let b = ((t / 1000.0).powf(1.5) * 1.0).clamp(0., 1.);
-    Color3::new(r, g, b)
+    let r = (t / 1000.0).powf(3.0) * 0.5;
+    let g = (t / 1000.0).powf(2.0) * 0.7;
+    let b = (t / 1000.0).powf(1.5) * 1.0;
+    Color3::new(r, g, b).clamp(Vec3::ZERO, Vec3::ONE)
 }
 
 /// Material sample result for one bounce.
@@ -485,11 +486,8 @@ impl Material {
         };
         // Clamp coating tint to [0, 1] per component.
         // Values > 1 would amplify via powf (physically invalid Beer's law).
-        let coating_tint = Color3::new(
-            coating_tint.x().clamp(0.0, 1.0),
-            coating_tint.y().clamp(0.0, 1.0),
-            coating_tint.z().clamp(0.0, 1.0),
-        );
+        let coating_tint = coating_tint.clamp(Vec3::splat(0.), Vec3::splat(1.));
+
         Material::Coated(CoatedMaterial {
             substrate: Arc::new(self) as Arc<dyn Bsdf>,
             coating: Arc::new(coat) as Arc<dyn Bsdf>,

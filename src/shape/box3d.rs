@@ -88,8 +88,8 @@ impl BoxShape {
 
         // The overall entry and exit distances are the max of the near distances
         // and the min of the far distances. If they don't overlap, there's no hit.
-        let t_enter = t_near.x.max(t_near.y).max(t_near.z);
-        let t_exit = t_far.x.min(t_far.y).min(t_far.z);
+        let t_enter = t_near.max_element();
+        let t_exit = t_far.min_element();
 
         // If the ray misses the box or is outside the valid t range, return None.
         if t_enter >= t_exit || t_exit <= ray_t.min || t_enter >= ray_t.max {
@@ -147,17 +147,17 @@ impl UVDifferentiable for BoxShape {
         // deterministically. The result is only used for texture filtering
         // footprints, so measure-zero ambiguous cases are harmless.
         let p = mapping_point.into_inner();
-        let d_x = (p.x - self.min.x()).abs().min((self.max.x() - p.x).abs());
-        let d_y = (p.y - self.min.y()).abs().min((self.max.y() - p.y).abs());
-        let d_z = (p.z - self.min.z()).abs().min((self.max.z() - p.z).abs());
+        let d = (p - self.min.into_inner())
+            .abs()
+            .min((self.max.into_inner() - p).abs());
 
-        if d_x <= d_y && d_x <= d_z {
+        if d.x <= d.y && d.x <= d.z {
             // ±X face: u = y/dy, v = z/dz
             (
                 Direction3(Vec3::new(0.0, 1.0 / self.dy, 0.0)),
                 Direction3(Vec3::new(0.0, 0.0, 1.0 / self.dz)),
             )
-        } else if d_y <= d_z {
+        } else if d.y <= d.x && d.y <= d.z {
             // ±Y face: u = x/dx, v = z/dz
             (
                 Direction3(Vec3::new(1.0 / self.dx, 0.0, 0.0)),
@@ -182,11 +182,11 @@ impl Shape3D for BoxShape {
         // 0=+x, 1=-x, 2=+y, 3=-y, 4=+z, 5=-z.
         let normal = match face {
             0 => Direction3(Vec3::X),
-            1 => Direction3(Vec3::new(-1.0, 0.0, 0.0)),
+            1 => Direction3(Vec3::NEG_X),
             2 => Direction3(Vec3::Y),
-            3 => Direction3(Vec3::new(0.0, -1.0, 0.0)),
+            3 => Direction3(Vec3::NEG_Y),
             4 => Direction3(Vec3::Z),
-            _ => Direction3(Vec3::new(0.0, 0.0, -1.0)),
+            _ => Direction3(Vec3::NEG_Z),
         };
 
         let hit = crate::hittable::Hit::new(t, point, point, normal, Some((a, b)), None);
@@ -228,7 +228,7 @@ impl ShapeSurfaceSampling for BoxShape {
                 Point3::new(self.min.x(), self.min.y(), self.min.z()),
                 Vec3::new(0.0, self.dy, 0.0),
                 Vec3::new(0.0, 0.0, self.dz),
-                Direction3(Vec3::new(-1.0, 0.0, 0.0)),
+                Direction3(Vec3::NEG_X),
             ),
             2 => (
                 Point3::new(self.min.x(), self.max.y(), self.min.z()),
@@ -240,7 +240,7 @@ impl ShapeSurfaceSampling for BoxShape {
                 Point3::new(self.min.x(), self.min.y(), self.min.z()),
                 Vec3::new(self.dx, 0.0, 0.0),
                 Vec3::new(0.0, 0.0, self.dz),
-                Direction3(Vec3::new(0.0, -1.0, 0.0)),
+                Direction3(Vec3::NEG_Y),
             ),
             4 => (
                 Point3::new(self.min.x(), self.min.y(), self.max.z()),
@@ -252,7 +252,7 @@ impl ShapeSurfaceSampling for BoxShape {
                 Point3::new(self.min.x(), self.min.y(), self.min.z()),
                 Vec3::new(self.dx, 0.0, 0.0),
                 Vec3::new(0.0, self.dy, 0.0),
-                Direction3(Vec3::new(0.0, 0.0, -1.0)),
+                Direction3(Vec3::NEG_Z),
             ),
         };
 

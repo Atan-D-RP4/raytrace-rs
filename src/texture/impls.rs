@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use glam::{Mat2, Vec2};
 use image::Rgba32FImage;
 
 use crate::interval::Interval;
@@ -15,10 +16,6 @@ use crate::texture::TextureDerivatives;
 use crate::texture::mapping::{TextureMapping2D, TextureMapping3D, UvGen};
 use crate::texture::{Texture, TextureCoords};
 use crate::vec3::Color3;
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a * (1.0 - t) + b * t
-}
 
 /// Compositional wrapper for mapping coordinates first, then evaluating the wrapped texture.
 ///
@@ -205,11 +202,10 @@ impl ImageTexture {
     fn compute_lod(&self, derivatives: &TextureDerivatives) -> f32 {
         let (w, h) = (self.image().width() as f32, self.image().height() as f32);
 
-        let du_v_dx = (derivatives.dudx * w, derivatives.dvdx * h);
-        let du_v_dy = (derivatives.dudy * w, derivatives.dvdy * h);
+        let du_v_dx = Vec2::new(derivatives.dudx * w, derivatives.dvdx * h);
+        let du_v_dy = Vec2::new(derivatives.dudy * w, derivatives.dvdy * h);
 
-        let rho2 = (du_v_dx.0 * du_v_dx.0 + du_v_dx.1 * du_v_dx.1)
-            .max(du_v_dy.0 * du_v_dy.0 + du_v_dy.1 * du_v_dy.1);
+        let rho2 = du_v_dy.length_squared().max(du_v_dx.length_squared());
 
         0.5 * rho2.max(1e-8).log2().max(0.0)
     }
@@ -251,28 +247,28 @@ impl ImageTexture {
     /// 1.0 = square footprint (isotropic); > 1 = elliptical (needs AF).
     fn anisotropy_ratio(&self, d: &TextureDerivatives) -> f32 {
         let (w, h) = (self.image().width() as f32, self.image().height() as f32);
-        let duv_dx = (d.dudx * w, d.dvdx * h);
-        let duv_dy = (d.dudy * w, d.dvdy * h);
-        let major = lerp(duv_dx.0, duv_dy.0, 0.5).hypot(lerp(duv_dx.1, duv_dy.1, 0.5));
-        let minor = duv_dx.0.hypot(duv_dx.1).min(duv_dy.0.hypot(duv_dy.1));
-        if minor < 1e-8 {
-            return 1.0;
-        }
+
+        let duv_dx = Vec2::new(d.dudx * w, d.dvdx * h);
+        let duv_dy = Vec2::new(d.dudy * w, d.dvdy * h);
+
+        let major = duv_dx.length().max(duv_dy.length());
+        let minor = duv_dx.length().min(duv_dy.length()).max(1e-8);
+
         (major / minor).clamp(1.0, 16.0)
     }
 
-    /// Anisotropic filtering: sample along the major axis of the footprint ellipse,
-    /// using the minor-axis LOD. Trilinear is the isotropic baseline; AF only matters
-    /// on grazing/angled surfaces where the footprint is elliptical.
+    /// Anisotropic filtering: sample along the major axis of the footprint ellipse, using the
+    /// minor-axis LOD. Trilinear is the isotropic baseline; AF only matters on grazing/angled
+    /// surfaces where the footprint is elliptical.
     fn anisotropic(&self, coords: &TextureCoords) -> Color3 {
         let (w, h) = (self.image().width() as f32, self.image().height() as f32);
-        let duv_dx = (coords.derivatives.dudx * w, coords.derivatives.dvdx * h);
-        let duv_dy = (coords.derivatives.dudy * w, coords.derivatives.dvdy * h);
+        let duv_dx = Vec2::new(coords.derivatives.dudx * w, coords.derivatives.dvdx * h);
+        let duv_dy = Vec2::new(coords.derivatives.dudy * w, coords.derivatives.dvdy * h);
 
-        // Structure tensor of the footprint ellipse (covariance of the two edge vectors).
-        let a = duv_dx.0 * duv_dx.0 + duv_dy.0 * duv_dy.0;
-        let b = duv_dx.0 * duv_dx.1 + duv_dy.0 * duv_dy.1;
-        let c = duv_dx.1 * duv_dx.1 + duv_dy.1 * duv_dy.1;
+        // Structure tensor of the footprint ellipse: G = J·Jᵀ, the covariance of the
+        // two edge vectors (J has duv_dx, duv_dy as its columns).
+        let g = Mat2::from_cols(duv_dx, duv_dy) * Mat2::from_cols(duv_dx, duv_dy).transpose();
+        let (a, b, c) = (g.x_axis.x, g.x_axis.y, g.y_axis.y); // G is symmetric: x_axis.y == y_axis.x
 
         let trace = a + c;
         let disc = ((a - c) * 0.5).powi(2) + b * b;
@@ -290,17 +286,11 @@ impl ImageTexture {
             return self.trilinear(coords.u, coords.v, lod);
         }
 
-        // Major-axis direction = eigenvector of the structure tensor for lambda_major.
-        let (mx, my) = if b.abs() > 1e-12 {
-            (b, lambda_major - a)
-        } else if a >= c {
-            (1.0, 0.0)
-        } else {
-            (0.0, 1.0)
-        };
-        let mlen = (mx * mx + my * my).sqrt().max(1e-12);
-        let dir_x = mx / mlen;
-        let dir_y = my / mlen;
+        // Major-axis direction = eigenvector of G for lambda_major. The axis angle
+        // satisfies tan(2θ) = 2b/(a−c); atan2 keeps the correct quadrant and covers
+        // the diagonal (b = 0) cases without branching.
+        let theta = 0.5 * (2.0 * b).atan2(a - c);
+        let dir = Vec2::from_angle(theta);
 
         // Anisotropy ratio = major/minor, capped.
         let ratio = (major_len / minor_len).clamp(1.0, 16.0);
@@ -310,18 +300,17 @@ impl ImageTexture {
         }
 
         // Sample along the major axis, centered on the footprint, averaging the results.
-        // major_len is in texels-per-pixel (from the structure tensor eigenvalues,
-        // which use duv_dx/duv_dy in texel space), so divide by (w, h) to convert
-        // the offset to UV [0,1] space before adding to coords.u/coords.v.
-        let mut color_sum = Color3::ZERO;
-        for i in 0..num_samples {
-            let t = i as f32 / (num_samples - 1) as f32;
-            let u_sample = coords.u + (t - 0.5) * dir_x * major_len / w;
-            let v_sample = coords.v + (t - 0.5) * dir_y * major_len / h;
-            color_sum += self.trilinear(u_sample, v_sample, lod);
-        }
-
-        color_sum / num_samples as f32
+        // dir * major_len is in texels-per-pixel (the tensor eigenvalues use
+        // duv_dx/duv_dy in texel space), so divide by (w, h) to convert the offset
+        // to UV [0,1] space before adding to coords.u/coords.v.
+        (0..num_samples)
+            .map(|i| {
+                let t = i as f32 / (num_samples - 1) as f32;
+                let offset = (t - 0.5) * dir * major_len / Vec2::new(w, h);
+                self.trilinear(coords.u + offset.x, coords.v + offset.y, lod)
+            })
+            .sum::<Color3>()
+            / num_samples as f32
     }
 }
 
@@ -389,8 +378,7 @@ impl Texture for NoiseTexture {
     /// - Turbulent: `Color3::new(1., 1., 1.) * self.noise.turbulence(&point, 7)`
     fn value(&self, coords: &TextureCoords) -> Color3 {
         let point = coords.tex_points.texture;
-        Color3::new(0.5, 0.5, 0.5)
-            * (1.0 + (point.z() + (10.0 * self.noise.turbulence(point, 7))).sin())
+        Color3::splat(0.5) * (1.0 + (point.z() + (10.0 * self.noise.turbulence(point, 7))).sin())
     }
 }
 
@@ -464,10 +452,8 @@ impl<T: Texture> Texture for TriplanarMapping<T> {
         let n = coords.geometry_normal.into_inner();
 
         // Blend weights from the absolute normal components, raised to sharpness.
-        let nx = n.x.abs().powf(self.sharpness);
-        let ny = n.y.abs().powf(self.sharpness);
-        let nz = n.z.abs().powf(self.sharpness);
-        let total = nx + ny + nz;
+        let n = n.abs().powf(self.sharpness);
+        let total = n.element_sum();
         let inv_total = if total > 1e-10 {
             1.0 / total
         } else {
@@ -498,7 +484,12 @@ impl<T: Texture> Texture for TriplanarMapping<T> {
         let c_xz = sample_plane(1); // XZ plane — zero Y
         let c_yz = sample_plane(0); // YZ plane — zero X
 
-        c_xy * (nx * inv_total) + c_xz * (ny * inv_total) + c_yz * (nz * inv_total)
+        // Blend the three plane samples using the normalized weights from the surface normal.
+        n.to_array()
+            .iter()
+            .zip([c_yz, c_xz, c_xy].iter())
+            .map(|(&weight, &color)| color * weight * inv_total)
+            .sum()
     }
 }
 

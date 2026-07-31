@@ -134,11 +134,7 @@ impl Shape3D for SphereShape {
         // FP32 ray-sphere quadratic accumulates error, producing a hit point
         // that is slightly off the sphere surface.  Normalize to guarantee a
         // unit-length normal (required by Hit::new / set_face_normal).
-        let outward_normal = Direction3(
-            ((point - current_center) / self.radius)
-                .into_inner()
-                .normalize(),
-        );
+        let outward_normal = (point - current_center).normalize();
         let mapping_point = Point3(outward_normal.into_inner()); // unit-sphere direction for UV mapping
         let (u, v) = Self::get_sphere_uv(&mapping_point);
 
@@ -155,8 +151,8 @@ impl Shape3D for SphereShape {
     }
 
     fn bounding_box(&self) -> Aabb {
-        let rvec = Vec3::new(self.radius, self.radius, self.radius);
-        let local = Aabb::from_corners(Point3(-rvec), Point3(rvec));
+        let rvec = Point3::splat(self.radius);
+        let local = Aabb::from_corners(-rvec, rvec);
         self.center.sweep_aabb(&local)
     }
 }
@@ -215,7 +211,7 @@ impl ShapeSurfaceSampling for SphereShape {
         // Compute the normal from the geometrically correct hit point so that
         // the distance clamp below does not bias the surface orientation.
         let true_hit = origin + direction * raw_distance;
-        let normal = Direction3(((true_hit - center) / self.radius).into_inner().normalize());
+        let normal = (true_hit - center).normalize();
 
         // Clamp distance for PDF numerical stability — very close intersections
         // would otherwise produce extreme area-PDF values.

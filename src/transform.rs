@@ -207,7 +207,7 @@ impl Transform for StaticTransform {
 
         // (M⁻¹)ᵀ · n = transpose(M⁻¹) · n
         // With Affine3A, extract the 3x3 upper-left, invert, transpose, apply
-        let inv_mat = Mat3A::from_cols(inv.matrix3.col(0), inv.matrix3.col(1), inv.matrix3.col(2));
+        let inv_mat = inv.matrix3; // 3x3 matrix
 
         // Normalize the result to ensure it's a unit normal
         Direction3((inv_mat.transpose() * n).normalize())
@@ -312,7 +312,7 @@ impl Transform for AnimatedTransform {
 
         // Inverse-transpose for normals
         let inv = m.inverse();
-        let inv_mat = Mat3A::from_cols(inv.matrix3.col(0), inv.matrix3.col(1), inv.matrix3.col(2));
+        let inv_mat = inv.matrix3;
         hit.set_geometric_normal(Direction3(
             inv_mat.transpose() * hit.geometric_normal().into_inner(),
         ));

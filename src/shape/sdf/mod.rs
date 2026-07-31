@@ -125,7 +125,7 @@ impl<F: SdfFn> SdfShape<F> {
         let len = gradient.length();
 
         if !len.is_finite() || len <= 1e-4 {
-            Direction3::new(0.0, 1.0, 0.0) // still degenerate — arbitrary fallbac
+            Direction3::Y
         } else {
             (gradient / len).into()
         }
@@ -195,7 +195,7 @@ impl<F: SdfFn> SdfShape<F> {
         if dir_len <= 0.0 {
             return None;
         }
-        let inv_dir_len = 1.0 / dir_len;
+        let inv_dir_len = dir_len.recip();
 
         let mut t = ray_t.min;
 
@@ -324,13 +324,7 @@ impl<F: SdfFn> Shape3D for SdfShape<F> {
 
 impl<F: SdfFn> ShapeSurfaceSampling for SdfShape<F> {
     fn area(&self) -> f32 {
-        let bbox = self.bounding_box();
-        let dx = bbox.max[0][0] - bbox.min[0][0];
-        let dy = bbox.max[1][0] - bbox.min[1][0];
-        let dz = bbox.max[2][0] - bbox.min[2][0];
-
-        // Surface area of the bounding box as a rough approximation for SDF surface area.
-        2.0 * (dx * dy + dy * dz + dz * dx)
+        self.bounding_box().surface_area()[0]
     }
 
     fn sample(&self, u: f32, v: f32, time: f32) -> (Point3, Direction3) {
@@ -362,11 +356,7 @@ impl<F: SdfFn> ShapeSurfaceSampling for SdfShape<F> {
             rt = scramble(rt);
         }
         // Fallback: center of the bounding box (rejection budget exhausted)
-        let center = Point3::new(
-            bbox.min[0][0] + 0.5 * dx,
-            bbox.min[1][0] + 0.5 * dy,
-            bbox.min[2][0] + 0.5 * dz,
-        );
+        let center = bbox.centroid_point();
         (center, self.gradient(center))
     }
 }

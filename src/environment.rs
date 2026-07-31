@@ -43,8 +43,7 @@ impl EnvironmentMap {
 
                 let pixel = Vec3::from_array(image.get_pixel(i, j).0[0..3].try_into().unwrap());
 
-                let luminance =
-                    LUMINANCE.x() * pixel[0] + LUMINANCE.y() * pixel[1] + LUMINANCE.z() * pixel[2];
+                let luminance = LUMINANCE.into_inner().dot(pixel);
 
                 let theta = (j as f32 + 0.5) / height as f32 * PI;
                 let weight = luminance * theta.sin();

@@ -278,12 +278,11 @@ impl<const W: usize> AabbPacked<W> {
     /// are left empty (always-miss for slab tests).
     pub fn from_corners(p1: Point3, p2: Point3) -> Self {
         let mut result = Self::empty();
-        result.min[0][0] = p1.x().min(p2.x());
-        result.max[0][0] = p1.x().max(p2.x());
-        result.min[1][0] = p1.y().min(p2.y());
-        result.max[1][0] = p1.y().max(p2.y());
-        result.min[2][0] = p1.z().min(p2.z());
-        result.max[2][0] = p1.z().max(p2.z());
+
+        let b_min = p1.min(p2.into_inner()).into_inner();
+        let b_max = p1.max(p2.into_inner()).into_inner();
+        result.min = b_min.to_array().map(|v| [v; W]);
+        result.max = b_max.to_array().map(|v| [v; W]);
 
         result
     }

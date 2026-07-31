@@ -11,6 +11,8 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
@@ -33,12 +35,7 @@ const MAX_INTERNAL_BOUNCES: usize = 5;
 const COATED_FIRE_FLY_LIMIT: f32 = f32::MAX - 1.;
 
 fn beers_absorption(throughput: Color3, tint: Color3, path_len: f32) -> Color3 {
-    throughput
-        * Color3::new(
-            tint.x().powf(path_len.abs()),
-            tint.y().powf(path_len.abs()),
-            tint.z().powf(path_len.abs()),
-        )
+    throughput * tint.powf(path_len.abs())
 }
 
 #[derive(Clone)]
@@ -204,11 +201,7 @@ impl CoatedMaterial {
             // `f_cos` = BSDF × cosine should be bounded for physically valid materials
             // (Lambertian max ≈ 0.32, GGX max ≈ 2-3 at extreme grazing).
             // This is NOT a physically derived limit — it's a safety net.
-            let bounded_f_cos = Color3::new(
-                raw.x().min(COATED_FIRE_FLY_LIMIT),
-                raw.y().min(COATED_FIRE_FLY_LIMIT),
-                raw.z().min(COATED_FIRE_FLY_LIMIT),
-            );
+            let bounded_f_cos = raw.min(Vec3::splat(COATED_FIRE_FLY_LIMIT));
             ScatterInternalResult::Exited {
                 wi: exit_dir,
                 f_cos: bounded_f_cos,
@@ -282,11 +275,7 @@ impl CoatedMaterial {
             // for physically valid materials (Lambertian max ≈ 0.32, GGX max ≈ 2-3
             // at extreme grazing). This is NOT a physically derived limit — it's a
             // safety net.
-            let bounded_f_cos = Color3::new(
-                raw.x().min(COATED_FIRE_FLY_LIMIT),
-                raw.y().min(COATED_FIRE_FLY_LIMIT),
-                raw.z().min(COATED_FIRE_FLY_LIMIT),
-            );
+            let bounded_f_cos = raw.min(Vec3::splat(COATED_FIRE_FLY_LIMIT));
             Some(ScatterInternalResult::Exited {
                 wi: exit_dir,
                 f_cos: bounded_f_cos,
@@ -309,11 +298,7 @@ impl CoatedMaterial {
             substrate,
             coating,
             coating_ior,
-            coating_tint: Color3::new(
-                coating_tint.x().min(1.0),
-                coating_tint.y().min(1.0),
-                coating_tint.z().min(1.0),
-            ),
+            coating_tint: coating_tint.clamp(Vec3::ZERO, Vec3::ONE),
             thickness,
         }
     }
@@ -519,11 +504,7 @@ impl Bsdf for CoatedMaterial {
                         let p_global = cos_wi_ext / (PI * self.coating_ior * self.coating_ior);
                         let eval = self.eval(wo, wi_global, si);
                         let raw_f_cos = eval * cos_wi_ext / p_global;
-                        let bounded_f_cos = Color3::new(
-                            raw_f_cos.x().min(COATED_FIRE_FLY_LIMIT),
-                            raw_f_cos.y().min(COATED_FIRE_FLY_LIMIT),
-                            raw_f_cos.z().min(COATED_FIRE_FLY_LIMIT),
-                        );
+                        let bounded_f_cos = raw_f_cos.min(Vec3::splat(COATED_FIRE_FLY_LIMIT));
                         return Some(BsdfScatter::Delta {
                             wi: wi_global,
                             f_cos: bounded_f_cos,
@@ -658,11 +639,11 @@ impl Bsdf for CoatedMaterial {
         // Total contribution: direct coating reflection + transmitted substrate reflection
         // (with Jacobian) + inter-reflection correction.
         let raw = direct_coat + t_o * substrate_direct * jacobian_sub * t_i * (1.0 + series);
-        Color3::new(
-            raw.x().min(COATED_FIRE_FLY_LIMIT),
-            raw.y().min(COATED_FIRE_FLY_LIMIT),
-            raw.z().min(COATED_FIRE_FLY_LIMIT),
-        )
+
+        // Frame-independent heuristic firefly backstop:
+        // `f_cos` = BSDF × cosine should be bounded for physically valid materials
+        // (Lambertian max ≈ 0.32, GGX max ≈ 2-3 at extreme grazing). This is NOT a physically derived limit — it's a safety net
+        raw.min(Vec3::splat(COATED_FIRE_FLY_LIMIT))
     }
 
     fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {

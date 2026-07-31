@@ -87,15 +87,15 @@ macro_rules! impl_accessors {
     ($ty:ident) => {
         impl $ty {
             #[inline(always)]
-            pub fn x(self) -> f32 {
+            pub const fn x(self) -> f32 {
                 self.0.x
             }
             #[inline(always)]
-            pub fn y(self) -> f32 {
+            pub const fn y(self) -> f32 {
                 self.0.y
             }
             #[inline(always)]
-            pub fn z(self) -> f32 {
+            pub const fn z(self) -> f32 {
                 self.0.z
             }
         }
@@ -385,6 +385,12 @@ impl Color3 {
     #[inline(always)]
     pub fn b(self) -> f32 {
         self.0.z
+    }
+
+    /// [`glam::Vec3::powf`]
+    #[inline(always)]
+    pub fn powf(self, n: f32) -> Self {
+        Self(self.0.powf(n))
     }
 }
 

@@ -96,7 +96,7 @@ impl PerspectiveCamera {
             pixel00_loc: Point3::default(),
             pixel_delta_u: Direction3::default(),
             pixel_delta_v: Direction3::default(),
-            pixel_samples_scale: 1.0 / (config.samples_per_pixel as f32),
+            pixel_samples_scale: (config.samples_per_pixel as f32).recip(),
         };
         cam.initialize();
         cam
@@ -109,7 +109,7 @@ impl PerspectiveCamera {
     fn initialize(&mut self) {
         self.image_height = ((self.image_width as f32 / self.aspect_ratio) as i32).max(1);
 
-        self.pixel_samples_scale = 1.0 / self.samples_per_pixel as f32;
+        self.pixel_samples_scale = (self.samples_per_pixel as f32).recip();
 
         let center = self.look_from;
 
@@ -176,7 +176,8 @@ impl Camera for PerspectiveCamera {
         let ray_direction = pixel_sampler - ray_origin;
         Some(CameraRay {
             ray: Ray::new_with_time(ray_origin, ray_direction, sample.time),
-            weight: Color3::new(1.0, 1.0, 1.0),
+            // Weight is 1.0 for now; can be adjusted based on lens sampling if needed
+            weight: Color3::ONE,
         })
     }
 
@@ -206,7 +207,7 @@ impl Camera for PerspectiveCamera {
                     ry_direction: pixel_sampler_y - primary_ray.ray.origin,
                 }),
             ),
-            weight: Color3::new(1.0, 1.0, 1.0),
+            weight: Color3::ONE,
         })
     }
 
