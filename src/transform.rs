@@ -36,6 +36,18 @@ pub trait Transform: Send + Sync + Clone + 'static {
     /// Transform a normal vector using the inverse-transpose.
     /// Correct for non-rigid transforms (non-uniform scale, shear).
     fn transform_normal(&self, normal: Direction3, time: f32) -> Direction3;
+
+    /// Transform UV gradients (dx, dy) using the inverse-transpose.
+    fn transform_gradients(
+        &self,
+        dx: Direction3,
+        dy: Direction3,
+        time: f32,
+    ) -> (Direction3, Direction3) {
+        let dx_transformed = self.transform_normal(dx, time);
+        let dy_transformed = self.transform_normal(dy, time);
+        (dx_transformed, dy_transformed)
+    }
 }
 
 /// A non-animated transform. Precomputes the inverse matrix at construction.
@@ -165,10 +177,10 @@ impl Transform for StaticTransform {
         // Transform UV gradients if present
         hit.uv_gradients = if let Some(grad) = hit.uv_gradients {
             let (dx, dy) = grad;
-            let dx_transformed = self.transform_direction(dx, hit.time);
-            let dy_transformed = self.transform_direction(dy, hit.time);
+            // Transform the UV gradients using the transform_normal method, which applies the inverse-transpose
+            let transformed_gradients = self.transform_gradients(dx, dy, hit.time);
 
-            Some((dx_transformed, dy_transformed))
+            Some(transformed_gradients)
         } else {
             None
         };
@@ -411,7 +423,7 @@ impl Transform for AnimatedTransform {
         let m = self.eval(time);
         let inv = m.inverse();
         let inv_mat = Mat3A::from_cols(inv.matrix3.col(0), inv.matrix3.col(1), inv.matrix3.col(2));
-        (inv_mat.transpose() * normal.into_inner()).into()
+        Direction3(inv_mat.transpose() * normal.into_inner())
     }
 }
 

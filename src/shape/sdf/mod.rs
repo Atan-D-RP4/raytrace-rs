@@ -127,7 +127,7 @@ impl<F: SdfFn> SdfShape<F> {
         if !len.is_finite() || len <= 1e-4 {
             Direction3::Y
         } else {
-            (gradient / len).into()
+            Direction3(gradient / len)
         }
     }
 
