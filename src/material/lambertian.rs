@@ -60,9 +60,9 @@ impl Bsdf for LambertianMaterial {
             .as_ref()
             .map(|t| t.value(&si.texture_coords()))
             .unwrap_or(self.albedo);
-        let cos_theta = si.shading_normal().into_inner().dot(wi.into_inner());
+        let cos_theta = si.shading_normal().dot(wi.into_inner());
         if cos_theta < 0.0 {
-            Color3::new(0., 0., 0.)
+            Color3::ZERO
         } else {
             attenuation * cos_theta / PI
         }
@@ -70,7 +70,7 @@ impl Bsdf for LambertianMaterial {
 
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
     fn pdf(&self, _wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
-        let cos_theta = si.shading_normal().into_inner().dot(wi.into_inner());
+        let cos_theta = si.shading_normal().dot(wi.into_inner());
         if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
     }
 

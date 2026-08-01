@@ -172,7 +172,7 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         // of a hemisphere-based one.  set_face_normal() will compute
         // front_face=false and shading_normal=Vec3::ZERO for this case.
         Some(MaterialHit {
-            hit: Hit::new(new_time, point, point, Direction3(Vec3::ZERO), None, None),
+            hit: Hit::new(new_time, point, point, Direction3::ZERO, None, None),
             material: &self.phase_fn,
         })
     }
@@ -191,8 +191,6 @@ mod tests {
     use crate::material::{DielectricMaterial, Material};
     use crate::ray::Ray;
     use crate::shape::{ShapeObject, SphereShape};
-
-    use glam::Vec3;
 
     use crate::vec3::{Color3, Direction3, Point3};
 
@@ -220,14 +218,10 @@ mod tests {
     /// reaching the far boundary.
     #[test]
     fn ray_through_dense_medium_scatters() {
-        let boundary = make_sphere(Point3(Vec3::ZERO), 1.0);
+        let boundary = make_sphere(Point3::ZERO, 1.0);
         let vol = volume_only(boundary, 100.0, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(
-            Point3(Vec3::new(0., 0., 5.)),
-            Direction3(Vec3::new(0., 0., -1.)),
-            0.0,
-        );
+        let ray = Ray::new_with_time(Point3::new(0., 0., 5.), Direction3::NEG_Z, 0.0);
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         assert!(
@@ -247,14 +241,10 @@ mod tests {
     /// A ray through a very sparse medium should pass through without scattering.
     #[test]
     fn ray_through_sparse_medium_passes_through() {
-        let boundary = make_sphere(Point3(Vec3::ZERO), 1.0);
+        let boundary = make_sphere(Point3::ZERO, 1.0);
         let vol = volume_only(boundary, 0.0001, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(
-            Point3(Vec3::new(0., 0., 5.)),
-            Direction3(Vec3::new(0., 0., -1.)),
-            0.0,
-        );
+        let ray = Ray::new_with_time(Point3::new(0., 0., 5.), Direction3::NEG_Z, 0.0);
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         assert!(
@@ -266,14 +256,10 @@ mod tests {
     /// The hit record for a volume scatter should have geometric_normal = ZERO.
     #[test]
     fn volume_hit_has_zero_normal() {
-        let boundary = make_sphere(Point3(Vec3::ZERO), 1.0);
+        let boundary = make_sphere(Point3::ZERO, 1.0);
         let vol = volume_only(boundary, 100.0, Color3::new(0.5, 0.5, 0.5));
 
-        let ray = Ray::new_with_time(
-            Point3(Vec3::new(0., 0., 5.)),
-            Direction3(Vec3::new(0., 0., -1.)),
-            0.0,
-        );
+        let ray = Ray::new_with_time(Point3::new(0., 0., 5.), Direction3::NEG_Z, 0.0);
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         if let Some(h) = hit {

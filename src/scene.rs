@@ -284,11 +284,11 @@ impl Scene {
             Point3::new(123., 554., 147.),
             Vec3::new(300., 0., 0.),
             Vec3::new(0., 0., 265.),
-            DiffuseLightMaterial::new(Color3::new(7.0, 7.0, 7.0)),
+            DiffuseLightMaterial::new(Color3::splat(7.0)),
         );
 
         let center1 = Point3::new(400., 400., 200.);
-        let center2 = center1 + Vec3::new(30., 0., 0.);
+        let center2 = center1 + Vec3::X * 30.0;
         scene.add_sphere_moving(
             center1,
             center2,
@@ -321,18 +321,18 @@ impl Scene {
                 Material::from(DielectricMaterial::new(0.9)),
             ),
             0.2,
-            Color3::new(0.2, 0.4, 0.9).into_inner(),
+            Vec3::new(0.2, 0.4, 0.9),
         )));
 
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
             sphere(
-                Point3::new(0., 0., 0.),
+                Point3::ZERO,
                 5000.,
                 Material::from(DielectricMaterial::new(0.9)),
             ),
             0.0001,
             // Color3::from(1., 1., 1.), // Pure white
-            Color3::new(0.7, 0.1, 0.1).into_inner(), // A faint red tint to visualize the volume better
+            Vec3::new(0.7, 0.1, 0.1), // A faint red tint to visualize the volume better
         )));
 
         let emat: Arc<dyn Texture> = ImageTexture::load_arc("./earthmap.png")
@@ -388,11 +388,11 @@ impl Scene {
         scene.config.image_width = 800;
         scene.config.samples_per_pixel = 200;
         scene.config.max_depth = 50;
-        scene.config.background = Color3::new(0., 0., 0.);
+        scene.config.background = Color3::ZERO;
         scene.config.vfov = 40.0;
         scene.config.look_from = Point3::new(478., 278., -600.);
         scene.config.look_at = Point3::new(278., 278., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.0;
         scene.config.focus_distance = 800.0;
 
@@ -416,14 +416,14 @@ impl Scene {
                 Vec3::new(130., 0., 65.),
                 -18.,
                 white,
-                Material::from(IsotropicMaterial::new(Color3::new(1., 1., 1.))),
+                Material::from(IsotropicMaterial::new(Color3::ONE)),
             ),
         ];
 
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat, phase_fn)| {
-                let quad_box = shape_box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
+                let quad_box = shape_box3d(Point3::ZERO, Point3(*size), mat.clone());
 
                 let rotated =
                     TransformObject::new(StaticTransform::rotation_y(*rotate_angle), quad_box);
@@ -474,7 +474,7 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat)| {
-                let quad_box = shape_box3d(Point3::new(0., 0., 0.), Point3(*size), mat.clone());
+                let quad_box = shape_box3d(Point3::ZERO, Point3(*size), mat.clone());
 
                 let rotated =
                     TransformObject::new(StaticTransform::rotation_y(*rotate_angle), quad_box);
@@ -536,7 +536,7 @@ impl Scene {
         }
 
         let center = Point3::new(278.0, 278.0, 278.0);
-        let half = Point3::splat(50.0);
+        let half = Vec3::splat(50.0);
 
         // SDF shape
         let shape = SdfShape::new(
@@ -545,7 +545,7 @@ impl Scene {
                 radius: 50.0,
                 height: 100.0,
             },
-            Aabb::from_corners(center - half.into_inner(), center + half.into_inner()),
+            Aabb::from_corners(center - half, center + half),
         );
         let sdf_shape = ShapeObject::new(shape, material);
         let sdf_shape = TransformObject::new(StaticTransform::rotation_x(45.0), sdf_shape);
@@ -558,10 +558,10 @@ impl Scene {
         scene.config.vfov = 40.0;
         scene.config.look_from = Point3::new(278., 278., -800.);
         scene.config.look_at = Point3::new(278., 278., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.0;
         scene.config.focus_distance = 800.0;
-        scene.config.background = Color3::new(0.0, 0.0, 0.0);
+        scene.config.background = Color3::ZERO;
 
         scene
     }
@@ -586,10 +586,10 @@ impl Scene {
         scene.config.vfov = 30.0;
         scene.config.look_from = Point3::new(278., 278., -800.);
         scene.config.look_at = Point3::new(278., 278., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.0;
         scene.config.focus_distance = 800.0;
-        scene.config.background = Color3::new(0.0, 0.0, 0.0);
+        scene.config.background = Color3::ZERO;
         scene.config.samples_per_pixel = 256;
 
         let camera_offset = scene.config.look_at - scene.config.look_from;
@@ -717,7 +717,7 @@ impl Scene {
         let red: Material = LambertianMaterial::new(Color3::new(0.65, 0.05, 0.05)).into();
         let white: Material = LambertianMaterial::new(Color3::new(0.73, 0.73, 0.73)).into();
         let green: Material = LambertianMaterial::new(Color3::new(0.12, 0.45, 0.15)).into();
-        let light: Material = DiffuseLightMaterial::new(Color3::new(16.0, 16.0, 16.0)).into();
+        let light: Material = DiffuseLightMaterial::new(Color3::splat(16.0)).into();
 
         scene.add_quad(
             Point3::new(555., 0., 0.),
@@ -764,12 +764,12 @@ impl Scene {
         scene.config.vfov = 40.0;
         scene.config.look_from = Point3::new(278., 278., -800.);
         scene.config.look_at = Point3::new(278., 278., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
 
         scene.config.defocus_angle = 0.0;
         scene.config.focus_distance = 800.0;
 
-        scene.config.background = Color3::new(0.0, 0.0, 0.0);
+        scene.config.background = Color3::ZERO;
 
         scene
     }
@@ -780,19 +780,19 @@ impl Scene {
         scene.add_sphere(
             Point3::new(0., 7., 0.),
             2.,
-            DiffuseLightMaterial::new(Color3::new(4.0, 4.0, 4.0)),
+            DiffuseLightMaterial::new(Color3::splat(4.0)),
         );
 
         scene.config.aspect_ratio = 16. / 9.;
         scene.config.image_width = 800;
         scene.config.samples_per_pixel = 100;
         scene.config.max_depth = 50;
-        scene.config.background = Color3::new(0., 0., 0.);
+        scene.config.background = Color3::ZERO;
 
         scene.config.vfov = 20.;
         scene.config.look_from = Point3::new(26., 3., 6.);
         scene.config.look_at = Point3::new(0., 2., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
 
         scene.config.defocus_angle = 0.;
 
@@ -840,7 +840,7 @@ impl Scene {
         quad_vecs.iter().zip(colors).for_each(|(vecs, color)| {
             #[allow(non_snake_case)]
             let (Q, u, v) = vecs;
-            let material = LambertianMaterial::new(Color3::new(color.x(), color.y(), color.z()));
+            let material = LambertianMaterial::new(color);
             scene.add_quad(*Q, *u, *v, material);
         });
 
@@ -851,8 +851,8 @@ impl Scene {
 
         scene.config.vfov = 80.0;
         scene.config.look_from = Point3::new(0., 0., 9.);
-        scene.config.look_at = Point3::new(0., 0., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.look_at = Point3::ZERO;
+        scene.config.vup = Direction3::Y;
 
         scene.config.defocus_angle = 0.0;
 
@@ -885,8 +885,8 @@ impl Scene {
         scene.config.max_depth = 50;
         scene.config.vfov = 20.0;
         scene.config.look_from = Point3::new(13., 2., 3.);
-        scene.config.look_at = Point3::new(0., 0., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.look_at = Point3::ZERO;
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -901,7 +901,7 @@ impl Scene {
             .expect("Failed to load earthmap.png as Texture");
         let checker: Material = LambertianMaterial::with_texture(Color3::ZERO, image_tex).into();
 
-        scene.add_sphere(Point3::new(0., 0., 0.), 2., checker);
+        scene.add_sphere(Point3::ZERO, 2., checker);
 
         scene.config.aspect_ratio = 16.0 / 9.0;
         scene.config.image_width = 800;
@@ -909,8 +909,8 @@ impl Scene {
         scene.config.max_depth = 50;
         scene.config.vfov = 20.0;
         scene.config.look_from = Point3::new(13., 2., 3.);
-        scene.config.look_at = Point3::new(0., 0., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.look_at = Point3::ZERO;
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -938,8 +938,8 @@ impl Scene {
         scene.config.max_depth = 50;
         scene.config.vfov = 20.0;
         scene.config.look_from = Point3::new(13., 2., 3.);
-        scene.config.look_at = Point3::new(0., 0., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.look_at = Point3::ZERO;
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -1030,7 +1030,7 @@ impl Scene {
                             0.3,
                         ),
                     };
-                    center = Point3::new(center.x(), radius, center.z());
+                    center = Point3(center.into_inner().with_y(radius));
 
                     if world_seed.is_multiple_of(2) {
                         let target_center =
@@ -1077,7 +1077,7 @@ impl Scene {
         scene.config.vfov = 30.0;
         scene.config.look_from = Point3::new(13., 5., 6.);
         scene.config.look_at = Point3::new(0., 1., 0.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.6;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -1108,7 +1108,7 @@ impl Scene {
         scene.config.vfov = 20.0;
         scene.config.look_from = Point3::new(-2., 2., 1.);
         scene.config.look_at = Point3::new(0., 0., -1.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 10.0;
         scene.config.focus_distance = 3.4;
         scene.config.background = Color3::new(0.5, 0.7, 1.0);
@@ -1229,7 +1229,7 @@ impl Scene {
             Point3::new(-5., 8., 0.),
             Vec3::new(10., 0., 0.),
             Vec3::new(0., 0., 12.),
-            DiffuseLightMaterial::new(Color3::new(6.0, 6.0, 6.0)),
+            DiffuseLightMaterial::new(Color3::splat(6.0)),
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
@@ -1240,7 +1240,7 @@ impl Scene {
         // scene.config.look_from = Point3::new(0., 3.5, 16.);
         scene.config.look_from = Point3::new(10., 5., 0.);
         scene.config.look_at = Point3::new(0., 1., 7.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.focus_distance = 10.0;
         scene.config.defocus_angle = 0.0;
         scene.config.background = Color3::new(0.1, 0.1, 0.1);
@@ -1314,7 +1314,7 @@ impl Scene {
         scene.config.vfov = 38.0;
         scene.config.look_from = Point3::new(0., 3.5, 16.);
         scene.config.look_at = Point3::new(0., 1., 7.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.focus_distance = 10.0;
         scene.config.defocus_angle = 0.0;
         scene.config.background = Color3::new(0.1, 0.1, 0.1);
@@ -1345,7 +1345,7 @@ impl Scene {
         scene.config.vfov = 38.0;
         scene.config.look_from = Point3::new(0., 3.5, 16.);
         scene.config.look_at = Point3::new(0., 1., 7.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.focus_distance = 10.0;
         scene.config.defocus_angle = 0.0;
         scene.config.background = Color3::new(0.1, 0.1, 0.1);
@@ -1375,14 +1375,14 @@ impl Scene {
 
         // Floor
         scene.add_quad(
-            Point3::new(0., 0., 0.),
+            Point3::ZERO,
             Vec3::new(555., 0., 0.),
             Vec3::new(0., 0., 555.),
             white.clone(),
         );
         // Left wall  (red)
         scene.add_quad(
-            Point3::new(0., 0., 0.),
+            Point3::ZERO,
             Vec3::new(0., 555., 0.),
             Vec3::new(0., 0., 555.),
             red,
@@ -1413,7 +1413,7 @@ impl Scene {
             Point3::new(213., 554., 227.),
             Vec3::new(130., 0., 0.),
             Vec3::new(0., 0., 105.),
-            DiffuseLightMaterial::new(Color3::new(16., 16., 16.)),
+            DiffuseLightMaterial::new(Color3::splat(16.)),
         );
 
         // ── Vertical grid layout ─────────────────────────────────────
@@ -1476,7 +1476,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(c1, y2, zf),
             r,
-            DiffuseLightMaterial::new(Color3::new(4., 4., 4.)),
+            DiffuseLightMaterial::new(Color3::splat(4.)),
         );
         // C2 — DiffuseLight (textured emitter — Perlin noise)
         scene.add_sphere(
@@ -1722,10 +1722,10 @@ impl Scene {
         scene.config.vfov = 40.0;
         scene.config.look_from = Point3::new(278., 278., -600.);
         scene.config.look_at = Point3::new(278., 278., 278.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.0;
         scene.config.focus_distance = 800.0;
-        scene.config.background = Color3::new(0., 0., 0.);
+        scene.config.background = Color3::ZERO;
 
         scene
     }
@@ -1815,7 +1815,7 @@ impl Scene {
             Point3::new(0., 5., 3.),
             Vec3::new(4., 0., 0.),
             Vec3::new(0., 0., 4.),
-            DiffuseLightMaterial::new(Color3::new(12., 12., 12.)),
+            DiffuseLightMaterial::new(Color3::splat(12.)),
         );
 
         scene.config.aspect_ratio = 16. / 9.;
@@ -1825,7 +1825,7 @@ impl Scene {
         scene.config.vfov = 30.0;
         scene.config.look_from = Point3::new(0., 2., 20.);
         scene.config.look_at = Point3::new(0., 1., 5.);
-        scene.config.vup = Direction3::new(0., 1., 0.);
+        scene.config.vup = Direction3::Y;
         scene.config.defocus_angle = 0.0;
         scene.config.focus_distance = 10.0;
         scene.config.background = Color3::new(0.1, 0.1, 0.1);

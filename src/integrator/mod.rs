@@ -99,7 +99,7 @@ mod tests {
                 let v = (y as f32 + 0.5) / 4.0;
                 let direction = Vec3::new(u - 0.5, v - 0.5, -1.0).normalize();
                 let mut ray =
-                    Ray::new_with_time(Point3(Vec3::new(0., 0., 4.)), Direction3(direction), 0.0);
+                    Ray::new_with_time(Point3::new(0., 0., 4.), Direction3(direction), 0.0);
 
                 let color = integrator.li(&mut ray, &world, &lights, &mut stream, &mut rng);
                 film.add_sample(x, y, color);
@@ -137,14 +137,14 @@ mod tests {
             Point3::new(-1., 2., -2.),
             Vec3::new(2., 0., 0.),
             Vec3::new(0., 0., 2.),
-            Material::from(DiffuseLightMaterial::new(Color3(Vec3::new(8.0, 8.0, 8.0)))),
+            Material::from(DiffuseLightMaterial::new(Color3::splat(8.0))),
         ));
 
         let light_sample: Arc<dyn Sampleable> = Arc::new(quad(
             Point3::new(-1., 2., -2.),
             Vec3::new(2., 0., 0.),
             Vec3::new(0., 0., 2.),
-            Material::from(DiffuseLightMaterial::new(Color3(Vec3::new(8.0, 8.0, 8.0)))),
+            Material::from(DiffuseLightMaterial::new(Color3::splat(8.0))),
         ));
 
         let mut objects: Vec<Arc<dyn Intersectable>> = vec![floor, light_quad];
@@ -156,7 +156,7 @@ mod tests {
         let mut rng = NaiveRandomSampler::with_seed(43);
 
         let dir = Vec3::new(0.0, -1.0, -1.0).normalize();
-        let mut ray = Ray::new_with_time(Point3(Vec3::new(0., 1.5, 4.)), Direction3(dir), 0.0);
+        let mut ray = Ray::new_with_time(Point3::new(0., 1.5, 4.), Direction3(dir), 0.0);
         let color = integrator.li(&mut ray, &world, &lights, &mut stream, &mut rng);
         assert!(color.x().is_finite() && color.y().is_finite() && color.z().is_finite());
     }

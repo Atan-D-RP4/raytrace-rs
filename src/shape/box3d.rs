@@ -153,22 +153,13 @@ impl UVDifferentiable for BoxShape {
 
         if d.x <= d.y && d.x <= d.z {
             // ±X face: u = y/dy, v = z/dz
-            (
-                Direction3(Vec3::new(0.0, 1.0 / self.dy, 0.0)),
-                Direction3(Vec3::new(0.0, 0.0, 1.0 / self.dz)),
-            )
+            (Direction3::Y / self.dy, Direction3::Z / self.dz)
         } else if d.y <= d.x && d.y <= d.z {
             // ±Y face: u = x/dx, v = z/dz
-            (
-                Direction3(Vec3::new(1.0 / self.dx, 0.0, 0.0)),
-                Direction3(Vec3::new(0.0, 0.0, 1.0 / self.dz)),
-            )
+            (Direction3::X / self.dx, Direction3::Z / self.dz)
         } else {
             // ±Z face: u = x/dx, v = y/dy
-            (
-                Direction3(Vec3::new(1.0 / self.dx, 0.0, 0.0)),
-                Direction3(Vec3::new(0.0, 1.0 / self.dy, 0.0)),
-            )
+            (Direction3::X / self.dx, Direction3::Y / self.dy)
         }
     }
 }
@@ -181,12 +172,12 @@ impl Shape3D for BoxShape {
         // Face → outward normal. Face indices match intersect_faces:
         // 0=+x, 1=-x, 2=+y, 3=-y, 4=+z, 5=-z.
         let normal = match face {
-            0 => Direction3(Vec3::X),
-            1 => Direction3(Vec3::NEG_X),
-            2 => Direction3(Vec3::Y),
-            3 => Direction3(Vec3::NEG_Y),
-            4 => Direction3(Vec3::Z),
-            _ => Direction3(Vec3::NEG_Z),
+            0 => Direction3::X,
+            1 => Direction3::NEG_X,
+            2 => Direction3::Y,
+            3 => Direction3::NEG_Y,
+            4 => Direction3::Z,
+            _ => Direction3::NEG_Z,
         };
 
         let hit = crate::hittable::Hit::new(t, point, point, normal, Some((a, b)), None);
@@ -222,37 +213,37 @@ impl ShapeSurfaceSampling for BoxShape {
                 Point3::new(self.max.x(), self.min.y(), self.min.z()),
                 Vec3::new(0.0, self.dy, 0.0),
                 Vec3::new(0.0, 0.0, self.dz),
-                Direction3(Vec3::X),
+                Direction3::X,
             ),
             1 => (
                 Point3::new(self.min.x(), self.min.y(), self.min.z()),
                 Vec3::new(0.0, self.dy, 0.0),
                 Vec3::new(0.0, 0.0, self.dz),
-                Direction3(Vec3::NEG_X),
+                Direction3::NEG_X,
             ),
             2 => (
                 Point3::new(self.min.x(), self.max.y(), self.min.z()),
                 Vec3::new(self.dx, 0.0, 0.0),
                 Vec3::new(0.0, 0.0, self.dz),
-                Direction3(Vec3::Y),
+                Direction3::Y,
             ),
             3 => (
                 Point3::new(self.min.x(), self.min.y(), self.min.z()),
                 Vec3::new(self.dx, 0.0, 0.0),
                 Vec3::new(0.0, 0.0, self.dz),
-                Direction3(Vec3::NEG_Y),
+                Direction3::NEG_Y,
             ),
             4 => (
                 Point3::new(self.min.x(), self.min.y(), self.max.z()),
                 Vec3::new(self.dx, 0.0, 0.0),
                 Vec3::new(0.0, self.dy, 0.0),
-                Direction3(Vec3::Z),
+                Direction3::Z,
             ),
             _ => (
                 Point3::new(self.min.x(), self.min.y(), self.min.z()),
                 Vec3::new(self.dx, 0.0, 0.0),
                 Vec3::new(0.0, self.dy, 0.0),
-                Direction3(Vec3::NEG_Z),
+                Direction3::NEG_Z,
             ),
         };
 

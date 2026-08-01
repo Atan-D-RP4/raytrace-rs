@@ -109,7 +109,7 @@ impl DielectricMaterial {
     pub fn new(ior: f32) -> Self {
         Self {
             ior,
-            tint: Color3::new(1.0, 1.0, 1.0),
+            tint: Color3::ONE,
             r0: super::fresnel_r0(ior),
         }
     }

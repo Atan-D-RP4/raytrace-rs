@@ -482,7 +482,7 @@ impl Material {
         // Extract IOR and tint from dielectric coat if possible.
         let (coating_ior, coating_tint) = match &coat {
             Material::Dielectric(d) => (d.ior, d.tint),
-            _ => (1.5, Color3::new(1.0, 1.0, 1.0)),
+            _ => (1.5, Color3::ONE),
         };
         // Clamp coating tint to [0, 1] per component.
         // Values > 1 would amplify via powf (physically invalid Beer's law).

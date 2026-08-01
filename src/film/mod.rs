@@ -39,17 +39,9 @@ fn post_process(color: Color3, exposure: f32, tone_map: bool) -> [u8; 3] {
 /// - `exposure`: exposure multiplier.
 /// - `color`: linear RGB color in [0,1] range.
 #[inline(always)]
-const fn reinhard_tone_map(exposure: f32, color: Color3) -> Color3 {
-    let mapped = Vec3::new(
-        color.0.x * exposure,
-        color.0.y * exposure,
-        color.0.z * exposure,
-    );
-    Color3::new(
-        mapped.x / (1.0 + mapped.x),
-        mapped.y / (1.0 + mapped.y),
-        mapped.z / (1.0 + mapped.z),
-    )
+fn reinhard_tone_map(exposure: f32, color: Color3) -> Color3 {
+    let mapped = (color * exposure).into_inner();
+    Color3(mapped / (mapped + Vec3::splat(1.0)))
 }
 
 /// Linear to sRGB gamma correction. Converts linear RGB to sRGB for display.

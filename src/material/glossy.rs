@@ -123,7 +123,7 @@ impl Bsdf for GlossyMaterial {
         let cos_i = wi.dot(si.shading_normal().into_inner()).max(0.0);
 
         if cos_h_o <= 0.0 || cos_o <= 0.0 || cos_i <= 0.0 {
-            return Color3::new(0., 0., 0.);
+            return Color3::ZERO;
         }
 
         let d = ggx_d(cos_h_n, alpha);

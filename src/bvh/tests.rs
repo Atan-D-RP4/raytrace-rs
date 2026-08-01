@@ -26,7 +26,7 @@ fn flat_bvh_node_size() {
 fn flat_bvh_empty() {
     let bvh: TreeBuilder = TreeBuilder::Empty;
     let flat = Bvh::<2>::from(bvh);
-    let ray = Ray::new_with_time(Point3(Vec3::ZERO), Direction3(Vec3::new(0., 0., -1.)), 0.0);
+    let ray = Ray::new_with_time(Point3::ZERO, Direction3::NEG_Z, 0.0);
     assert!(
         flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
             .is_none()
@@ -36,7 +36,7 @@ fn flat_bvh_empty() {
 #[test]
 fn flat_bvh_single_sphere() {
     let sphere: Arc<dyn Intersectable> = Arc::new(sphere(
-        Point3(Vec3::new(0., 0., -2.)),
+        Point3::new(0., 0., -2.),
         0.5,
         Material::from(LambertianMaterial::new(Color3::new(0.8, 0.2, 0.2))),
     ));
@@ -50,14 +50,14 @@ fn flat_bvh_single_sphere() {
     assert_eq!(flat.node_count(), 1);
 
     // Ray toward the sphere.
-    let ray = Ray::new_with_time(Point3(Vec3::ZERO), Direction3(Vec3::new(0., 0., -1.)), 0.0);
+    let ray = Ray::new_with_time(Point3::ZERO, Direction3::NEG_Z, 0.0);
     assert!(
         flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
             .is_some()
     );
 
     // Ray missing the sphere.
-    let ray = Ray::new_with_time(Point3(Vec3::ZERO), Direction3(Vec3::new(10., 0., -1.)), 0.0);
+    let ray = Ray::new_with_time(Point3::ZERO, Direction3::new(10., 0., -1.), 0.0);
     assert!(
         flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
             .is_none()
@@ -67,12 +67,12 @@ fn flat_bvh_single_sphere() {
 #[test]
 fn flat_bvh_two_spheres() {
     let s1: Arc<dyn Intersectable> = Arc::new(sphere(
-        Point3(Vec3::new(-1., 0., -2.)),
+        Point3::new(-1., 0., -2.),
         0.5,
         Material::from(LambertianMaterial::new(Color3::new(1.0, 0.0, 0.0))),
     ));
     let s2: Arc<dyn Intersectable> = Arc::new(sphere(
-        Point3(Vec3::new(1., 0., -2.)),
+        Point3::new(1., 0., -2.),
         0.5,
         Material::from(LambertianMaterial::new(Color3::new(0.0, 1.0, 0.0))),
     ));
@@ -98,29 +98,21 @@ fn flat_bvh_two_spheres() {
     assert_eq!(flat.node_count(), 3); // 1 interior + 2 leaves
 
     // Hit left sphere (at -1, 0, -2).
-    let ray = Ray::new_with_time(
-        Point3(Vec3::ZERO),
-        Direction3(Vec3::new(-1., 0., -2.).normalize()),
-        0.0,
-    );
+    let ray = Ray::new_with_time(Point3::ZERO, Direction3::new(-1., 0., -2.).normalize(), 0.0);
     assert!(
         flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
             .is_some()
     );
 
     // Hit right sphere (at 1, 0, -2).
-    let ray = Ray::new_with_time(
-        Point3(Vec3::ZERO),
-        Direction3(Vec3::new(1., 0., -2.).normalize()),
-        0.0,
-    );
+    let ray = Ray::new_with_time(Point3::ZERO, Direction3::new(1., 0., -2.).normalize(), 0.0);
     assert!(
         flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
             .is_some()
     );
 
     // Hit neither.
-    let ray = Ray::new_with_time(Point3(Vec3::ZERO), Direction3(Vec3::new(0., 10., -1.)), 0.0);
+    let ray = Ray::new_with_time(Point3::ZERO, Direction3::new(0., 10., -1.), 0.0);
     assert!(
         flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
             .is_none()
@@ -135,22 +127,22 @@ fn flat_bvh_matches_bvh_node_multi_object() {
 
     // Build a small scene: 3 spheres at different positions.
     let s1: Arc<dyn Intersectable> = Arc::new(sphere(
-        Point3(Vec3::new(-2., 0., -3.)),
+        Point3::new(-2., 0., -3.),
         0.5,
         Material::from(LambertianMaterial::new(Color3::new(1.0, 0.0, 0.0))),
     ));
     let s2: Arc<dyn Intersectable> = Arc::new(sphere(
-        Point3(Vec3::new(0., 0., -3.)),
+        Point3::new(0., 0., -3.),
         0.5,
         Material::from(LambertianMaterial::new(Color3::new(0.0, 1.0, 0.0))),
     ));
     let s3: Arc<dyn Intersectable> = Arc::new(sphere(
-        Point3(Vec3::new(2., 0., -3.)),
+        Point3::new(2., 0., -3.),
         0.5,
         Material::from(LambertianMaterial::new(Color3::new(0.0, 0.0, 1.0))),
     ));
     let s4: Arc<dyn Intersectable> = Arc::new(quad(
-        Point3(Vec3::new(-3., -1., -5.)),
+        Point3::new(-3., -1., -5.),
         Vec3::new(6., 0., 0.),
         Vec3::new(0., 2., 0.),
         Material::from(LambertianMaterial::new(Color3::new(0.5, 0.5, 0.5))),

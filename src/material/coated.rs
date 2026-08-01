@@ -129,7 +129,7 @@ impl CoatedMaterial {
     fn snell_internal_frame(&self, wo: Direction3, sn: Direction3) -> Option<InternalFrame> {
         let cos_wo_global = wo.dot(sn.into_inner()).max(0.0);
         let wo_perp = wo - cos_wo_global * sn;
-        let sin_wo = wo_perp.into_inner().length();
+        let sin_wo = wo_perp.length();
         let sin_wi_inside = sin_wo / self.coating_ior;
         if sin_wi_inside >= 1.0 {
             return None; // TIR
@@ -319,7 +319,7 @@ impl Bsdf for CoatedMaterial {
     ) -> Option<BsdfScatter> {
         let wo_global = wo;
         let sn = si.shading_normal();
-        let mut throughput = Color3::new(1.0, 1.0, 1.0);
+        let mut throughput = Color3::ONE;
 
         // coating_tint is already clamped to [0, 1] in the constructor.
         let coating_tint = self.coating_tint;
@@ -792,7 +792,7 @@ mod test {
         // This test checks that the substrate-path component integrates to fresnel_t(wo).
         let material = CoatedMaterial::new(
             Arc::new(MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.1)),
-            Arc::new(DielectricMaterial::tinted(1.5, Color3::new(1.0, 1.0, 1.0))),
+            Arc::new(DielectricMaterial::tinted(1.5, Color3::ONE)),
             1.5,
             Color3::new(0.8, 0.8, 0.8),
             0.01,

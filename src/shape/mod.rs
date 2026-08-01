@@ -243,7 +243,7 @@ impl<Sh: ShapeSurfaceSampling, M: Borrow<Material> + Send + Sync> Sampleable
         if sample.normal.length_squared() < 1e-10 {
             sample.normal = Direction3::ZERO;
         } else {
-            sample.normal = Direction3(sample.normal.into_inner().normalize());
+            sample.normal = sample.normal.normalize();
         }
         let light_unit = sample.direction.normalize();
         // Front face: light's normal faces toward the shaded surface.
