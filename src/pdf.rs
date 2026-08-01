@@ -355,7 +355,7 @@ pub enum PdfKind {
         /// Surface normal.
         normal: Direction3,
     },
-    /// GGX microfacet importance sampling. Samples half-vector from NDF, reflects.
+    /// Geometric G-buffer X (GGX) microfacet importance sampling. Samples half-vector from NDF, reflects.
     Ggx {
         /// Outgoing direction (surface → camera), world space.
         wo: Direction3,

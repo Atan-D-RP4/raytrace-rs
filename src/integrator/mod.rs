@@ -45,8 +45,8 @@ pub trait Integrator: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bvh::builder::TreeBuilder;
     use crate::bvh::Bvh;
+    use crate::bvh::builder::TreeBuilder;
     use crate::film::{Film, RgbFilm};
     use crate::material::{DiffuseLightMaterial, DiffuseReflector, Material};
     use crate::sampler::NaiveRandomSampler;

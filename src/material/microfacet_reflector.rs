@@ -35,9 +35,9 @@ use glam::Vec3;
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    fresnel_conductor, fresnel_r0, fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h,
-    Bsdf, BsdfScatter, Fresnel, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    GPU_NONE, MAX_BSDF_STRATS, MIRROR_THRESHOLD,
+    Bsdf, BsdfScatter, Fresnel, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
+    MAX_BSDF_STRATS, MIRROR_THRESHOLD, PdfKind, fresnel_conductor, fresnel_r0, fresnel_schlick,
+    geometry_schlick_ggx, ggx_d, ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::texture::{SolidColor, Texture};

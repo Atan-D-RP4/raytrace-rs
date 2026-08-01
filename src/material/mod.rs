@@ -42,7 +42,7 @@
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
-use crate::pdf::{ggx_d, ggx_sample_h, PdfKind};
+use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
 use crate::texture::Texture;
 use crate::vec3::{Color3, Direction3};
 
@@ -620,8 +620,8 @@ mod tests {
         assert_eq!(f(off + 1), 0.0);
         assert_eq!(f(off + 2), 0.0);
         assert_eq!(f(off + 3), 0.0); // roughness 0.0
-        assert_eq!(f(off + 4), 0.0); // fresnel_kind: conductor
-                                     // eta = (1 + √base)/(1 − √base), baked per channel.
+        // fresnel_kind: conductor eta = (1 + √base)/(1 − √base), baked per channel.
+        assert_eq!(f(off + 4), 0.0);
         let base = Color3::splat(0.9) * 0.1837;
         let expected_eta = (1.0 + base.x().sqrt()) / (1.0 - base.x().sqrt());
         assert!((f(off + 5) - expected_eta).abs() < 1e-5);
@@ -652,9 +652,8 @@ mod tests {
         assert_eq!(coat.material_type, GpuMaterialType::Coated as u32);
         assert_eq!(coat.child_a, 0); // coating (dielectric)
         assert_eq!(coat.child_b, 1); // substrate (diffuse)
-                                     // Coated wire: [coating_ior, thickness, tint.rgb, tex(tint)] = 6 f32s.
-                                     // Children share the flat buffer: dielectric (8) + diffuse (3) +
-                                     // coated (6) = 17 f32s total.
+        // Coated wire: [coating_ior, thickness, tint.rgb, tex(tint)] = 6 f32s.
+        // Children share the flat buffer: dielectric (8) + diffuse (3) + coated (6) = 17 f32s total.
         assert_eq!(buf.params.len(), 68);
         assert_eq!(coat.param_offset, 44);
         let off = coat.param_offset as usize / 4;
@@ -684,8 +683,8 @@ mod tests {
         let coat = &buf.nodes[2];
         assert_eq!(coat.material_type, GpuMaterialType::Coated as u32);
         assert_eq!(coat.texture_index, GPU_NONE); // texture refs ride in params
-                                                  // Children share the flat buffer: dielectric (8) + diffuse (3) +
-                                                  // coated (6) = 17 f32s total.
+        // Children share the flat buffer: dielectric (8) + diffuse (3) +
+        // coated (6) = 17 f32s total.
         assert_eq!(buf.params.len(), 68);
         assert_eq!(coat.param_offset, 44);
         let off = coat.param_offset as usize / 4;
@@ -835,8 +834,9 @@ mod tests {
         assert!((f(1) - 0.3).abs() < 1e-6);
         assert!((f(2) - 0.1).abs() < 1e-6);
         assert!((f(3) - 0.2).abs() < 1e-6);
-        assert_eq!(f(4), 1.0); // fresnel_kind: dielectric
-                               // eta slots carry the IOR splat.
+        // fresnel_kind: dielectric
+        assert_eq!(f(4), 1.0);
+        // eta slots carry the IOR splat.
         assert!((f(5) - 1.5).abs() < 1e-6);
         assert!((f(6) - 1.5).abs() < 1e-6);
         assert!((f(7) - 1.5).abs() < 1e-6);
@@ -924,7 +924,7 @@ mod tests {
         assert!((f(3) - 1.5).abs() < 1e-6);
         assert!((f(4) - 0.3).abs() < 1e-6);
         assert_eq!(f(5), 1.0); // is_rough
-                               // Both textures baked → no texture references.
+        // Both textures baked → no texture references.
         assert_eq!(f(6), -1.0);
         assert_eq!(f(7), -1.0);
         assert!(buf.textures.nodes.is_empty());
@@ -956,7 +956,7 @@ mod tests {
         // Roughness is a constant → channel-0 scalar bakes.
         assert!((f(4) - 0.3).abs() < 1e-6);
         assert_eq!(f(5), 1.0); // is_rough
-                               // Texture refs: tint → Mapped node index 0; roughness → -1.0 (baked).
+        // Texture refs: tint → Mapped node index 0; roughness → -1.0 (baked).
         assert_eq!(f(6), 0.0);
         assert_eq!(f(7), -1.0);
         // Exactly one texture node: the Mapped wrapper for the checker.

@@ -4,9 +4,9 @@ use glam::{Affine3A, Vec3};
 use rand::RngExt;
 use tracing::{info, trace};
 
+use crate::bvh::Bvh;
 use crate::bvh::aabb::Aabb;
 use crate::bvh::builder::TreeBuilder;
-use crate::bvh::Bvh;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
 use crate::environment::{EnvironmentLight, EnvironmentMap};
@@ -18,8 +18,8 @@ use crate::material::{
 use crate::material::{IsotropicMaterial, Material};
 use crate::shape::regions::FunctionRegion;
 use crate::shape::{
-    annulus, function_patch, moving_sphere, polygon, quad, rounded_rect, shape_box3d, sphere,
-    superellipse, tri, DynEval, Scalar, SdfFn, SdfShape, ShapeObject,
+    DynEval, Scalar, SdfFn, SdfShape, ShapeObject, annulus, function_patch, moving_sphere, polygon,
+    quad, rounded_rect, shape_box3d, sphere, superellipse, tri,
 };
 use crate::texture::{
     CheckerTexture, ImageTexture, NoiseTexture, SolidColor, SphericalUvMapping, Texture,

@@ -35,24 +35,23 @@ ______________________________________________________________________
 
 ## Changelog
 
-- **v3 (2026-08-01)** — Lobe-primitive foundation implemented (Status moved
-  from "deferred" to "foundation implemented"). Material tree restructured to
-  intrinsic-composition primitives: Metal + Glossy → `MicrofacetReflector`
-  with a `Fresnel` enum (Conductor{η,κ} / Dielectric{ior}) and optional
-  albedo; Dielectric + RoughDielectric → one `DielectricMaterial` (roughness
-  option + mirror-threshold delta fallback, coupled single-H sampler
-  preserved); Lambertian → `DiffuseReflector`. Deliberately no standalone
-  transmittor leaf — transmission stays a coupled lobe inside the dielectric
-  composite (§4.10 status note). `GpuMaterialType` renumbered
-  (DiffuseReflector=0 … Coated=6) with `fresnel_kind`/`is_rough` dispatch
-  flags; no GPU shader consumes the buffer yet. Verified behavior-preserving:
-  byte-identical fixed-seed render, 83/83 tests. Side effects: fixed a
-  pre-existing `Material::is_delta()` dispatch gap (near-mirror rough
-  dielectrics now correctly skip NEE); smooth-dielectric `reflectance_estimate`
-  returns the Fresnel value instead of the default 1.0; `const_medium` phase
-  tags merge (volume seeds shift for glossy/rough-dielectric-in-media scenes).
-  The §0 gaps and the §4.2–§4.13 leanings are untouched and remain the
-  backlog.
+- **v3 (2026-08-01)** — Lobe-primitive foundation implemented (Status moved from
+  "deferred" to "foundation implemented"). Material tree restructured to
+  intrinsic-composition primitives: Metal + Glossy → `MicrofacetReflector` with
+  a `Fresnel` enum (Conductor{η,κ} / Dielectric{ior}) and optional albedo;
+  Dielectric + RoughDielectric → one `DielectricMaterial` (roughness option +
+  mirror-threshold delta fallback, coupled single-H sampler preserved);
+  Lambertian → `DiffuseReflector`. Deliberately no standalone transmittor leaf —
+  transmission stays a coupled lobe inside the dielectric composite (§4.10
+  status note). `GpuMaterialType` renumbered (DiffuseReflector=0 … Coated=6)
+  with `fresnel_kind`/`is_rough` dispatch flags; no GPU shader consumes the
+  buffer yet. Verified behavior-preserving: byte-identical fixed-seed render,
+  83/83 tests. Side effects: fixed a pre-existing `Material::is_delta()`
+  dispatch gap (near-mirror rough dielectrics now correctly skip NEE);
+  smooth-dielectric `reflectance_estimate` returns the Fresnel value instead of
+  the default 1.0; `const_medium` phase tags merge (volume seeds shift for
+  glossy/rough-dielectric-in-media scenes). The §0 gaps and the §4.2–§4.13
+  leanings are untouched and remain the backlog.
 - **v2 (2026-07-09)** — Cross-renderer expansion. Added detailed comparisons
   against Mitsuba 3, LuxCoreRender, appleseed, OpenMoonRay, NVIDIA Falcor,
   Google Filament, and renderling (Rust/wgpu). Identified 7+ stealable
@@ -106,6 +105,7 @@ ______________________________________________________________________
 | `GpuMaterialNode` | `material_type` / `param_offset` / `child_a` / `child_b` / `texture_index` | Flat, index-based — textures and (per this doc) measured/precomputed tables both reduce to "buffer + index" under this scheme with no new GPU-side concept required. v3: `GpuMaterialType` renumbered (DiffuseReflector=0 … Coated=6); `MicrofacetReflector` carries a `fresnel_kind` flag plus η/κ params, `Dielectric` an `is_rough` flag. No GPU shader consumes the buffer yet. |
 | Known open issues (already tracked, relevant here) | GGX is single-scatter (no Kulla-Conty/Turquin compensation); GGX samples the NDF, not VNDF (Heitz 2018); `Coated::emitted()` sums coat+substrate emission because it has no `wo` to compute a real Fresnel split | Carried forward from prior review — not re-litigated here, but §4.8 explains why one future tier resolves the first and third for free. |
 
+
 ______________________________________________________________________
 
 ## 2. Comparison Against Production Renderers
@@ -154,17 +154,11 @@ granular primitives in §1, not a parallel system to construct alongside them.
 
 ### 2.3 The Layered-Materials Literature — Three Families, Not One
 
-| Family | Representative work | Precompute | Per-sample cost |
-Texture-compatible | |---|---|---|---|---| | **Naive linear combination** |
-Weidlich & Wilkie 2007 (arbitrarily layered microfacet surfaces via a
-transmission-factor blend) | none | cheap | yes | | **Discretized
-scattering-matrix / adding-equations** | Jakob, d'Eon, Jakob & Marschner 2014;
-Zeltner & Jakob 2018; Belcour 2018 (statistical-operator variant) | **high, per
-unique parameter combination** | cheap (table/Fourier lookup) | poor —
-combinatorial blowup under spatially-varying params | | **Stochastic random
-walk** | Guo, Hašan & Zhao 2018 (pbrt-v4's `LayeredBxDF`); improved by Xia et
-al. 2020, Gamboa et al. 2020 | none | expensive, variable-length, noisy | yes,
-fully — re-simulates locally with whatever local params apply |
+| Family | Representative work | Precompute | Per-sample cost | Texture-compatible |
+| --- | --- | --- | --- | --- |
+| **Naive linear combination** | Weidlich & Wilkie 2007 (arbitrarily layered microfacet surfaces via a transmission-factor blend) | none | cheap | yes |
+| **Discretized scattering-matrix / adding-equations** | Jakob, d'Eon, Jakob & Marschner 2014; Zeltner & Jakob 2018; Belcour 2018 (statistical-operator variant) | **high, per unique parameter combination** | cheap (table/Fourier lookup) | poor — combinatorial blowup under spatially-varying params |
+| **Stochastic random walk** | Guo, Hašan & Zhao 2018 (pbrt‑v4's `LayeredBxDF`); improved by Xia et al. 2020, Gamboa et al. 2020 | none | expensive, variable‑length, noisy | yes, fully — re‑simulates locally with whatever local params apply |
 
 This table *is* the three-tier structure proposed in §4.2. It isn't a novel
 invention for this project — it's the literature's own natural clustering,
@@ -209,8 +203,9 @@ other.
   Recursive Mix/GlossyCoating handled via VM call/return, not recursion.
   Accepted tradeoff: "slowest but requires no kernel recompilation."
 - **`GlossyCoatingMaterial`**: SchlickBSDF coating over arbitrary base, with
-  `multibounce` flag for energy compensation. **`MixMaterial`**: stochastic lobe
-  selection — trivially energy-conserving via mutual exclusion.
+  `multibounce` flag for energy compensation.
+- **`MixMaterial`**: stochastic lobe selection — trivially energy-conserving via
+  mutual exclusion.
 - Per-material `isVisibleIndirectDiffuse/Glossy/Specular` flags — coarse
   visibility filter for indirect paths, the simplest form of a performance dial
   found in any production renderer.

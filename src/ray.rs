@@ -83,6 +83,8 @@ impl Ray {
 
     /// Evaluate the ray at parameter t: returns the point along the ray at distance t from the
     /// origin.
+    /// P(t) = O + t * D
+    /// where t is the distance along the ray, O is the origin, and D is the direction.
     pub fn at(&self, t: f32) -> Point3 {
         self.origin + self.direction * t
     }
@@ -316,6 +318,8 @@ impl ParametricCurve {
     }
 
     /// Evaluate the curve at time t ∈ [0, 1]
+    /// P(t) = O + t * V
+    /// where, t is the normalized time parameter, O is the origin, and V is the velocity
     pub fn at(&self, t: f32) -> Point3 {
         self.origin + self.velocity * t
     }

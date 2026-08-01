@@ -32,11 +32,11 @@
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::gpu::{GpuSerializable, GPU_NONE};
+use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
-    fresnel_r0, fresnel_schlick, geometry_schlick_ggx, ggx_d, ggx_sample_h, Bsdf, BsdfScatter,
-    GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind, MAX_BSDF_STRATS,
-    MIRROR_THRESHOLD,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    MIRROR_THRESHOLD, PdfKind, fresnel_r0, fresnel_schlick, geometry_schlick_ggx, ggx_d,
+    ggx_sample_h,
 };
 use crate::onb::Onb;
 use crate::texture::{SolidColor, Texture};
@@ -620,7 +620,7 @@ mod tests {
         let d = ggx_d(1.0, alpha);
         let g = geometry_schlick_ggx(1.0, 0.3) * geometry_schlick_ggx(1.0, 0.3);
         let f = fresnel_schlick(1.0, fresnel_r0(1.5)); // = F0 = 0.04
-                                                       // front_face → eta_o = 1, eta_i = 1.5; denom = 1·1 + 1.5·1 = 2.5.
+        // front_face → eta_o = 1, eta_i = 1.5; denom = 1·1 + 1.5·1 = 2.5.
         let expected = (1.0 - f) * d * g * (1.5f32 * 1.5) / (1.0 * 2.5 * 2.5);
 
         let got = mat.eval(wo, wi, &si);

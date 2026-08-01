@@ -15,11 +15,11 @@ use std::f32::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::gpu::GpuSerializable;
 use crate::material::GPU_NONE;
+use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
-    MAX_BSDF_STRATS,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
+    PdfKind,
 };
 use crate::texture::{SolidColor, Texture};
 use crate::vec3::{Color3, Direction3};
@@ -83,11 +83,7 @@ impl Bsdf for DiffuseReflector {
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
     fn pdf(&self, _wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
         let cos_theta = si.shading_normal().dot(wi.into_inner());
-        if cos_theta < 0.0 {
-            0.0
-        } else {
-            cos_theta / PI
-        }
+        if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
     }
 
     /// Returns `PdfKind::Cosine` for the cosine-weighted hemisphere PDF.
