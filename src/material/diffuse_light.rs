@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::gpu::{GPU_NONE, GpuSerializable};
+use crate::material::gpu::{GpuSerializable, GPU_NONE};
 use crate::material::{
     Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, Material,
 };

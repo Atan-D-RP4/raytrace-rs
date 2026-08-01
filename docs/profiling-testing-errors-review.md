@@ -238,12 +238,12 @@ fn no_nan_or_negative(case: &BsdfTestCase, n_fuzz: usize);
 /// it's registered.
 fn all_test_cases() -> Vec<BsdfTestCase> {
     vec![
-        case!("lambertian", LambertianMaterial::new(white())),
-        case!("metal_smooth", MetalMaterial::new(silver(), 0.0)),
-        case!("metal_rough", MetalMaterial::new(silver(), 0.5)),
+        case!("diffuse", DiffuseReflector::new(white())),
+        case!("metal_smooth", MicrofacetReflector::conductor_from_reflectance(silver(), 0.0)),
+        case!("metal_rough", MicrofacetReflector::conductor_from_reflectance(silver(), 0.5)),
         case!("dielectric_glass", DielectricMaterial::new(1.5)).transmissive(1.5),
-        case!("rough_dielectric", RoughDielectricMaterial::new(1.5, 0.3)).transmissive(1.5),
-        case!("glossy", GlossyMaterial::new(white(), 0.3)),
+        case!("rough_dielectric", DielectricMaterial::rough(1.5, 0.3)).transmissive(1.5),
+        case!("glossy", MicrofacetReflector::dielectric(white(), 0.3, 1.5)),
         // Deliberately sweep the parameters the Coated bug's severity scales
         // with (thickness, coating IOR, substrate reflectance) rather than
         // one arbitrary config — this is what turns "might be a problem

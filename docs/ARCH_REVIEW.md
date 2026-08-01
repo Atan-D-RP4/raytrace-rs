@@ -103,13 +103,14 @@ src/
 │   └── cpu.rs                       # CpuRenderer — rayon tiled, adaptive sampling
 │
 ├── material/
-│   ├── mod.rs                       # Material enum (10 variants), Bsdf trait, BsdfScatter, GGX
-│   ├── lambertian.rs                # LambertianMaterial — albedo/π
-│   ├── metal.rs                     # MetalMaterial — GGX conductor
-│   ├── dielectric.rs                # DielectricMaterial — Fresnel + tint
+│   ├── mod.rs                       # Material enum (9 variants), Bsdf trait, BsdfScatter, GGX
+│   ├── diffuse_reflector.rs         # DiffuseReflector — albedo/π
+│   ├── microfacet_reflector.rs      # MicrofacetReflector — GGX conductor/dielectric
+│   ├── dielectric.rs                # DielectricMaterial — Fresnel + tint (+ rough)
 │   ├── diffuse_light.rs             # DiffuseLightMaterial — emissive
 │   ├── isotropic.rs                 # IsotropicMaterial — uniform sphere (volumes)
-│   ├── glossy.rs                    # GlossyMaterial — GGX dielectric
+│   ├── mix.rs                       # MixMaterial — weighted stochastic blend
+│   ├── coated.rs                    # CoatedMaterial — clear coat over substrate
 │   └── gpu.rs                       # GpuMaterialBuffer — tree→flat serialization
 │
 ├── texture/
@@ -343,17 +344,16 @@ Convergence: pixel is converged when `sqrt(variance) / mean < threshold_rel` OR 
 #### Current State
 
 ```text
-Material enum (10 variants):
+Material enum (9 variants):
 ├── Void                           # No material (miss)
-├── Lambertian(LambertianMaterial) # albedo/π
-├── Metal(MetalMaterial)           # GGX microfacet conductor
-├── Dielectric(DielectricMaterial) # Fresnel/refract/reflect + tint
+├── DiffuseReflector(DiffuseReflector) # albedo/π
+├── MicrofacetReflector(MicrofacetReflector) # GGX conductor/dielectric (Fresnel dispatch)
+├── Dielectric(DielectricMaterial) # Fresnel/refract/reflect + tint (+ rough)
 ├── DiffuseLight(DiffuseLightMaterial) # emissive
 ├── Isotropic(IsotropicMaterial)   # uniform sphere (volumes)
-├── Glossy(GlossyMaterial)        # GGX dielectric
-├── Mix { a: Box<Material>, b: Box<Material>, weight: f64 }
-├── Coated { substrate: Box<Material>, coating: Box<Material> }
-└── Custom(Box<dyn Bsdf>)         # Escape hatch
+├── Mix(MixMaterial)               # weighted stochastic blend
+├── Coated(CoatedMaterial)         # clear coat over substrate
+└── Custom(Arc<dyn Bsdf>)         # Escape hatch
 
 Bsdf trait (private to material module, 7 methods):
   scatter(&self, wo, si, &mut next_dim) → Option<BsdfScatter>
@@ -757,11 +757,11 @@ raytrace-rs's `GpuMaterialType` enum (Void=0 through Coated=7) is designed for e
 #[spirv(compute)]
 fn eval_bsdf(mat: &GpuMaterialNode, wo: Vec3, wi: Vec3) -> Vec3 {
     match mat.material_type {
-        1 => { /* Lambertian — sample albedo from texture_index */ }
-        2 => { /* Metal — GGX microfacet conductor */ }
-        3 => { /* Dielectric — Fresnel + refract/reflect */ }
-        6 => { /* Mix — recurse via child_a, child_b, blend by weight */ }
-        7 => { /* Coated — Fresnel-split between coating and substrate */ }
+        0 => { /* DiffuseReflector — sample albedo from texture_index */ }
+        1 => { /* MicrofacetReflector — GGX conductor/dielectric by fresnel_kind */ }
+        2 => { /* Dielectric — Fresnel + refract/reflect (is_rough dispatch) */ }
+        5 => { /* Mix — recurse via child_a, child_b, blend by weight */ }
+        6 => { /* Coated — Fresnel-split between coating and substrate */ }
         // ...
     }
 }
@@ -781,8 +781,8 @@ fn eval_bsdf(mat: &GpuMaterialNode, wo: Vec3, wi: Vec3) -> Vec3 {
 
 | Aspect | renderling | raytrace-rs (CPU) | raytrace-rs (GPU design) |
 |--------|-----------|-------------------|--------------------------|
-| **Representation** | Flat `#[repr(C)] MaterialDescriptor` | Recursive `Material` enum (10 variants) | `GpuMaterialNode` array + flat params buffer |
-| **PBR model** | Metallic-roughness (albedo, metalness, roughness, AO, normal, emissive) | General BSDFs (Lambertian, GGX, Dielectric, Mix, Coated) | Same BSDF set tagged by `GpuMaterialType` discriminant |
+| **Representation** | Flat `#[repr(C)] MaterialDescriptor` | Recursive `Material` enum (9 variants) | `GpuMaterialNode` array + flat params buffer |
+| **PBR model** | Metallic-roughness (albedo, metalness, roughness, AO, normal, emissive) | General BSDFs (Diffuse, GGX conductor/dielectric, Dielectric, Mix, Coated) | Same BSDF set tagged by `GpuMaterialType` discriminant |
 | **Composition** | None | Mix (weighted blend), Coated (Fresnel-split) | Child index recursion in shader |
 | **Textures** | Atlas: `Image2dArray` sampled by layer | CPU `image` crate → `Texture::value()` | `texture_index` → atlas layer |
 | **GPU upload** | Slab commit (dirty-range tracking) | N/A (CPU only) | Slab-backed `GpuMaterialBuffer` |
@@ -811,7 +811,7 @@ Phase A — Slab-backed CPU (now → 1 month)
 
 Phase B — rust-gpu compute shaders (1-3 months)
 ├── Port FlatBvh traversal to `#[spirv(compute)]` shader
-├── Port BSDF eval (Lambertian, GGX, Dielectric) to rust-gpu functions
+├── Port BSDF eval (Diffuse, GGX, Dielectric) to rust-gpu functions
 ├── Implement ray-gen kernel (camera + pixel AA)
 ├── Implement path-trace kernel (bounce loop w/ MIS + shadow ray)
 └── Validate: pixel-match CpuRenderer output

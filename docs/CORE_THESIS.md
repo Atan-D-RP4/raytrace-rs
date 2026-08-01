@@ -1586,7 +1586,7 @@ bilinear/anisotropic sampling. The atlas approach from v1 is obsolete.
 | Feature | glTF Element | Starlight Mapping |
 |---|---|---|
 | Triangle meshes | `mesh.primitives` | `TriangleMesh` leaf |
-| PBR materials | `material.pbrMetallicRoughness` | `Material::Glossy` + textures |
+| PBR materials | `material.pbrMetallicRoughness` | `Material::MicrofacetReflector` (GGX conductor/dielectric) + textures |
 | Texture maps | `image` + `sampler` + `texture` | `Texture::Image` + bindless |
 | Transforms | `node.translation/rotation/scale` | `Mat4` in leaf data |
 | Cameras | `camera.perspective` | `Camera` params |

@@ -1,25 +1,28 @@
-# Material System — Design & Evolution (v1)
+# Material System — Design & Evolution (v3)
 
 ## Status
 
-**Deferred — not for implementation yet.**
+**Foundation implemented (v3, 2026-08-01). The three §0 gaps remain deferred.**
 
-Hard prerequisite: `samplestream-refactor.md` must be fully implemented and
-merged before any code in this doc is written. §4.4 depends directly on the
-final `SampleStream`/`Rng` trait shapes — deciding a stochastic-evaluation
-signature before that lands means deciding it twice.
+The v1 hard prerequisite is met: `samplestream-refactor.md` is fully
+implemented, and the lobe-primitive material-tree restructure that v2's
+cross-renderer analysis (§2.4, §4.10) pointed at has landed on top of it —
+`DiffuseReflector`, `MicrofacetReflector` (Fresnel: Conductor{η,κ} /
+Dielectric{ior}; absorbs former Metal + Glossy), `Dielectric` (smooth/rough
+unified; absorbs former Dielectric + RoughDielectric), plus the unchanged
+`DiffuseLight`/`Isotropic`/`Mix`/`Coated`. Verified behavior-preserving
+(byte-identical fixed-seed render). See changelog and §4.10's status note.
+
+Still deferred, deliberately: the three §0 gaps (measured reflectance data,
+physically-correct multi-bounce layering, performance/fidelity dial) and
+everything in §7's non-goals. §4.4's stochastic-evaluation signature
+question (Phase B) is now unblocked but still undecided — it should be
+decided against the landed `SampleStream`/`SamplerRng` shapes, not on
+paper.
 
 Soft prerequisites (should be stable, need not be finished): `renderer_arch.md`,
-`adaptive-sampling.md`, `denoiser.md`, `mesh-design.md`. None of them block
-starting this doc's own iteration, but several open questions below (§6) resolve
-more cheaply once those shapes are settled.
-
-This is the **second iteration (v2)**. Cross-renderer comparisons were added in
-v2 (§2.4–§2.10) and six new patterns were incorporated into §4 (§4.9–§4.14).
-Expect several more audit passes before implementation, the same way
-`samplestream-refactor.md` went through v1→v4.3 and `adaptive-sampling.md` went
-through v1→v8. Treat every section as a snapshot of current thinking, not a
-locked spec.
+`adaptive-sampling.md`, `denoiser.md`, `mesh-design.md`. They gate the
+remaining backlog, not the landed foundation.
 
 One structural note carried over from the CORE_THESIS review: this doc
 deliberately separates an aspirational section (§3) from the actionable one
@@ -32,6 +35,24 @@ ______________________________________________________________________
 
 ## Changelog
 
+- **v3 (2026-08-01)** — Lobe-primitive foundation implemented (Status moved
+  from "deferred" to "foundation implemented"). Material tree restructured to
+  intrinsic-composition primitives: Metal + Glossy → `MicrofacetReflector`
+  with a `Fresnel` enum (Conductor{η,κ} / Dielectric{ior}) and optional
+  albedo; Dielectric + RoughDielectric → one `DielectricMaterial` (roughness
+  option + mirror-threshold delta fallback, coupled single-H sampler
+  preserved); Lambertian → `DiffuseReflector`. Deliberately no standalone
+  transmittor leaf — transmission stays a coupled lobe inside the dielectric
+  composite (§4.10 status note). `GpuMaterialType` renumbered
+  (DiffuseReflector=0 … Coated=6) with `fresnel_kind`/`is_rough` dispatch
+  flags; no GPU shader consumes the buffer yet. Verified behavior-preserving:
+  byte-identical fixed-seed render, 83/83 tests. Side effects: fixed a
+  pre-existing `Material::is_delta()` dispatch gap (near-mirror rough
+  dielectrics now correctly skip NEE); smooth-dielectric `reflectance_estimate`
+  returns the Fresnel value instead of the default 1.0; `const_medium` phase
+  tags merge (volume seeds shift for glossy/rough-dielectric-in-media scenes).
+  The §0 gaps and the §4.2–§4.13 leanings are untouched and remain the
+  backlog.
 - **v2 (2026-07-09)** — Cross-renderer expansion. Added detailed comparisons
   against Mitsuba 3, LuxCoreRender, appleseed, OpenMoonRay, NVIDIA Falcor,
   Google Filament, and renderling (Rust/wgpu). Identified 7+ stealable
@@ -55,8 +76,9 @@ ______________________________________________________________________
 
 ## 0. Purpose & Scope
 
-The current material system (`Lambertian`, `Metal`, `Dielectric`, `Glossy`,
-`DiffuseLight`, `Isotropic`, `Mix`, `Coated`, all behind the `Bsdf` trait) is
+The current material system (`DiffuseReflector`, `MicrofacetReflector`,
+`Dielectric`, `DiffuseLight`, `Isotropic`, `Mix`, `Coated`, all behind the
+`Bsdf` trait) is
 correctly interface-unified but has no answer to three gaps:
 
 1. **Measured/tabulated reflectance data** — no leaf type exists for it.
@@ -68,7 +90,7 @@ means hand-picking a different material; there's no mechanism for a scene, an
 LOD system, or a user to make that trade-off systematically.
 
 This doc is about closing those three gaps **without disturbing what already
-works** — the `Bsdf` trait, the enum-of-leaves-plus-`Box<dyn Bsdf>`-for-
+works** — the `Bsdf` trait, the enum-of-leaves-plus-`Arc<dyn Bsdf>`-for-
 composition shape, and the `GpuMaterialNode` flattening scheme all stay.
 
 ______________________________________________________________________
@@ -77,11 +99,11 @@ ______________________________________________________________________
 
 | Piece | Shape | Notes |
 |---|---|---|
-| `Bsdf` trait | `eval`, `sample`, `pdf`, `emitted` | Deterministic given `(wo, wi)` — no RNG in `eval`/`pdf` today. |
-| Leaf variants | `Lambertian`, `Metal`, `Dielectric`, `Glossy`, `DiffuseLight`, `Isotropic` | Inline structs, no heap allocation. |
-| Composite variants | `Mix` (stochastic lobe selection), `Coated` (single-bounce Fresnel blend) | Both `Box<dyn Bsdf>` children — the only place this codebase pays vtable cost on the material side. |
+| `Bsdf` trait | `scatter`, `eval`, `pdf`, `pdf_kind`, `emitted`, `is_emissive`, `reflectance_estimate`, `is_delta`, `ggx_alpha` | Deterministic given `(wo, wi)` — no RNG in `eval`/`pdf` today; `scatter` draws from a `next_dim` closure over the two-stream `SampleStream`/`SamplerRng`. |
+| Leaf variants | `DiffuseReflector`, `MicrofacetReflector` (Fresnel: Conductor{η,κ} / Dielectric{ior}), `Dielectric` (smooth/rough unified), `DiffuseLight`, `Isotropic` | Inline structs, no heap allocation. `MicrofacetReflector` absorbs former Metal + Glossy; `Dielectric` absorbs former Dielectric + RoughDielectric (v3). |
+| Composite variants | `Mix` (stochastic lobe selection), `Coated` (single-bounce Fresnel blend) | Both `Arc<dyn Bsdf>` children — the only place this codebase pays vtable cost on the material side. |
 | `PdfKind` | Enum, avoids `Box<dyn PDF>` in the hot path | Already the right shape for what follows. |
-| `GpuMaterialNode` | `material_type` / `param_offset` / `texture_index` | Flat, index-based — textures and (per this doc) measured/precomputed tables both reduce to "buffer + index" under this scheme with no new GPU-side concept required. |
+| `GpuMaterialNode` | `material_type` / `param_offset` / `child_a` / `child_b` / `texture_index` | Flat, index-based — textures and (per this doc) measured/precomputed tables both reduce to "buffer + index" under this scheme with no new GPU-side concept required. v3: `GpuMaterialType` renumbered (DiffuseReflector=0 … Coated=6); `MicrofacetReflector` carries a `fresnel_kind` flag plus η/κ params, `Dielectric` an `is_rough` flag. No GPU shader consumes the buffer yet. |
 | Known open issues (already tracked, relevant here) | GGX is single-scatter (no Kulla-Conty/Turquin compensation); GGX samples the NDF, not VNDF (Heitz 2018); `Coated::emitted()` sums coat+substrate emission because it has no `wo` to compute a real Fresnel split | Carried forward from prior review — not re-litigated here, but §4.8 explains why one future tier resolves the first and third for free. |
 
 ______________________________________________________________________
@@ -412,7 +434,8 @@ this is the section future implementation work should actually read.
 
 No new top-level system. `Bsdf` stays the unification point. A measured leaf and
 a stochastically-layered composite are new **variants**, not new architecture —
-this is mechanically identical to how `Lambertian` and `Metal` already coexist.
+this is mechanically identical to how `DiffuseReflector` and `MicrofacetReflector`
+already coexist.
 
 ### 4.2 Layering is three tiers, not one axis
 
@@ -439,7 +462,7 @@ case actually needs it — see §7.
 ### 4.3 Measured/tabulated data is an orthogonal leaf, not a fourth layering
 tier
 
-Slots in next to `Lambertian`/`Metal` as `Bsdf::Measured(...)`. It composes into
+Slots in next to `DiffuseReflector`/`MicrofacetReflector` as `Bsdf::Measured(...)`. It composes into
 any layer stack (any tier) as a sub-layer, since layering machinery only needs
 its children to satisfy the `Bsdf` trait.
 
@@ -479,7 +502,7 @@ template parameters, with dedicated monomorphized types (`CoatedDiffuseBxDF`,
 `CoatedConductorBxDF`) for the common pairs and ordinary dynamic dispatch as the
 fallback for arbitrary ones. Same shape this project already applies to
 `Sampleable`/`SampleStreamEnum`/`ConvergenceCriterionEnum`. Lean: monomorphize
-`Coated<Dielectric, Lambertian>` / `Coated<Dielectric, Metal>` as fast paths
+`Coated<Dielectric, DiffuseReflector>` / `Coated<Dielectric, MicrofacetReflector>` as fast paths
 once real scene data says they're common enough to be worth it (this can't be
 decided on paper — see §6.7); `Box<dyn Bsdf>` handles everything else.
 
@@ -592,6 +615,18 @@ The `BSDFFlags::Delta` discriminant is particularly important — it replaces
 individual `is_delta()` checks and makes MIS dispatch self-documenting. This is
 compatible with pbrt-v4's approach and would fold into the existing `PdfKind`
 enum naturally.
+
+**Status note (v3):** the lobe-primitive restructure of 2026-08-01 partially
+realizes this lean. The tree now classifies lobes at the type level
+(`DiffuseReflector` / `MicrofacetReflector` / the coupled dielectric composite)
+and parameterizes the reflector's Fresnel behavior via the `Fresnel` enum
+(`Conductor{η,κ}` | `Dielectric{ior}`) — the Mitsuba-style "component
+classification" move. Not yet adopted: the `BSDFContext`-style type-mask for
+per-component evaluation, and `BSDFFlags::Delta` as a replacement for the
+per-material `is_delta()` methods. The deliberate non-standalone transmittor
+(the coupled dielectric sampler must not be split into independent lobes) is the
+one place this project's shape intentionally diverges from a pure
+component-composition model; pbrt-v4's fused `DielectricBxDF` is the precedent.
 
 ### 4.11 Measured BRDF with parametric importance sampling (Falcor)
 
@@ -760,7 +795,10 @@ ______________________________________________________________________
    deterministic ones, who'd ignore it), or a separate `StochasticBsdf: Bsdf`
    trait that only Tier 2 variants implement, with the integrator branching on
    which trait is present? The latter avoids touching every existing leaf's
-   signature but adds a dispatch branch to the integrator.
+   signature but adds a dispatch branch to the integrator. **v3 note:** the
+   `samplestream-refactor.md` hard prerequisite is met (see Status) — this
+   question is now decidable against the landed `SampleStream`/`SamplerRng`
+   shapes and remains undecided.
 3. **Does the existing MIS power-heuristic implementation need a variant for
    a noisy `pdf()`, or is treating the noisy estimate as-is actually fine**, as
    pbrt's own documentation claims for its own estimators? Needs to be checked
@@ -830,20 +868,30 @@ ______________________________________________________________________
 
 | Doc | Relationship | Hard/Soft |
 |---|---|---|
-| `samplestream-refactor.md` | `SampleStream`/`Rng` traits must exist and be stable before §4.4's signature question can be closed | **Hard** |
+| `samplestream-refactor.md` | `SampleStream`/`Rng` traits must exist and be stable before §4.4's signature question can be closed | **Met (v3)** — implementation complete; §4.4 must be decided against the landed two-stream shapes |
 | `renderer_arch.md` | Any new `Bsdf` variant needs an `albedo()`-style extraction path for GBuffer/`DenoiserFeatures` bridging | Soft |
 | `denoiser.md` | Same reason as above — new variants must be accounted for wherever albedo/normal AOVs are derived from a material | Soft |
 | `mesh-design.md` | Per-face material assignment is deferred there; §6.10 notes the interaction but doesn't require it resolved first | Soft |
 | `adaptive-sampling.md` | No direct interaction identified | None |
 
-Do not start implementation before `samplestream-refactor.md`'s own
-implementation steps (its Phase 3–4, per that doc) are complete.
+The v1 gate is lifted: `samplestream-refactor.md`'s implementation steps (its
+Phase 3–4, per that doc) are complete, and the v3 foundation builds directly on
+them. The remaining backlog's own dependencies still apply — §4.4 against the
+landed `SampleStream`/`SamplerRng` shapes, and any new `Bsdf` variant against
+`renderer_arch.md`/`denoiser.md`'s extraction paths.
 
 ______________________________________________________________________
 
 ## 9. Illustrative Future Phases (will be rewritten once this doc stabilizes)
 
 These exist to make the scope concrete, not as a committed plan:
+
+- **Phase 0 (done, v3)** — Lobe-primitive material-tree restructure
+  (`DiffuseReflector` / `MicrofacetReflector` + `Fresnel` / unified
+  `Dielectric`), implementing §4.10's type-level lobe classification without
+  touching any of the §4.2/§4.4 machinery. Its behavior-preservation proof
+  (byte-identical fixed-seed render) is the model for how later phases should
+  be verified.
 
 - **Phase A** — `Measured` leaf. No `Rng` dependency; could theoretically
   start anytime but held per Status.
@@ -861,7 +909,7 @@ ______________________________________________________________________
 
 | This Doc | Related Doc | Relationship |
 |---|---|---|
-| §4.4 | `samplestream-refactor.md` | Hard prerequisite — see §8 |
+| §4.4 | `samplestream-refactor.md` | Hard prerequisite — met (v3); see §8 |
 | §4.7 | `renderer_arch.md` §GPU material buffer | Measured/Tier-1 data should reuse the same indirection as `texture_index` |
 | §4.3, §4.8 | Prior architecture review (this project, undated in `docs/`) | GGX energy loss and `Coated::emitted()` gaps referenced here are tracked there in more detail |
 | §6.10 | `mesh-design.md` §Open Questions | Per-face material deferral noted on both sides |

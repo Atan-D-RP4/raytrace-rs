@@ -16,8 +16,8 @@ use glam::Vec3;
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
-    Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
-    MAX_BSDF_STRATS, Material, PdfKind, fresnel_r0, fresnel_schlick, ggx_sample_h,
+    fresnel_r0, fresnel_schlick, ggx_sample_h, Bsdf, BsdfScatter, GpuMaterialBuffer,
+    GpuMaterialNode, GpuMaterialType, Material, PdfKind, GPU_NONE, MAX_BSDF_STRATS,
 };
 use crate::onb::Onb;
 use crate::pdf::cosine_hemisphere_direction;
@@ -803,7 +803,9 @@ mod test {
     use std::sync::Arc;
 
     use crate::hittable::SurfaceInteraction;
-    use crate::material::{Bsdf, CoatedMaterial, DielectricMaterial, Material, MetalMaterial};
+    use crate::material::{
+        Bsdf, CoatedMaterial, DielectricMaterial, Material, MicrofacetReflector,
+    };
     use crate::vec3::{Color3, Direction3};
 
     /// Uniform sphere direction via spherical coordinates.
@@ -832,7 +834,7 @@ mod test {
         // through PdfKind separately, so the total BSDF sampling PDF integrates to 1.
         // This test checks that the substrate-path component integrates to fresnel_t(wo).
         let material = CoatedMaterial::new(
-            Arc::new(MetalMaterial::from_reflectance(
+            Arc::new(MicrofacetReflector::conductor_from_reflectance(
                 Color3::splat(0.9) * 0.1837,
                 0.1,
             )),

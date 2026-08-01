@@ -45,10 +45,10 @@ pub trait Integrator: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bvh::Bvh;
     use crate::bvh::builder::TreeBuilder;
+    use crate::bvh::Bvh;
     use crate::film::{Film, RgbFilm};
-    use crate::material::{DiffuseLightMaterial, LambertianMaterial, Material};
+    use crate::material::{DiffuseLightMaterial, DiffuseReflector, Material};
     use crate::sampler::NaiveRandomSampler;
     use crate::shape::quad;
     use crate::vec3::{Color3, Direction3, Point3};
@@ -60,7 +60,7 @@ mod tests {
     fn render_4x4_minimal_scene() {
         // Build a tiny scene: a light quad and a floor quad.
         let light_mat: Material = DiffuseLightMaterial::new(Color3::new(8.0, 8.0, 8.0)).into();
-        let floor_mat: Material = LambertianMaterial::new(Color3::new(0.7, 0.7, 0.7)).into();
+        let floor_mat: Material = DiffuseReflector::new(Color3::new(0.7, 0.7, 0.7)).into();
 
         let light: Arc<dyn Intersectable> = Arc::new(quad(
             Point3::new(-1., 2., -2.),
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn integrator_smoke_test() {
         // Scene: a Lambertian floor and a light quad.
-        let floor_mat: Material = LambertianMaterial::new(Color3::new(0.7, 0.7, 0.7)).into();
+        let floor_mat: Material = DiffuseReflector::new(Color3::new(0.7, 0.7, 0.7)).into();
 
         let floor: Arc<dyn Intersectable> = Arc::new(quad(
             Point3::new(-3., -1., -3.),

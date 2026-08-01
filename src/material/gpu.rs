@@ -32,21 +32,24 @@ pub trait GpuSerializable {
     }
 }
 
-/// Discriminant tag for a material in the GPU buffer. Mirrors the
-/// non-composition variants of [`Material`]. Composition variants are encoded
-/// via the node tree structure (`child_a` / `child_b` pointers).
+/// Discriminant tag for a material in the GPU buffer.
+///
+/// The CPU material tree no longer maps 1:1 onto the wire format:
+/// `MicrofacetReflector` covers the former Metal and Glossy types (dispatched
+/// by the `fresnel_kind` param: 0 = conductor, 1 = dielectric) and `Dielectric`
+/// covers both the smooth and rough dielectric (dispatched by the `is_rough`
+/// param). Composition variants are encoded via the node tree structure
+/// (`child_a` / `child_b` pointers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum GpuMaterialType {
-    Lambertian = 0,
-    Metal = 1,
+    DiffuseReflector = 0,
+    MicrofacetReflector = 1,
     Dielectric = 2,
-    RoughDielectric = 3,
-    DiffuseLight = 4,
-    Isotropic = 5,
-    Glossy = 6,
-    Mix = 7,
-    Coated = 8,
+    DiffuseLight = 3,
+    Isotropic = 4,
+    Mix = 5,
+    Coated = 6,
     /// Marks a node that exists only for its children (no parameters).
     Passthrough = 0xFFFF,
     /// Absence of material — surface contributes nothing.

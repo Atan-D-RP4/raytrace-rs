@@ -13,7 +13,7 @@ use crate::vec3::Color3;
 
 /// Uniform color texture — returns the same [`Color3`] at every point.
 ///
-/// The constant case of a material parameter: `LambertianMaterial::new`
+/// The constant case of a material parameter: `DiffuseReflector::new`
 /// wraps a plain color in a `SolidColor`. Because it is UV-independent it
 /// bakes directly into GPU material parameters, unlike sampled textures.
 pub struct SolidColor {

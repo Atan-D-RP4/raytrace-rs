@@ -13,8 +13,8 @@ use crate::environment::EnvironmentMap;
 use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
 use crate::interval::Interval;
-use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
-use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
+use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
+use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PdfKind, PDF};
 use crate::ray::Ray;
 use crate::sampler::{SampleStream, SamplerRng};
 

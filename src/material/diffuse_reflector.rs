@@ -1,4 +1,4 @@
-//! Lambertian (ideal diffuse) reflectance.
+//! Diffuse (ideal Lambertian) reflectance.
 //!
 //! Models matte surfaces like paper, chalk, or unpolished wood. A Lambertian
 //! surface reflects incoming light uniformly across the hemisphere — it looks
@@ -15,11 +15,11 @@ use std::f32::consts::PI;
 use std::sync::Arc;
 
 use crate::hittable::SurfaceInteraction;
-use crate::material::GPU_NONE;
 use crate::material::gpu::GpuSerializable;
+use crate::material::GPU_NONE;
 use crate::material::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
-    PdfKind,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, PdfKind,
+    MAX_BSDF_STRATS,
 };
 use crate::texture::{SolidColor, Texture};
 use crate::vec3::{Color3, Direction3};
@@ -28,32 +28,32 @@ use crate::material::Material;
 
 /// Diffuse (Lambertian) surface.
 #[derive(Clone)]
-pub struct LambertianMaterial {
+pub struct DiffuseReflector {
     /// Fraction of light reflected at each wavelength as a texture for spatial variation.
     pub albedo: Arc<dyn Texture>,
 }
 
-impl LambertianMaterial {
-    /// Create a lambertian material from a solid color.
+impl DiffuseReflector {
+    /// Create a diffuse reflector from a solid color.
     pub fn new(albedo: Color3) -> Self {
         Self {
             albedo: Arc::new(SolidColor::new(albedo)),
         }
     }
 
-    /// Create a lambertian material from a texture.
+    /// Create a diffuse reflector from a texture.
     pub fn textured(albedo: Arc<dyn Texture>) -> Self {
         Self { albedo }
     }
 }
 
-impl From<LambertianMaterial> for Material {
-    fn from(m: LambertianMaterial) -> Self {
-        Material::Lambertian(m)
+impl From<DiffuseReflector> for Material {
+    fn from(m: DiffuseReflector) -> Self {
+        Material::DiffuseReflector(m)
     }
 }
 
-impl Bsdf for LambertianMaterial {
+impl Bsdf for DiffuseReflector {
     /// The integrator samples the actual direction from the cosine-weighted hemisphere PDF
     /// indicated by `pdf_kind`. The `f_cos` field carries the albedo (texture or solid color).
     fn scatter(
@@ -83,7 +83,11 @@ impl Bsdf for LambertianMaterial {
     /// Cosine-weighted hemisphere PDF: `cos(θ) / π`. Returns zero if `wi` is below the surface.
     fn pdf(&self, _wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32 {
         let cos_theta = si.shading_normal().dot(wi.into_inner());
-        if cos_theta < 0.0 { 0.0 } else { cos_theta / PI }
+        if cos_theta < 0.0 {
+            0.0
+        } else {
+            cos_theta / PI
+        }
     }
 
     /// Returns `PdfKind::Cosine` for the cosine-weighted hemisphere PDF.
@@ -101,14 +105,14 @@ impl Bsdf for LambertianMaterial {
     }
 }
 
-impl GpuSerializable for LambertianMaterial {
+impl GpuSerializable for DiffuseReflector {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let (r, g, b, texture_index) = buf.gpu_color(&self.albedo);
         let params = vec![r, g, b];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {
-            material_type: GpuMaterialType::Lambertian as u32,
+            material_type: GpuMaterialType::DiffuseReflector as u32,
             param_offset,
             child_a: GPU_NONE,
             child_b: GPU_NONE,

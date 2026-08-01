@@ -6,7 +6,7 @@ use crate::bvh::TreeBuilder;
 use crate::bvh::{Bvh, BvhNode};
 use crate::hittable::{Bounded, Intersectable};
 use crate::interval::Interval;
-use crate::material::{LambertianMaterial, Material};
+use crate::material::{DiffuseReflector, Material};
 use crate::ray::Ray;
 use crate::shape::sphere;
 use crate::vec3::{Color3, Direction3, Point3};
@@ -38,7 +38,7 @@ fn flat_bvh_single_sphere() {
     let sphere: Arc<dyn Intersectable> = Arc::new(sphere(
         Point3::new(0., 0., -2.),
         0.5,
-        Material::from(LambertianMaterial::new(Color3::new(0.8, 0.2, 0.2))),
+        Material::from(DiffuseReflector::new(Color3::new(0.8, 0.2, 0.2))),
     ));
     let bbox = sphere.bounding_box();
     let bvh: TreeBuilder = TreeBuilder::Leaf {
@@ -69,12 +69,12 @@ fn flat_bvh_two_spheres() {
     let s1: Arc<dyn Intersectable> = Arc::new(sphere(
         Point3::new(-1., 0., -2.),
         0.5,
-        Material::from(LambertianMaterial::new(Color3::new(1.0, 0.0, 0.0))),
+        Material::from(DiffuseReflector::new(Color3::new(1.0, 0.0, 0.0))),
     ));
     let s2: Arc<dyn Intersectable> = Arc::new(sphere(
         Point3::new(1., 0., -2.),
         0.5,
-        Material::from(LambertianMaterial::new(Color3::new(0.0, 1.0, 0.0))),
+        Material::from(DiffuseReflector::new(Color3::new(0.0, 1.0, 0.0))),
     ));
 
     let bbox1 = s1.bounding_box();
@@ -129,23 +129,23 @@ fn flat_bvh_matches_bvh_node_multi_object() {
     let s1: Arc<dyn Intersectable> = Arc::new(sphere(
         Point3::new(-2., 0., -3.),
         0.5,
-        Material::from(LambertianMaterial::new(Color3::new(1.0, 0.0, 0.0))),
+        Material::from(DiffuseReflector::new(Color3::new(1.0, 0.0, 0.0))),
     ));
     let s2: Arc<dyn Intersectable> = Arc::new(sphere(
         Point3::new(0., 0., -3.),
         0.5,
-        Material::from(LambertianMaterial::new(Color3::new(0.0, 1.0, 0.0))),
+        Material::from(DiffuseReflector::new(Color3::new(0.0, 1.0, 0.0))),
     ));
     let s3: Arc<dyn Intersectable> = Arc::new(sphere(
         Point3::new(2., 0., -3.),
         0.5,
-        Material::from(LambertianMaterial::new(Color3::new(0.0, 0.0, 1.0))),
+        Material::from(DiffuseReflector::new(Color3::new(0.0, 0.0, 1.0))),
     ));
     let s4: Arc<dyn Intersectable> = Arc::new(quad(
         Point3::new(-3., -1., -5.),
         Vec3::new(6., 0., 0.),
         Vec3::new(0., 2., 0.),
-        Material::from(LambertianMaterial::new(Color3::new(0.5, 0.5, 0.5))),
+        Material::from(DiffuseReflector::new(Color3::new(0.5, 0.5, 0.5))),
     ));
 
     let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];

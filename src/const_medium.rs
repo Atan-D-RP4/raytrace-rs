@@ -22,13 +22,17 @@ const TEXTURED_VOLUME_SEED: u64 = 0x7E57A35E5EED;
 fn phase_tag(m: &Material) -> u8 {
     match m {
         Material::Void => 0x00,
-        Material::Lambertian(_) => 0x01,
-        Material::Metal(_) => 0x02,
+        // Tag 0x01 (Lambertian) preserved.
+        Material::DiffuseReflector(_) => 0x01,
+        // MicrofacetReflector absorbs both Metal (was 0x02) and Glossy (was 0x07);
+        // we keep Metal's tag. This deliberately changes volume seeds for
+        // glossy-in-media scenes.
+        Material::MicrofacetReflector(_) => 0x02,
+        // Dielectric absorbs RoughDielectric (was 0x04); we keep Dielectric's tag.
+        // This deliberately changes volume seeds for rough-dielectric-in-media scenes.
         Material::Dielectric(_) => 0x03,
-        Material::RoughDielectric(_) => 0x04,
         Material::DiffuseLight(_) => 0x05,
         Material::Isotropic(_) => 0x06,
-        Material::Glossy(_) => 0x07,
         Material::Mix { .. } => 0x08,
         Material::Coated { .. } => 0x09,
         Material::Custom(_) => 0x0a,
