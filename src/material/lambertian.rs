@@ -21,7 +21,7 @@ use crate::material::{
     Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
     PdfKind,
 };
-use crate::texture::Texture;
+use crate::texture::{SolidColor, Texture};
 use crate::vec3::{Color3, Direction3};
 
 use crate::material::Material;
@@ -29,12 +29,28 @@ use crate::material::Material;
 /// Diffuse (Lambertian) surface.
 #[derive(Clone)]
 pub struct LambertianMaterial {
-    /// Fraction of light reflected at each wavelength. Used as fallback when `tex` is set, and as
-    /// the GPU serialization color (textures are CPU-only).
-    pub albedo: Color3,
-    /// Optional texture for spatial albedo variation. When set, `value()` is evaluated at the hit
-    /// point instead of using `albedo`.
-    pub tex: Option<Arc<dyn Texture>>,
+    /// Fraction of light reflected at each wavelength as a texture for spatial variation.
+    pub albedo: Arc<dyn Texture>,
+}
+
+impl LambertianMaterial {
+    /// Create a lambertian material from a solid color.
+    pub fn new(albedo: Color3) -> Self {
+        Self {
+            albedo: Arc::new(SolidColor::new(albedo)),
+        }
+    }
+
+    /// Create a lambertian material from a texture.
+    pub fn textured(albedo: Arc<dyn Texture>) -> Self {
+        Self { albedo }
+    }
+}
+
+impl From<LambertianMaterial> for Material {
+    fn from(m: LambertianMaterial) -> Self {
+        Material::Lambertian(m)
+    }
 }
 
 impl Bsdf for LambertianMaterial {
@@ -55,11 +71,7 @@ impl Bsdf for LambertianMaterial {
 
     /// Lambertian BRDF: `albedo · cos(θ) / π`. Returns zero if `wi` is below the surface.
     fn eval(&self, _wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
-        let attenuation = self
-            .tex
-            .as_ref()
-            .map(|t| t.value(&si.texture_coords()))
-            .unwrap_or(self.albedo);
+        let attenuation = self.albedo.value(&si.texture_coords());
         let cos_theta = si.shading_normal().dot(wi.into_inner());
         if cos_theta < 0.0 {
             Color3::ZERO
@@ -82,42 +94,17 @@ impl Bsdf for LambertianMaterial {
     }
 
     fn reflectance_estimate(&self, _wo: Direction3, si: &SurfaceInteraction) -> f32 {
-        let albedo = self
-            .tex
-            .as_ref()
-            .map(|t| t.value(&si.texture_coords()))
-            .unwrap_or(self.albedo);
+        let albedo = self.albedo.value(&si.texture_coords());
         // Lambertian directional-hemispherical reflectance = albedo (exact:
         // ∫ (albedo/π) * cos θ dω = albedo). Average across RGB channels.
         albedo.into_inner().element_sum() / 3.0
     }
 }
 
-impl LambertianMaterial {
-    /// Create a lambertian material from a solid color.
-    pub fn new(albedo: Color3) -> Self {
-        Self { albedo, tex: None }
-    }
-
-    /// Create a lambertian material with a texture. `albedo` is used as fallback when tex is None
-    /// (e.g., GPU serialization).
-    pub fn with_texture(albedo: Color3, tex: Arc<dyn Texture>) -> Self {
-        Self {
-            albedo,
-            tex: Some(tex),
-        }
-    }
-}
-
-impl From<LambertianMaterial> for Material {
-    fn from(m: LambertianMaterial) -> Self {
-        Material::Lambertian(m)
-    }
-}
-
 impl GpuSerializable for LambertianMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![self.albedo.x(), self.albedo.y(), self.albedo.z()];
+        let (r, g, b, texture_index) = buf.gpu_color(&self.albedo);
+        let params = vec![r, g, b];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {
@@ -125,7 +112,7 @@ impl GpuSerializable for LambertianMaterial {
             param_offset,
             child_a: GPU_NONE,
             child_b: GPU_NONE,
-            texture_index: GPU_NONE,
+            texture_index,
         });
         buf.nodes.len() as u32 - 1
     }

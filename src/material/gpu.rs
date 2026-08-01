@@ -5,10 +5,16 @@
 //! children by index. The shader's switch on `material_type` mirrors the
 //! CPU's match.
 //!
-//! Texture variation is CPU-only: the GPU buffer falls back to the material's
-//! solid albedo. If you want to render a textured material on the GPU, you
-//! must plumb a texture index through and have the shader sample an
-//! accompanying texture buffer.
+//! Texture parameters: constants ([`SolidColor`]) bake into the material's
+//! flat color params via [`GpuMaterialBuffer::gpu_color`]; sampled textures
+//! serialize into the accompanying texture buffer (`buf.textures`) and are
+//! referenced either by `GpuMaterialNode::texture_index` (single-texture
+//! materials) or by f32 indices in the params (multi-texture materials —
+//! there is only one `texture_index` slot). The shader side that samples
+//! that buffer is not implemented yet.
+
+use crate::texture::{GpuTextureBuffer, Texture};
+use std::sync::Arc;
 
 pub trait GpuSerializable {
     /// Serialize the material into the GPU buffer, returning the index of the
@@ -72,6 +78,9 @@ pub(super) const GPU_NONE: u32 = u32::MAX;
 pub struct GpuMaterialBuffer {
     pub nodes: Vec<GpuMaterialNode>,
     pub params: Vec<u8>,
+    /// Texture nodes serialized alongside the material tree. Sampled material
+    /// parameters reference nodes here via `GpuMaterialNode::texture_index`.
+    pub textures: GpuTextureBuffer,
 }
 
 impl GpuMaterialBuffer {
@@ -82,6 +91,21 @@ impl GpuMaterialBuffer {
     /// Total byte size of the node buffer.
     pub fn node_bytes(&self) -> usize {
         self.nodes.len() * std::mem::size_of::<GpuMaterialNode>()
+    }
+
+    /// Returns (r, g, b, texture_index) for a material parameter texture.
+    ///
+    /// Constants bake to the flat buffer; sampled textures serialize into
+    /// `self.textures` and return their node index ([`GPU_TEX_NONE`] when the
+    /// texture has no GPU representation).
+    pub(super) fn gpu_color(&mut self, tex: &Arc<dyn Texture>) -> (f32, f32, f32, u32) {
+        match tex.as_constant() {
+            Some(c) => (c.x(), c.y(), c.z(), GPU_NONE),
+            None => {
+                let texture_index = tex.serialize_gpu(&mut self.textures);
+                (0.0, 0.0, 0.0, texture_index)
+            }
+        }
     }
 
     pub fn push_params(&mut self, params: &[f32]) {

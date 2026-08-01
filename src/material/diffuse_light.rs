@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
-    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, blackbody,
+    Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, Material,
 };
 use crate::pdf::PdfKind;
 use crate::texture::Texture;
@@ -23,26 +23,21 @@ use crate::vec3::{Color3, Direction3};
 /// Light emitting surface.
 #[derive(Clone)]
 pub struct DiffuseLightMaterial {
-    /// Emission color (radiance). Multiplied by texture if one is set.
-    pub emit: Color3,
-    /// Optional texture for spatial emission variation. CPU-only.
-    pub tex: Option<Arc<dyn Texture>>,
+    /// Emission color (radiance) as a texture for spatial variation.
+    pub emission: Arc<dyn Texture>,
 }
-
-use crate::material::Material;
 
 impl DiffuseLightMaterial {
     /// Create an emissive material from a solid color.
-    pub fn new(emit: Color3) -> Self {
-        Self { emit, tex: None }
+    pub fn new(emission: Color3) -> Self {
+        Self {
+            emission: Arc::new(crate::texture::SolidColor::new(emission)),
+        }
     }
 
     /// Create an emissive material from a texture.
     pub fn textured(tex: Arc<dyn Texture>) -> Self {
-        Self {
-            emit: blackbody(6500.0), // Default to white light
-            tex: Some(tex),
-        }
+        Self { emission: tex }
     }
 }
 
@@ -81,10 +76,7 @@ impl Bsdf for DiffuseLightMaterial {
     /// Returns the emission color if the hit is on the front face, zero otherwise.
     fn emitted(&self, _wo: Direction3, si: &SurfaceInteraction) -> Color3 {
         if si.front_face() {
-            self.tex
-                .as_ref()
-                .map(|t| t.value(&si.texture_coords()))
-                .unwrap_or(self.emit)
+            self.emission.value(&si.texture_coords())
         } else {
             Color3::ZERO
         }
@@ -98,7 +90,8 @@ impl Bsdf for DiffuseLightMaterial {
 
 impl GpuSerializable for DiffuseLightMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![self.emit.x(), self.emit.y(), self.emit.z()];
+        let (r, g, b, texture_index) = buf.gpu_color(&self.emission);
+        let params = vec![r, g, b];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {
@@ -106,7 +99,7 @@ impl GpuSerializable for DiffuseLightMaterial {
             param_offset,
             child_a: GPU_NONE,
             child_b: GPU_NONE,
-            texture_index: GPU_NONE,
+            texture_index,
         });
         buf.nodes.len() as u32 - 1
     }

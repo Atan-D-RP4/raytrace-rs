@@ -28,6 +28,9 @@
 - **[Tinybvh](https://github.com/jbikker/tinybvh) by Jacco Bikker
     - Tinybvh is a lightweight and efficient bounding volume hierarchy (BVH)
       implementation for ray tracing, suitable for real-time applications.
+- **[rust-path-tracer](https://github.com/pema99/rust-path-tracer)** by Pema.
+    - This is a simple path tracer implemented in Rust, providing a good
+      starting point for learning about ray tracing and path tracing concepts.
 
 # White Papers
 - **[Building an Orthonormal Basis, Revisited,](https://jcgt.org/published/0006/01/01/)** by Duff et al., JCGT 2017

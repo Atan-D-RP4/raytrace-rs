@@ -96,6 +96,7 @@ pub(super) fn fresnel_schlick(cos_theta: f32, r0: f32) -> f32 {
     r0 + (1.0 - r0) * (1.0 - cos_theta).powi(5)
 }
 
+/// Convert a blackbody temperature (Kelvin) to an RGB color approximation.
 pub(super) fn blackbody(temp: f32) -> Color3 {
     // Planck's law: spectral radiance of a blackbody at temperature T.
     // This is a simplified approximation for RGB color. For more accurate
@@ -142,8 +143,10 @@ pub enum BsdfScatter {
 /// Custom materials implement this and integrate via [`Material::Custom`].
 pub trait Bsdf: Send + Sync + GpuSerializable {
     /// Sample an outgoing direction. Returns `None` for pure emitters.
+    ///
     /// wo: Outgoing direction (surface → camera), world space.
     /// wi: Incoming direction (surface → light), world space.
+    /// next_dim: RNG closure for sampling the next dimension (e.g., u1, u2).
     fn scatter(
         &self,
         wo: Direction3,
@@ -152,28 +155,36 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     ) -> Option<BsdfScatter>;
 
     /// Evaluate the BSDF for an externally-sampled direction pair.
+    ///
     /// wo: Outgoing direction (surface → camera), world space.
     /// wi: Incoming direction (surface → light), world space.
+    ///
     /// Should be zero for delta materials, which cannot be evaluated over a distribution.
     fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3;
 
     /// Evaluate the material's sampling PDF for a given direction pair.
+    ///
     /// wo: Outgoing direction (surface → camera), world space.
     /// wi: Incoming direction (surface → light), world space.
+    ///
     /// Should be zero for delta materials, which cannot be evaluated over a distribution.
     fn pdf(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> f32;
 
     /// Returns the sampling PDF kind for MIS strategy selection.
+    ///
     ///  wo: Outgoing direction (surface → camera), world space.
     fn pdf_kind(&self, _wo: Direction3, _si: &SurfaceInteraction) -> Option<PdfKind> {
         None
     }
 
     /// Returns emitted light at the hit point. Default: no emission.
+    /// Emission is not a BSDF property, but this method is provided for
+    /// convenience in integrators that treat it as such (e.g., DiffuseLight).
+    ///
     /// `wo` is the outgoing direction (surface → camera), world space.
     /// Pass `Vec3::ZERO` as a sentinel when direction is unavailable (e.g., NEE).
-    /// Should be zero for non-emissive materials. Emission is not a BSDF property, but this method
-    /// is provided for convenience in integrators that treat it as such (e.g., DiffuseLight).
+    ///
+    /// Should be zero for non-emissive materials.
     fn emitted(&self, _wo: Direction3, _si: &SurfaceInteraction) -> Color3 {
         Color3::ZERO
     }
@@ -183,15 +194,14 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
         false
     }
 
-    /// Rough estimate of the directional-hemispherical reflectance at `wo`,
-    /// averaged across color channels. Returns a value in [0, 1]. Used by
-    /// layered/coated materials to approximate multi-bounce inter-reflection
-    /// without a full Monte Carlo random walk.
+    /// Rough estimate of the directional-hemispherical reflectance at `wo`, averaged across color
+    /// channels. Returns a value in [0, 1]. Used by layered/coated materials to approximate
+    /// multi-bounce inter-reflection without a full Monte Carlo random walk.
     ///
-    /// This is the integral over the hemisphere of `f(wo, wi) * |cos θ_i| dω_i`.
-    /// Each material overrides with its best bounded estimate — the default
-    /// of 1.0 is a safe upper bound.
+    /// This is the integral over the hemisphere of `f(wo, wi) * |cos θ_i| dω_i`. Each material
+    /// overrides with its best bounded estimate — the default of 1.0 is a safe upper bound.
     /// wo: Outgoing direction (surface → camera), world space.
+    ///
     /// Should be zero for delta materials, which cannot be evaluated over a distribution.
     fn reflectance_estimate(&self, _wo: Direction3, _si: &SurfaceInteraction) -> f32 {
         1.0
@@ -207,7 +217,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
     /// materials. Used by layered materials (Coated) to include the coating's
     /// distribution in MIS strategies, preventing eval/PDF mismatches that cause
     /// fireflies.
-    fn ggx_alpha(&self) -> Option<f32> {
+    fn ggx_alpha(&self, _si: &SurfaceInteraction) -> Option<f32> {
         None
     }
 }
@@ -479,22 +489,22 @@ impl Material {
 
     /// Coat this material with a clear-coat layer (thin dielectric).
     pub fn coated(self, coat: Material) -> Self {
-        // Extract IOR and tint from dielectric coat if possible.
+        // Extract IOR and tint from dielectric coat if possible. A textured
+        // tint has no constant color to bake into the coating layer, so fall
+        // back to white (no tint) in that case.
         let (coating_ior, coating_tint) = match &coat {
-            Material::Dielectric(d) => (d.ior, d.tint),
+            Material::Dielectric(d) => (d.ior, d.tint.as_constant().unwrap_or(Color3::ONE)),
             _ => (1.5, Color3::ONE),
         };
-        // Clamp coating tint to [0, 1] per component.
+        // CoatedMaterial::new clamps the tint to [0, 1] per component.
         // Values > 1 would amplify via powf (physically invalid Beer's law).
-        let coating_tint = coating_tint.clamp(Vec3::splat(0.), Vec3::splat(1.));
-
-        Material::Coated(CoatedMaterial {
-            substrate: Arc::new(self) as Arc<dyn Bsdf>,
-            coating: Arc::new(coat) as Arc<dyn Bsdf>,
+        Material::Coated(CoatedMaterial::new(
+            Arc::new(self) as Arc<dyn Bsdf>,
+            Arc::new(coat) as Arc<dyn Bsdf>,
             coating_ior,
             coating_tint,
-            thickness: 0.01,
-        })
+            0.01,
+        ))
     }
 
     /// Wrap a custom [`Bsdf`] implementation in a `Material`.
@@ -515,7 +525,7 @@ impl Material {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::texture::SolidColor;
+    use crate::texture::{CheckerTexture, SolidColor};
 
     /// Smoke test: GPU buffer generation for a flat material.
     #[test]
@@ -529,6 +539,8 @@ mod tests {
         );
         assert_eq!(buf.nodes[0].child_a, GPU_NONE);
         assert_eq!(buf.nodes[0].child_b, GPU_NONE);
+        // Constant color bakes into params; no texture reference.
+        assert_eq!(buf.nodes[0].texture_index, GPU_NONE);
         // 3 f32 params = 12 bytes
         assert_eq!(buf.params.len(), 12);
     }
@@ -538,7 +550,10 @@ mod tests {
     #[test]
     fn gpu_buffer_mix() {
         let mat = Material::from(LambertianMaterial::new(Color3::new(0.5, 0.3, 0.1))).mix(
-            Material::from(MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.0)),
+            Material::from(MetalMaterial::from_reflectance(
+                Color3::splat(0.9) * 0.1837,
+                0.0,
+            )),
             0.5,
         );
         let buf = mat.to_gpu_buffer();
@@ -568,13 +583,66 @@ mod tests {
         assert_eq!(coat.material_type, GpuMaterialType::Coated as u32);
         assert_eq!(coat.child_a, 0); // coating (dielectric)
         assert_eq!(coat.child_b, 1); // substrate (lambertian)
+        // Coated wire: [coating_ior, thickness, tint.rgb, tex(tint)] = 6 f32s.
+        // Children share the flat buffer: dielectric (4) + lambertian (3) +
+        // coated (6) = 13 f32s total.
+        assert_eq!(buf.params.len(), 52);
+        assert_eq!(coat.param_offset, 28);
+        let off = coat.param_offset as usize / 4;
+        let f = |i: usize| read_f32(&buf.params, i);
+        assert!((f(off) - 1.5).abs() < 1e-6); // coating ior from the dielectric
+        assert!((f(off + 1) - 0.01).abs() < 1e-6); // default thickness
+        assert!((f(off + 2) - 1.0).abs() < 1e-6); // white tint baked
+        assert!((f(off + 3) - 1.0).abs() < 1e-6);
+        assert!((f(off + 4) - 1.0).abs() < 1e-6);
+        assert_eq!(f(off + 5), -1.0); // no tint texture
+        assert!(buf.textures.nodes.is_empty());
+    }
+
+    /// Coated with a textured tint: the tint serializes as a Mapped node in the
+    /// texture buffer (index 0, zero color in the params, ref in slot 5).
+    #[test]
+    fn gpu_buffer_coated_textured() {
+        let mat = Material::from(CoatedMaterial::textured(
+            Arc::new(LambertianMaterial::new(Color3::new(0.7, 0.2, 0.2))) as Arc<dyn Bsdf>,
+            Arc::new(DielectricMaterial::new(1.5)) as Arc<dyn Bsdf>,
+            1.5,
+            CheckerTexture::with_scale(0.5, Color3::new(0.9, 0.1, 0.1), Color3::new(0.2, 0.8, 0.9)),
+            0.01,
+        ));
+        let buf = mat.to_gpu_buffer();
+        assert_eq!(buf.nodes.len(), 3);
+        let coat = &buf.nodes[2];
+        assert_eq!(coat.material_type, GpuMaterialType::Coated as u32);
+        assert_eq!(coat.texture_index, GPU_NONE); // texture refs ride in params
+        // Children share the flat buffer: dielectric (4) + lambertian (3) +
+        // coated (6) = 13 f32s total.
+        assert_eq!(buf.params.len(), 52);
+        assert_eq!(coat.param_offset, 28);
+        let off = coat.param_offset as usize / 4;
+        let f = |i: usize| read_f32(&buf.params, i);
+        assert!((f(off) - 1.5).abs() < 1e-6);
+        assert!((f(off + 1) - 0.01).abs() < 1e-6);
+        // Tint is sampled → zeros stay in the params.
+        assert_eq!(f(off + 2), 0.0);
+        assert_eq!(f(off + 3), 0.0);
+        assert_eq!(f(off + 4), 0.0);
+        assert_eq!(f(off + 5), 0.0); // Mapped node index 0
+        assert_eq!(buf.textures.nodes.len(), 1);
+        assert_eq!(
+            buf.textures.nodes[0].texture_type,
+            crate::texture::GpuTextureType::Mapped as u32
+        );
     }
 
     /// Nested composition: a mixed material that's also coated.
     #[test]
     fn gpu_buffer_nested() {
-        let inner = Material::from(LambertianMaterial::new(Color3::new(0.5, 0.5, 0.5))).mix(
-            Material::from(MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.5)),
+        let inner = Material::from(LambertianMaterial::new(Color3::splat(0.5))).mix(
+            Material::from(MetalMaterial::from_reflectance(
+                Color3::splat(0.9) * 0.1837,
+                0.5,
+            )),
             0.5,
         );
         let mat = inner.coated(DielectricMaterial::tinted(1.5, Color3::new(1.0, 0.8, 0.8)).into());
@@ -600,12 +668,12 @@ mod tests {
     #[test]
     fn gpu_buffer_all_types() {
         let materials: Vec<Material> = vec![
-            LambertianMaterial::new(Color3::new(0.5, 0.5, 0.5)).into(),
-            MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.0).into(),
+            LambertianMaterial::new(Color3::splat(0.5)).into(),
+            MetalMaterial::from_reflectance(Color3::splat(0.9) * 0.1837, 0.0).into(),
             DielectricMaterial::new(1.5).into(),
-            DiffuseLightMaterial::new(Color3::new(4.0, 4.0, 4.0)).into(),
-            IsotropicMaterial::new(Color3::new(0.5, 0.5, 0.5)).into(),
-            GlossyMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.3, 1.5).into(),
+            DiffuseLightMaterial::new(Color3::splat(4.0)).into(),
+            IsotropicMaterial::new(Color3::splat(0.5)).into(),
+            GlossyMaterial::new(Color3::splat(0.9), 0.3, 1.5).into(),
         ];
         for mat in &materials {
             let buf = mat.to_gpu_buffer();
@@ -613,20 +681,240 @@ mod tests {
         }
     }
 
-    /// Lambertian with a texture still produces a valid GPU buffer (uses
-    /// fallback albedo).
+    /// Reads the first 3 f32s of a params buffer as a [`Color3`].
+    fn read_color(params: &[u8]) -> Color3 {
+        let vals: [f32; 3] =
+            unsafe { std::ptr::read_unaligned(params.as_ptr() as *const [f32; 3]) };
+        Color3((vals[0], vals[1], vals[2]).into())
+    }
+
+    /// Reads a single f32 at float offset `i` of a params buffer.
+    fn read_f32(params: &[u8], i: usize) -> f32 {
+        unsafe { std::ptr::read_unaligned(params.as_ptr().add(i * 4) as *const f32) }
+    }
+
+    /// Lambertian with a texture still produces a valid GPU buffer.
+    ///
+    /// A constant texture (SolidColor) bakes its color into the flat params;
+    /// a sampled texture serializes into the texture buffer and is referenced
+    /// by `texture_index` (zero color stays in the material params).
     #[test]
     fn gpu_buffer_lambertian_textured() {
-        let mat = LambertianMaterial::with_texture(
-            Color3::new(0.5, 0.5, 0.5),
-            Arc::new(SolidColor::new(Color3::new(0.7, 0.3, 0.1))),
+        // Constant texture: the color bakes into the params buffer.
+        let constant = Material::from(LambertianMaterial::textured(Arc::new(SolidColor::new(
+            Color3::new(0.7, 0.3, 0.1),
+        ))));
+        let buf = constant.to_gpu_buffer();
+        assert_eq!(buf.nodes.len(), 1);
+        assert_eq!(buf.params.len(), 12);
+        assert_eq!(buf.nodes[0].texture_index, GPU_NONE);
+        let baked = read_color(&buf.params);
+        assert!((baked.x() - 0.7).abs() < 1e-6);
+        assert!((baked.y() - 0.3).abs() < 1e-6);
+        assert!((baked.z() - 0.1).abs() < 1e-6);
+
+        // Sampled texture: `with_scale` wraps the CheckerTexture in a
+        // MappedTexture, which serializes as a Mapped node in the texture
+        // buffer (the CheckerTexture child itself has no GPU representation
+        // yet — it is evaluated in the shader). The material references the
+        // node by index; no constant is baked into the params.
+        let sampled = Material::from(LambertianMaterial::textured(CheckerTexture::with_scale(
+            1.0,
+            Color3::new(0.7, 0.3, 0.1),
+            Color3::splat(0.2),
+        )));
+        let buf = sampled.to_gpu_buffer();
+        assert_eq!(buf.params.len(), 12);
+        assert_eq!(read_color(&buf.params), Color3::ZERO);
+        assert_eq!(buf.nodes[0].texture_index, 0); // Mapped node in the texture buffer
+        assert_eq!(buf.textures.nodes.len(), 1);
+        assert_eq!(
+            buf.textures.nodes[0].texture_type,
+            crate::texture::GpuTextureType::Mapped as u32
         );
-        let mat = Material::from(mat);
+        assert_eq!(buf.textures.nodes[0].child_a, GPU_NONE);
+    }
+
+    /// Glossy with baked constants serializes as 7 f32 params
+    /// `[albedo.r, albedo.g, albedo.b, roughness, ior, tex(albedo), tex(roughness)]`
+    /// and no texture references (both ride as `-1.0`).
+    #[test]
+    fn gpu_buffer_glossy() {
+        let mat = Material::from(GlossyMaterial::new(Color3::new(0.7, 0.3, 0.1), 0.2, 1.5));
         let buf = mat.to_gpu_buffer();
         assert_eq!(buf.nodes.len(), 1);
-        // The GPU buffer should use the fallback albedo, not the texture's
-        // color.
-        assert_eq!(buf.params.len(), 12);
+        assert_eq!(buf.nodes[0].material_type, GpuMaterialType::Glossy as u32);
+        assert_eq!(buf.nodes[0].child_a, GPU_NONE);
+        assert_eq!(buf.nodes[0].child_b, GPU_NONE);
+        assert_eq!(buf.nodes[0].texture_index, GPU_NONE);
+        // 7 f32 params = 28 bytes
+        assert_eq!(buf.params.len(), 28);
+        let f = |i: usize| read_f32(&buf.params, i);
+        // Baked constants: albedo, roughness (channel-0), ior.
+        assert!((f(0) - 0.7).abs() < 1e-6);
+        assert!((f(1) - 0.3).abs() < 1e-6);
+        assert!((f(2) - 0.1).abs() < 1e-6);
+        assert!((f(3) - 0.2).abs() < 1e-6);
+        assert!((f(4) - 1.5).abs() < 1e-6);
+        // Both textures baked → no texture references.
+        assert_eq!(f(5), -1.0);
+        assert_eq!(f(6), -1.0);
+        assert!(buf.textures.nodes.is_empty());
+    }
+
+    /// Glossy with a sampled albedo texture and constant roughness: the albedo
+    /// serializes as a Mapped node in the texture buffer (index 0, zero color
+    /// in the params), the roughness bakes as `(0.3, 0.3, 0.3)` with no texture
+    /// reference.
+    #[test]
+    fn gpu_buffer_glossy_textured() {
+        let mat = Material::from(GlossyMaterial::textured(
+            CheckerTexture::with_scale(0.5, Color3::new(0.9, 0.1, 0.1), Color3::new(0.2, 0.8, 0.9)),
+            Arc::new(SolidColor::new(Color3::splat(0.3))),
+            1.5,
+        ));
+        let buf = mat.to_gpu_buffer();
+        assert_eq!(buf.nodes.len(), 1);
+        assert_eq!(buf.nodes[0].material_type, GpuMaterialType::Glossy as u32);
+        assert_eq!(buf.nodes[0].texture_index, GPU_NONE);
+        assert_eq!(buf.params.len(), 28);
+        let f = |i: usize| read_f32(&buf.params, i);
+        // Albedo is a sampled texture → zero color stays in the params.
+        assert_eq!(read_color(&buf.params), Color3::ZERO);
+        // Roughness is a constant → channel-0 scalar bakes.
+        assert!((f(3) - 0.3).abs() < 1e-6);
+        // IOR bakes.
+        assert!((f(4) - 1.5).abs() < 1e-6);
+        // Texture refs: albedo → Mapped node index 0; roughness → -1.0 (baked).
+        assert_eq!(f(5), 0.0);
+        assert_eq!(f(6), -1.0);
+        // Exactly one texture node: the Mapped wrapper for the checker.
+        assert_eq!(buf.textures.nodes.len(), 1);
+        assert_eq!(
+            buf.textures.nodes[0].texture_type,
+            crate::texture::GpuTextureType::Mapped as u32
+        );
+    }
+
+    /// Rough dielectric with baked constants serializes as 7 f32 params
+    /// `[tint.r, tint.g, tint.b, ior, roughness, tex(tint), tex(roughness)]`
+    /// and no texture references (both ride as `-1.0`).
+    #[test]
+    fn gpu_buffer_rough_dielectric() {
+        let mat = Material::from(RoughDielectricMaterial::new(1.5, 0.3));
+        let buf = mat.to_gpu_buffer();
+        assert_eq!(buf.nodes.len(), 1);
+        assert_eq!(
+            buf.nodes[0].material_type,
+            GpuMaterialType::RoughDielectric as u32
+        );
+        assert_eq!(buf.nodes[0].child_a, GPU_NONE);
+        assert_eq!(buf.nodes[0].child_b, GPU_NONE);
+        assert_eq!(buf.nodes[0].texture_index, GPU_NONE);
+        // 7 f32 params = 28 bytes
+        assert_eq!(buf.params.len(), 28);
+        let f = |i: usize| read_f32(&buf.params, i);
+        // Baked constants: tint (white), ior, roughness (channel-0).
+        assert!((f(0) - 1.0).abs() < 1e-6);
+        assert!((f(1) - 1.0).abs() < 1e-6);
+        assert!((f(2) - 1.0).abs() < 1e-6);
+        assert!((f(3) - 1.5).abs() < 1e-6);
+        assert!((f(4) - 0.3).abs() < 1e-6);
+        // Both textures baked → no texture references.
+        assert_eq!(f(5), -1.0);
+        assert_eq!(f(6), -1.0);
+        assert!(buf.textures.nodes.is_empty());
+    }
+
+    /// Rough dielectric with a sampled tint texture and constant roughness: the
+    /// tint serializes as a Mapped node in the texture buffer (index 0, zero
+    /// color in the params), the roughness bakes with no texture reference.
+    #[test]
+    fn gpu_buffer_rough_dielectric_textured() {
+        let mat = Material::from(RoughDielectricMaterial {
+            ior: 1.5,
+            roughness: Arc::new(SolidColor::new(Color3::splat(0.3))),
+            tint: CheckerTexture::with_scale(
+                0.5,
+                Color3::new(0.9, 0.1, 0.1),
+                Color3::new(0.2, 0.8, 0.9),
+            ),
+        });
+        let buf = mat.to_gpu_buffer();
+        assert_eq!(buf.nodes.len(), 1);
+        assert_eq!(
+            buf.nodes[0].material_type,
+            GpuMaterialType::RoughDielectric as u32
+        );
+        assert_eq!(buf.nodes[0].texture_index, GPU_NONE);
+        assert_eq!(buf.params.len(), 28);
+        let f = |i: usize| read_f32(&buf.params, i);
+        // Tint is a sampled texture → zero color stays in the params.
+        assert_eq!(read_color(&buf.params), Color3::ZERO);
+        // IOR bakes.
+        assert!((f(3) - 1.5).abs() < 1e-6);
+        // Roughness is a constant → channel-0 scalar bakes.
+        assert!((f(4) - 0.3).abs() < 1e-6);
+        // Texture refs: tint → Mapped node index 0; roughness → -1.0 (baked).
+        assert_eq!(f(5), 0.0);
+        assert_eq!(f(6), -1.0);
+        // Exactly one texture node: the Mapped wrapper for the checker.
+        assert_eq!(buf.textures.nodes.len(), 1);
+        assert_eq!(
+            buf.textures.nodes[0].texture_type,
+            crate::texture::GpuTextureType::Mapped as u32
+        );
+    }
+
+    /// Dielectric with a baked tint serializes as 4 f32 params
+    /// `[tint.r, tint.g, tint.b, ior]`; the tint bakes (no texture ref).
+    #[test]
+    fn gpu_buffer_dielectric() {
+        let mat = Material::from(DielectricMaterial::tinted(1.5, Color3::new(0.8, 0.5, 0.2)));
+        let buf = mat.to_gpu_buffer();
+        assert_eq!(buf.nodes.len(), 1);
+        assert_eq!(
+            buf.nodes[0].material_type,
+            GpuMaterialType::Dielectric as u32
+        );
+        assert_eq!(buf.nodes[0].texture_index, GPU_NONE);
+        // 4 f32 params = 16 bytes
+        assert_eq!(buf.params.len(), 16);
+        let f = |i: usize| read_f32(&buf.params, i);
+        assert!((f(0) - 0.8).abs() < 1e-6);
+        assert!((f(1) - 0.5).abs() < 1e-6);
+        assert!((f(2) - 0.2).abs() < 1e-6);
+        assert!((f(3) - 1.5).abs() < 1e-6);
+        assert!(buf.textures.nodes.is_empty());
+    }
+
+    /// Dielectric with a textured tint: the tint serializes as a Mapped node in
+    /// the texture buffer (index 0, zero color in the params) referenced via
+    /// `texture_index`.
+    #[test]
+    fn gpu_buffer_dielectric_textured() {
+        let mat = Material::from(DielectricMaterial::textured(
+            1.5,
+            CheckerTexture::with_scale(0.5, Color3::new(0.9, 0.1, 0.1), Color3::new(0.2, 0.8, 0.9)),
+        ));
+        let buf = mat.to_gpu_buffer();
+        assert_eq!(buf.nodes.len(), 1);
+        assert_eq!(
+            buf.nodes[0].material_type,
+            GpuMaterialType::Dielectric as u32
+        );
+        assert_eq!(buf.nodes[0].texture_index, 0); // Mapped node in the texture buffer
+        assert_eq!(buf.params.len(), 16);
+        // Tint is sampled → zeros stay in the params; ior bakes.
+        assert_eq!(read_f32(&buf.params, 0), 0.0);
+        assert_eq!(read_f32(&buf.params, 1), 0.0);
+        assert_eq!(read_f32(&buf.params, 2), 0.0);
+        assert!((read_f32(&buf.params, 3) - 1.5).abs() < 1e-6);
+        assert_eq!(buf.textures.nodes.len(), 1);
+        assert_eq!(
+            buf.textures.nodes[0].texture_type,
+            crate::texture::GpuTextureType::Mapped as u32
+        );
     }
 
     /// Custom material returns empty GPU buffer (no GPU representation).

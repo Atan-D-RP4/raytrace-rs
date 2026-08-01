@@ -10,6 +10,8 @@
 //!   times `|wi·H|·|wo·H|`, following Walter et al. Eq. 17.
 //! PDF: reflection `D(ω_h)·|ω_h·n| / (4·|wo·ω_h|)`, transmission Eq. 33.
 
+use std::sync::Arc;
+
 use crate::hittable::SurfaceInteraction;
 use crate::material::gpu::{
     GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, GpuSerializable,
@@ -20,6 +22,7 @@ use crate::material::{
 };
 use crate::onb::Onb;
 use crate::pdf::PdfKind;
+use crate::texture::{SolidColor, Texture};
 use crate::vec3::{Color3, Direction3};
 
 /// Rough dielectric material with microfacet-based reflection and refraction.
@@ -27,12 +30,11 @@ use crate::vec3::{Color3, Direction3};
 pub struct RoughDielectricMaterial {
     /// Index of refraction (1.0 = air, 1.33 = water, 1.5 = glass, 2.42 = diamond).
     pub ior: f32,
-    /// Roughness of the surface. Higher values produce more diffuse reflection and refraction.
-    pub roughness: f32,
-    /// Optional tint color for colored glass. Pure white means no tint.
-    pub tint: Color3,
-    /// Precomputed Fresnel reflectance at normal incidence.
-    pub r0: f32,
+    /// GGX roughness; the alpha is `roughness²` (0 = mirror, 1 = fully rough).
+    /// Sampled as channel 0 of the texture (scalar convention).
+    pub roughness: Arc<dyn Texture>,
+    /// Tint color for colored glass, sampled as a texture. Pure white means no tint.
+    pub tint: Arc<dyn Texture>,
 }
 
 impl Bsdf for RoughDielectricMaterial {
@@ -57,20 +59,23 @@ impl Bsdf for RoughDielectricMaterial {
             let u = next_dim();
             // TIR (ri·sinθ > 1) or stochastic Fresnel reflection → reflect,
             // otherwise refract through the surface.
-            let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > u {
+            let direction = if ri * sin_theta > 1.0
+                || fresnel_schlick(cos_theta, super::fresnel_r0(self.ior)) > u
+            {
                 (-wo).reflect(si.shading_normal().into_inner())
             } else {
                 (-wo).refract(si.shading_normal().into_inner(), ri)
             };
 
+            let tint = self.tint.value(&si.texture_coords());
             Some(BsdfScatter::Delta {
                 wi: direction,
-                f_cos: self.tint,
+                f_cos: tint,
                 eta: Some(ri),
             })
         } else {
             // ── Non-delta (rough) path: GGX-microfacet importance sampling ──
-            let alpha = self.ggx_alpha().unwrap_or(0.001);
+            let alpha = self.ggx_alpha(si).unwrap_or(0.001);
 
             // Sample a microfacet normal (half-vector) from the GGX distribution.
             let h_local = ggx_sample_h(alpha, next_dim(), next_dim());
@@ -79,7 +84,7 @@ impl Bsdf for RoughDielectricMaterial {
             let n = si.shading_normal().into_inner();
 
             let cos_h_o = wo.dot(h_world.into_inner()).max(0.0);
-            let fresnel_val = fresnel_schlick(cos_h_o, self.r0);
+            let fresnel_val = fresnel_schlick(cos_h_o, super::fresnel_r0(self.ior));
             // Split stochastically: reflection (Fresnel) vs transmission (1-Fresnel).
             let is_reflection = next_dim() < fresnel_val;
 
@@ -113,7 +118,7 @@ impl Bsdf for RoughDielectricMaterial {
         if self.is_delta() {
             return Color3::ZERO;
         }
-        let alpha = self.ggx_alpha().unwrap_or(0.001);
+        let alpha = self.ggx_alpha(si).unwrap_or(0.001);
         let n = si.shading_normal().into_inner();
         let cos_o = wo.dot(n).abs();
         let cos_i = wi.dot(n).abs();
@@ -122,8 +127,10 @@ impl Bsdf for RoughDielectricMaterial {
             return Color3::ZERO;
         }
 
-        let g = geometry_schlick_ggx(cos_o, self.roughness)
-            * geometry_schlick_ggx(cos_i, self.roughness);
+        let tint = self.tint.value(&si.texture_coords());
+        let rough = self.roughness.value(&si.texture_coords()).x();
+
+        let g = geometry_schlick_ggx(cos_o, rough) * geometry_schlick_ggx(cos_i, rough);
 
         // Check if (wo, wi) are on the same side of the surface → reflection, else transmission.
         if wo.dot(n) * wi.dot(n) > 0.0 {
@@ -137,10 +144,10 @@ impl Bsdf for RoughDielectricMaterial {
             }
 
             let d = ggx_d(cos_h_n, alpha);
-            let f = fresnel_schlick(cos_h_o, self.r0);
+            let f = fresnel_schlick(cos_h_o, super::fresnel_r0(self.ior));
 
             // f_r × |cosθ_i| = F·D·G / (4·cosθ_o)
-            self.tint * f * d * g / (4.0 * cos_o).max(1e-6)
+            tint * f * d * g / (4.0 * cos_o).max(1e-6)
         } else {
             // ── Transmission: microfacet BTDF × cos_i (Walter et al. 2007, Eq. 17) ──
             let ri = if si.front_face() {
@@ -158,7 +165,7 @@ impl Bsdf for RoughDielectricMaterial {
             }
 
             let d = ggx_d(cos_h_n, alpha);
-            let f = fresnel_schlick(cos_h_o, self.r0);
+            let f = fresnel_schlick(cos_h_o, super::fresnel_r0(self.ior));
 
             // η_o = IOR of the medium containing wo, η_i = IOR of the medium containing wi
             let (eta_o, eta_i) = if si.front_face() {
@@ -171,7 +178,7 @@ impl Bsdf for RoughDielectricMaterial {
 
             // f_t × |cosθ_i| =
             //   |wi·H|·|wo·H| · D·G·(1-F)·η_i² / [cosθ_o · (η_o·|wo·H| + η_i·|wi·H|)²]
-            self.tint * (1.0 - f) * d * g * cos_h_i * cos_h_o * eta_i * eta_i
+            tint * (1.0 - f) * d * g * cos_h_i * cos_h_o * eta_i * eta_i
                 / (cos_o * denom * denom).max(1e-6)
         }
     }
@@ -180,7 +187,7 @@ impl Bsdf for RoughDielectricMaterial {
         if self.is_delta() {
             return 0.0;
         }
-        let alpha = self.ggx_alpha().unwrap_or(0.001);
+        let alpha = self.ggx_alpha(si).unwrap_or(0.001);
         let n = si.shading_normal().into_inner();
 
         // Same-side → reflection PDF, opposite-side → transmission PDF
@@ -229,7 +236,7 @@ impl Bsdf for RoughDielectricMaterial {
         if self.is_delta() {
             None
         } else {
-            let alpha = self.ggx_alpha().unwrap_or(0.001);
+            let alpha = self.ggx_alpha(si).unwrap_or(0.001);
             Some(PdfKind::Ggx {
                 wo,
                 normal: si.shading_normal(),
@@ -243,7 +250,7 @@ impl Bsdf for RoughDielectricMaterial {
     /// transmission dominates at grazing (1-f), so `max(f, 1-f)` is a cheap upper bound.
     fn reflectance_estimate(&self, wo: Direction3, si: &SurfaceInteraction) -> f32 {
         let cos_theta = wo.dot(si.shading_normal().into_inner()).abs();
-        let f = fresnel_schlick(cos_theta, self.r0);
+        let f = fresnel_schlick(cos_theta, super::fresnel_r0(self.ior));
         f.max(1. - f)
     }
 
@@ -251,16 +258,21 @@ impl Bsdf for RoughDielectricMaterial {
     /// from perfect mirrors — use a single delta direction (Snell + Fresnel) with
     /// no microfacet spread.
     fn is_delta(&self) -> bool {
-        self.roughness < MIRROR_THRESHOLD
+        if let Some(roughness) = self.roughness.as_constant() {
+            roughness.x() < MIRROR_THRESHOLD
+        } else {
+            false
+        }
     }
 
     /// Convert perceptual roughness to GGX alpha = roughness². Returns `None`
     /// for delta surfaces (no GGX lobe to sample).
-    fn ggx_alpha(&self) -> Option<f32> {
+    fn ggx_alpha(&self, si: &SurfaceInteraction) -> Option<f32> {
         if self.is_delta() {
             None
         } else {
-            Some((self.roughness * self.roughness).clamp(0.001, 1.0))
+            let roughness = self.roughness.value(&si.texture_coords()).x();
+            Some((roughness * roughness).clamp(0.001, 1.0))
         }
     }
 }
@@ -270,9 +282,8 @@ impl RoughDielectricMaterial {
     pub fn new(ior: f32, roughness: f32) -> Self {
         Self {
             ior,
-            roughness,
-            tint: Color3::ONE,
-            r0: super::fresnel_r0(ior),
+            roughness: Arc::new(SolidColor::new(Color3::splat(roughness))),
+            tint: Arc::new(SolidColor::new(Color3::ONE)),
         }
     }
 
@@ -280,9 +291,8 @@ impl RoughDielectricMaterial {
     pub fn tinted(ior: f32, roughness: f32, tint: Color3) -> Self {
         Self {
             ior,
-            roughness,
-            tint,
-            r0: super::fresnel_r0(ior),
+            roughness: Arc::new(SolidColor::new(Color3::splat(roughness))),
+            tint: Arc::new(SolidColor::new(tint)),
         }
     }
 }
@@ -295,22 +305,25 @@ impl From<RoughDielectricMaterial> for Material {
 
 impl GpuSerializable for RoughDielectricMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![
-            self.ior,
-            self.roughness,
-            self.tint.x(),
-            self.tint.y(),
-            self.tint.z(),
-        ];
+        let index = buf.nodes.len() as u32;
         let param_offset = buf.params.len() as u32;
-        buf.push_params(&params);
+
+        let (tr, tg, tb, tint_tex) = buf.gpu_color(&self.tint);
+        let (rr, _rg, _rb, rough_tex) = buf.gpu_color(&self.roughness); // channel-0 scalar
+        buf.push_params(&[tr, tg, tb, self.ior, rr]);
+
+        // Texture references ride after the baked colors. GPU_NONE (u32::MAX)
+        // cannot round-trip through f32, so use −1.0 as the "no texture" sentinel.
+        let tex = |i: u32| if i == GPU_NONE { -1.0 } else { i as f32 };
+        buf.push_params(&[tex(tint_tex), tex(rough_tex)]);
+
         buf.nodes.push(GpuMaterialNode {
             material_type: GpuMaterialType::RoughDielectric as u32,
             param_offset,
             child_a: GPU_NONE,
             child_b: GPU_NONE,
-            texture_index: GPU_NONE,
+            texture_index: GPU_NONE, // refs ride in params for multi-texture materials
         });
-        buf.nodes.len() as u32 - 1
+        index
     }
 }

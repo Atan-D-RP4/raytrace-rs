@@ -13,7 +13,7 @@ use crate::vec3::{Direction3, Point3};
 
 mod dispatch;
 pub mod dual;
-mod expr;
+pub mod expr;
 mod impls;
 #[cfg(test)]
 mod tests;

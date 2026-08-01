@@ -16,11 +16,14 @@
 //! not over a distribution. The integrator must skip MIS weighting and use the
 //! sampled direction directly.
 
+use std::sync::Arc;
+
 use crate::hittable::SurfaceInteraction;
 use crate::material::fresnel_schlick;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType};
 use crate::pdf::PdfKind;
+use crate::texture::{SolidColor, Texture};
 use crate::vec3::{Color3, Direction3};
 
 use crate::material::Material;
@@ -30,10 +33,8 @@ use crate::material::Material;
 pub struct DielectricMaterial {
     /// Index of refraction (1.0 = air, 1.33 = water, 1.5 = glass, 2.42 = diamond).
     pub ior: f32,
-    /// Optional tint color for colored glass. Pure white means no tint.
-    pub tint: Color3,
-    /// Precomputed Fresnel reflectance at normal incidence.
-    pub r0: f32,
+    /// Tint color for colored glass, sampled as a texture. Pure white means no tint.
+    pub tint: Arc<dyn Texture>,
 }
 
 impl Bsdf for DielectricMaterial {
@@ -59,16 +60,19 @@ impl Bsdf for DielectricMaterial {
 
         // Use Fresnel's equations to determine the probability of reflection vs refraction.
         let u = next_dim();
-        let direction = if ri * sin_theta > 1.0 || fresnel_schlick(cos_theta, self.r0) > u {
+        let direction = if ri * sin_theta > 1.0
+            || fresnel_schlick(cos_theta, super::fresnel_r0(self.ior)) > u
+        {
             (-wo).reflect(si.shading_normal().into_inner())
         } else {
             (-wo).refract(si.shading_normal().into_inner(), ri)
         };
 
         // Return the chosen direction with unit attenuation (delta material — all energy goes one way).
+        let tint = self.tint.value(&si.texture_coords());
         Some(BsdfScatter::Delta {
             wi: direction,
-            f_cos: self.tint,
+            f_cos: tint,
             eta: Some(ri),
         })
     }
@@ -95,7 +99,7 @@ impl Bsdf for DielectricMaterial {
         // Only the reflective fraction of the dielectric is returned to the
         // coating; transmitted light goes into the substrate and doesn't
         // contribute to the inter-reflection series.
-        fresnel_schlick(cos_theta, self.r0)
+        fresnel_schlick(cos_theta, super::fresnel_r0(self.ior))
     }
 
     /// Delta material
@@ -109,8 +113,7 @@ impl DielectricMaterial {
     pub fn new(ior: f32) -> Self {
         Self {
             ior,
-            tint: Color3::ONE,
-            r0: super::fresnel_r0(ior),
+            tint: Arc::new(SolidColor::new(Color3::ONE)),
         }
     }
 
@@ -118,9 +121,13 @@ impl DielectricMaterial {
     pub fn tinted(ior: f32, tint: Color3) -> Self {
         Self {
             ior,
-            tint,
-            r0: super::fresnel_r0(ior),
+            tint: Arc::new(SolidColor::new(tint)),
         }
+    }
+
+    /// Create a dielectric with a textured tint (spatially varying colored glass).
+    pub fn textured(ior: f32, tint: Arc<dyn Texture>) -> Self {
+        Self { ior, tint }
     }
 }
 
@@ -132,7 +139,8 @@ impl From<DielectricMaterial> for Material {
 
 impl GpuSerializable for DielectricMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![self.ior];
+        let (r, g, b, texture_index) = buf.gpu_color(&self.tint);
+        let params = vec![r, g, b, self.ior];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {
@@ -140,7 +148,7 @@ impl GpuSerializable for DielectricMaterial {
             param_offset,
             child_a: GPU_NONE,
             child_b: GPU_NONE,
-            texture_index: GPU_NONE,
+            texture_index,
         });
         buf.nodes.len() as u32 - 1
     }

@@ -9,6 +9,9 @@
 //! (populated at scene upload time). Procedural textures (Noise) are evaluated
 //! in the shader using uploaded parameter buffers.
 
+use crate::texture::TextureWrap;
+use image::Rgba32FImage;
+
 /// Sentinel value indicating a texture has no GPU representation.
 pub const GPU_TEX_NONE: u32 = u32::MAX;
 
@@ -23,6 +26,8 @@ pub enum GpuTextureType {
     Checker = 1,
     /// Procedural Perlin noise texture.
     Noise = 2,
+    /// Texture with 3D mapping → UV generation → 2D mapping.
+    Mapped = 3,
 }
 
 /// A texture node in the GPU buffer.
@@ -51,6 +56,18 @@ pub struct GpuTextureNode {
     pub sampler_index: u32,
 }
 
+/// GPU representation of an image texture's mip chain and sampler state.
+#[derive(Debug, Clone)]
+pub struct ImagePayload {
+    pub mips: Vec<Rgba32FImage>,
+    /// Horizontal addressing mode — mirrors the CPU sampler convention
+    /// ([`TextureWrap`]) so the GPU samples identically.
+    pub wrap_u: TextureWrap,
+    /// Vertical addressing mode — mirrors the CPU sampler convention
+    /// ([`TextureWrap`]) so the GPU samples identically.
+    pub wrap_v: TextureWrap,
+}
+
 /// GPU buffer with texture nodes and packed parameters.
 ///
 /// Flattened representation of a texture tree suitable for upload to GPU
@@ -64,6 +81,7 @@ pub struct GpuTextureBuffer {
     /// Packed f32 parameters for all nodes. Each node's `param_offset`
     /// points into this buffer.
     pub params: Vec<u8>,
+    pub images: Vec<ImagePayload>,
 }
 
 impl GpuTextureBuffer {

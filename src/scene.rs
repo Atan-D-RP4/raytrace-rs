@@ -311,7 +311,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(0., 150., 145.),
             50.,
-            MetalMaterial::new(Color3::new(0.8, 0.8, 0.9), 1.0),
+            MetalMaterial::from_reflectance(Color3::new(0.8, 0.8, 0.9) * 0.1837, 1.0),
         );
 
         scene.objects.push(Arc::new(ConstantMedium::new_albedo(
@@ -340,14 +340,14 @@ impl Scene {
         scene.add_sphere(
             Point3::new(400., 200., 400.),
             100.,
-            LambertianMaterial::with_texture(Color3::ZERO, emat),
+            LambertianMaterial::textured(emat),
         );
 
         let pertext: Arc<dyn Texture> = NoiseTexture::with_scale(0.7);
         scene.add_sphere(
             Point3::new(220., 280., 300.),
             80.,
-            LambertianMaterial::with_texture(Color3::ZERO, pertext),
+            LambertianMaterial::textured(pertext),
         );
 
         let white: Material = LambertianMaterial::new(Color3::new(0.73, 0.73, 0.73)).into();
@@ -492,7 +492,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(348., 400., 278.),
             40.,
-            MetalMaterial::with_ior(Color3::new(0.8, 0.8, 0.9), 0.3, 20.0),
+            MetalMaterial::from_reflectance(Color3::new(0.8, 0.8, 0.9) * 0.8190, 0.3),
         );
         scene.add_sphere(
             Point3::new(200., 350., 200.),
@@ -500,7 +500,7 @@ impl Scene {
             // Deeply tinted dielectric to better visualize the caustics and light transport through the box.
             // Values must be <= 1.0 for energy conservation (no light amplification).
             // DielectricMaterial::tinted(1.5, Color3::new(0.8, 0.8, 1.0)),
-            MetalMaterial::with_ior(Color3::new(0.8, 0.8, 0.9), 0.1, 50.0),
+            MetalMaterial::from_reflectance(Color3::new(0.8, 0.8, 0.9) * 0.9231, 0.1),
         );
 
         scene.config.samples_per_pixel = 200;
@@ -570,13 +570,10 @@ impl Scene {
         let mut scene = Self::new().with_env_map(Arc::new(EnvironmentMap::new(
             image::open("./kiara_1_dawn_4k.hdr").unwrap().into(),
         )));
-        let material: Material = LambertianMaterial::with_texture(
-            Color3::new(0.1, 0.2, 0.5),
-            Arc::new(CheckerTexture::new(
-                Arc::new(SolidColor::new(Color3::new(0.1, 0.2, 0.5))),
-                Arc::new(SolidColor::new(Color3::new(0.9, 0.9, 0.9))),
-            )),
-        )
+        let material: Material = LambertianMaterial::textured(Arc::new(CheckerTexture::new(
+            Arc::new(SolidColor::new(Color3::new(0.1, 0.2, 0.5))),
+            Arc::new(SolidColor::new(Color3::new(0.9, 0.9, 0.9))),
+        )))
         .into();
 
         scene.config.aspect_ratio = 1.0;
@@ -871,12 +868,12 @@ impl Scene {
         scene.add_sphere(
             Point3::new(0., -1000., 0.),
             1000.,
-            LambertianMaterial::with_texture(Color3::ZERO, perlin_tex.clone()),
+            LambertianMaterial::textured(perlin_tex.clone()),
         );
         scene.add_sphere(
             Point3::new(0., 2., 0.),
             2.,
-            LambertianMaterial::with_texture(Color3::ZERO, perlin_tex),
+            LambertianMaterial::textured(perlin_tex),
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
@@ -899,7 +896,7 @@ impl Scene {
 
         let image_tex: Arc<dyn Texture> = ImageTexture::load_arc("./earthmap.png")
             .expect("Failed to load earthmap.png as Texture");
-        let checker: Material = LambertianMaterial::with_texture(Color3::ZERO, image_tex).into();
+        let checker: Material = LambertianMaterial::textured(image_tex).into();
 
         scene.add_sphere(Point3::ZERO, 2., checker);
 
@@ -921,14 +918,11 @@ impl Scene {
     pub fn checkered_spheres() -> Self {
         let mut scene = Self::new();
 
-        let checker = LambertianMaterial::with_texture(
-            Color3::ZERO,
-            CheckerTexture::with_scale(
-                0.32,
-                Color3::new(0.2, 0.4, 0.1),
-                Color3::new(0.9, 0.9, 0.9),
-            ),
-        );
+        let checker = LambertianMaterial::textured(CheckerTexture::with_scale(
+            0.32,
+            Color3::new(0.2, 0.4, 0.1),
+            Color3::new(0.9, 0.9, 0.9),
+        ));
         scene.add_sphere(Point3::new(0., -10., 0.), 10., checker.clone());
         scene.add_sphere(Point3::new(0., 10., 0.), 10., checker);
 
@@ -954,14 +948,11 @@ impl Scene {
             image::open("./kiara_1_dawn_4k.hdr").unwrap().into(),
         )));
 
-        let ground_material: Material = LambertianMaterial::with_texture(
-            Color3::ZERO,
-            CheckerTexture::with_scale(
-                0.32,
-                Color3::new(0.2, 0.4, 0.1),
-                Color3::new(0.9, 0.9, 0.9),
-            ),
-        )
+        let ground_material: Material = LambertianMaterial::textured(CheckerTexture::with_scale(
+            0.32,
+            Color3::new(0.2, 0.4, 0.1),
+            Color3::new(0.9, 0.9, 0.9),
+        ))
         .into();
         let ground_material = ground_material
             .coated(DielectricMaterial::tinted(1.2, Color3::new(0.8, 0.8, 1.0)).into());
@@ -984,10 +975,9 @@ impl Scene {
                     let (material, radius) = match world_seed % 7 {
                         0 => (LambertianMaterial::new(Color3(rand_albedo())).into(), 0.15),
                         1 => (
-                            Material::from(MetalMaterial::with_ior(
-                                Color3(metal_color()),
+                            Material::from(MetalMaterial::from_reflectance(
+                                Color3(metal_color()) * 0.1837,
                                 rand::random::<f32>() * 0.5,
-                                2.5,
                             )),
                             0.175,
                         ),
@@ -1006,8 +996,8 @@ impl Scene {
                         ),
                         5 => (
                             Material::from(LambertianMaterial::new(Color3(rand_albedo()))).coated(
-                                MetalMaterial::new(
-                                    Color3(metal_color()),
+                                MetalMaterial::from_reflectance(
+                                    Color3(metal_color()) * 0.1837,
                                     rand::random::<f32>() * 0.5,
                                 )
                                 .into(),
@@ -1015,13 +1005,12 @@ impl Scene {
                             0.275,
                         ),
                         _ => (
-                            Material::from(LambertianMaterial::with_texture(
-                                Color3::ZERO,
-                                Arc::new(SolidColor::new(Color3(rand_albedo()))),
-                            ))
+                            Material::from(LambertianMaterial::textured(Arc::new(
+                                SolidColor::new(Color3(rand_albedo())),
+                            )))
                             .mix(
-                                MetalMaterial::new(
-                                    Color3(metal_color()),
+                                MetalMaterial::from_reflectance(
+                                    Color3(metal_color()) * 0.1837,
                                     rand::random::<f32>() * 0.5,
                                 )
                                 .into(),
@@ -1055,7 +1044,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(4., 1., 0.),
             1.,
-            MetalMaterial::with_ior(Color3::new(0.7, 0.6, 0.5), 0.0, 2.5),
+            MetalMaterial::from_reflectance(Color3::new(0.7, 0.6, 0.5) * 0.1837, 0.0),
         );
         scene.add_sphere(
             Point3::new(-2., 4., 2.),
@@ -1093,7 +1082,7 @@ impl Scene {
         let material_left: Material = DielectricMaterial::new(1.50).into();
         let material_bubble: Material = DielectricMaterial::new(1.0 / 1.50).into();
         let material_right: Material =
-            MetalMaterial::with_ior(Color3::new(0.8, 0.6, 0.2), 1.0, 2.5).into();
+            MetalMaterial::from_reflectance(Color3::new(0.8, 0.6, 0.2) * 0.1837, 1.0).into();
 
         scene.add_sphere(Point3::new(0., -100.5, -1.), 100., material_ground);
         scene.add_sphere(Point3::new(0., 0., -1.2), 0.5, material_center);
@@ -1155,7 +1144,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(COL_X[1], 1.0, ROW_Z[0]),
             1.0,
-            MetalMaterial::with_ior(Color3::new(0.9, 0.7, 0.1), 0.1, 2.5),
+            MetalMaterial::from_reflectance(Color3::new(0.9, 0.7, 0.1) * 0.1837, 0.1),
         );
         scene.add_sphere(
             Point3::new(COL_X[2], 1.0, ROW_Z[0]),
@@ -1186,7 +1175,7 @@ impl Scene {
             1.0,
             // random_world type 5: coated dark Lambertian + metal coating
             Material::from(LambertianMaterial::new(Color3::new(0.3, 0.1, 0.1)))
-                .coated(MetalMaterial::new(Color3::new(0.9, 0.7, 0.1), 0.1).into()),
+                .coated(MetalMaterial::from_ior(Color3::new(0.9, 0.7, 0.1), 0.1).into()),
         );
         scene.add_sphere(
             Point3::new(COL_X[3], 1.0, ROW_Z[1]),
@@ -1200,7 +1189,7 @@ impl Scene {
             Point3::new(COL_X[0], 1.0, ROW_Z[2]),
             1.0,
             Material::from(LambertianMaterial::new(Color3::new(0.8, 0.5, 0.2))).mix(
-                MetalMaterial::new(Color3::new(0.9, 0.7, 0.1), 0.1).into(),
+                MetalMaterial::from_ior(Color3::new(0.9, 0.7, 0.1), 0.1).into(),
                 0.5,
             ),
         );
@@ -1215,13 +1204,13 @@ impl Scene {
         scene.add_sphere(
             Point3::new(COL_X[2], 1.0, ROW_Z[2]),
             1.0,
-            Material::from(MetalMaterial::new(Color3::new(0.9, 0.7, 0.1), 0.1))
+            Material::from(MetalMaterial::from_ior(Color3::new(0.9, 0.7, 0.1), 0.1))
                 .coated(DielectricMaterial::new(1.5).into()),
         );
         scene.add_sphere(
             Point3::new(COL_X[3], 1.0, ROW_Z[2]),
             1.0,
-            MetalMaterial::with_ior(Color3::new(0.9, 0.9, 0.9), 0.0, 2.5),
+            MetalMaterial::from_reflectance(Color3::new(0.9, 0.9, 0.9) * 0.1837, 0.0),
         );
 
         // Area light above, spanning the full z-range of the scene.
@@ -1260,15 +1249,17 @@ impl Scene {
         );
 
         // Sphere 1 — gold metal (low fuzz)
-        let coated_metal = Material::from(MetalMaterial::new(Color3::new(0.1, 0.1, 0.7) * 2., 0.1))
-            .coated(DielectricMaterial::tinted(1.4, Color3::new(0.1, 0.7, 0.1) * 2.).into());
+        let coated_metal = Material::from(MetalMaterial::from_reflectance(
+            Color3::new(0.1, 0.1, 0.7) * 2. * 0.1837,
+            0.1,
+        ))
+        .coated(DielectricMaterial::tinted(1.4, Color3::new(0.1, 0.7, 0.1) * 2.).into());
         scene.add_sphere(Point3::new(-2., 1., 4.), 1.0, coated_metal);
 
         // Sphere 2 — perlin noise (unique pattern)
         let perlin_tex: Arc<dyn Texture> = NoiseTexture::with_scale(1. / 4.);
-        let coated_perlin =
-            Material::from(LambertianMaterial::with_texture(Color3::ZERO, perlin_tex))
-                .coated(DiffuseLightMaterial::new(Color3::new(0.5, 0.3, 0.7)).into());
+        let coated_perlin = Material::from(LambertianMaterial::textured(perlin_tex))
+            .coated(DiffuseLightMaterial::new(Color3::new(0.5, 0.3, 0.7)).into());
         scene.add_sphere(Point3::new(2., 1., 4.), 1.0, coated_perlin);
 
         // Sphere 3 — blue-emitting glass (light under dielectric coating)
@@ -1287,7 +1278,7 @@ impl Scene {
             substrate: Arc::new(GlossyMaterial::new(Color3::new(1., 0.0, 0.0), 0.5, 1.5))
                 as Arc<dyn Bsdf>,
             coating: Arc::new(Material::from(DielectricMaterial::new(1.5))) as Arc<dyn Bsdf>,
-            coating_tint: Color3::new(1., 0.0, 0.0),
+            coating_tint: Arc::new(SolidColor::new(Color3::new(1., 0.0, 0.0))),
             coating_ior: 1.5,
             thickness: 0.20,
         });
@@ -1295,13 +1286,17 @@ impl Scene {
         // Sphere 6 — cyan-teal mix
         let coated_mixed = Material::Coated(CoatedMaterial {
             substrate: Arc::new(
-                Material::from(MetalMaterial::new(Color3::new(0.1, 0.7, 0.8), 0.0)).mix(
+                Material::from(MetalMaterial::from_reflectance(
+                    Color3::new(0.1, 0.7, 0.8) * 0.1837,
+                    0.0,
+                ))
+                .mix(
                     GlossyMaterial::new(Color3::new(0.1, 0.9, 0.6), 0.5, 1.5).into(),
                     0.5,
                 ),
             ) as Arc<dyn Bsdf>,
             coating: Arc::new(Material::from(DielectricMaterial::new(1.5))) as Arc<dyn Bsdf>,
-            coating_tint: Color3::new(0.1, 0.9, 0.6),
+            coating_tint: Arc::new(SolidColor::new(Color3::new(0.1, 0.9, 0.6))),
             coating_ior: 1.5,
             thickness: 0.20,
         });
@@ -1454,13 +1449,13 @@ impl Scene {
         scene.add_sphere(
             Point3::new(c2, y1, zf),
             r,
-            MetalMaterial::new(Color3::new(0.8, 0.6, 0.2), 0.3),
+            MetalMaterial::from_reflectance(Color3::new(0.8, 0.6, 0.2) * 0.1837, 0.3),
         );
         // C3 — Metal (mirror, roughness < 0.01 → delta, explicit IOR)
         scene.add_sphere(
             Point3::new(c3, y1, zf),
             r,
-            MetalMaterial::with_ior(Color3::new(0.9, 0.9, 0.9), 0.0, 2.5),
+            MetalMaterial::from_reflectance(Color3::new(0.9, 0.9, 0.9) * 0.1837, 0.0),
         );
         // C4 — Dielectric (glass)
         scene.add_sphere(Point3::new(c4, y1, zf), r, DielectricMaterial::new(1.5));
@@ -1500,8 +1495,9 @@ impl Scene {
         scene.add_sphere(
             Point3::new(c5, y2, zf),
             r,
-            Material::from(LambertianMaterial::new(Color3::new(0.2, 0.7, 0.2)))
-                .coated(MetalMaterial::new(Color3::new(0.8, 0.6, 0.2), 0.1).into()),
+            Material::from(LambertianMaterial::new(Color3::new(0.2, 0.7, 0.2))).coated(
+                MetalMaterial::from_reflectance(Color3::new(0.8, 0.6, 0.2) * 0.1837, 0.1).into(),
+            ),
         );
 
         // ── Level 3 (y=260) — Textures ───────────────────────────────
@@ -1509,27 +1505,23 @@ impl Scene {
         scene.add_sphere(
             Point3::new(c1, y3, zf),
             r,
-            LambertianMaterial::with_texture(
-                Color3::ZERO,
-                CheckerTexture::with_scale(
-                    0.32,
-                    Color3::new(0.2, 0.4, 0.1),
-                    Color3::new(0.9, 0.9, 0.9),
-                ),
-            ),
+            LambertianMaterial::textured(CheckerTexture::with_scale(
+                0.32,
+                Color3::new(0.2, 0.4, 0.1),
+                Color3::new(0.9, 0.9, 0.9),
+            )),
         );
         // C2 — Perlin noise texture on Lambertian
         scene.add_sphere(
             Point3::new(c2, y3, zf),
             r,
-            LambertianMaterial::with_texture(Color3::ZERO, NoiseTexture::with_scale(1. / 4.)),
+            LambertianMaterial::textured(NoiseTexture::with_scale(1. / 4.)),
         );
         // C3 — Image texture on Lambertian (earth map)
         scene.add_sphere(
             Point3::new(c3, y3, zf),
             r,
-            LambertianMaterial::with_texture(
-                Color3::ZERO,
+            LambertianMaterial::textured(
                 ImageTexture::load_arc("./earthmap.png")
                     .expect("Failed to load earthmap.png for master_stress_test"),
             ),
@@ -1541,7 +1533,7 @@ impl Scene {
             GlossyMaterial::textured(
                 ImageTexture::load_arc("./earthmap.png")
                     .expect("Failed to load earthmap.png for master_stress_test"),
-                0.2,
+                Arc::new(SolidColor::new(Color3::splat(0.2))),
                 1.5,
             ),
         );
@@ -1549,7 +1541,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(c5, y3, zf),
             r,
-            MetalMaterial::new(Color3::new(0.7, 0.1, 0.1), 0.1),
+            MetalMaterial::from_reflectance(Color3::new(0.7, 0.1, 0.1) * 0.1837, 0.1),
         );
 
         // ── Level 4 (y=360) — Composition (Mix, Coated combos) ───────
@@ -1558,7 +1550,7 @@ impl Scene {
             Point3::new(c1, y4, zf),
             r,
             Material::from(LambertianMaterial::new(Color3::new(0.8, 0.5, 0.2))).mix(
-                MetalMaterial::new(Color3::new(0.9, 0.7, 0.1), 0.1).into(),
+                MetalMaterial::from_reflectance(Color3::new(0.9, 0.7, 0.1) * 0.1837, 0.1).into(),
                 0.5,
             ),
         );
@@ -1575,7 +1567,11 @@ impl Scene {
         scene.add_sphere(
             Point3::new(c3, y4, zf),
             r,
-            Material::from(MetalMaterial::new(Color3::new(0.8, 0.2, 0.2), 0.2)).mix(
+            Material::from(MetalMaterial::from_reflectance(
+                Color3::new(0.8, 0.2, 0.2) * 0.1837,
+                0.2,
+            ))
+            .mix(
                 GlossyMaterial::new(Color3::new(0.2, 0.8, 0.8), 0.3, 1.5).into(),
                 0.5,
             ),
@@ -1584,8 +1580,11 @@ impl Scene {
         scene.add_sphere(
             Point3::new(c4, y4, zf),
             r,
-            Material::from(MetalMaterial::new(Color3::new(0.9, 0.7, 0.1), 0.1))
-                .coated(DielectricMaterial::tinted(1.5, Color3::new(0.9, 0.3, 0.1)).into()),
+            Material::from(MetalMaterial::from_reflectance(
+                Color3::new(0.9, 0.7, 0.1) * 0.1837,
+                0.1,
+            ))
+            .coated(DielectricMaterial::tinted(1.5, Color3::new(0.9, 0.3, 0.1)).into()),
         );
         // C5 — Coated: Glossy substrate + Dielectric coating
         scene.add_sphere(
@@ -1681,7 +1680,8 @@ impl Scene {
             0.4 * 0.5 * 2.0 - 0.4 * 0.4, // two bars minus overlap
             (-0.5, -0.5, 0.5, 0.5),
         );
-        let fn_mat: Material = MetalMaterial::new(Color3::new(0.7, 0.7, 0.9), 0.0).into();
+        let fn_mat: Material =
+            MetalMaterial::from_reflectance(Color3::new(0.7, 0.7, 0.9) * 0.1837, 0.0).into();
         scene.add_object(Arc::new(function_patch(
             Point3::new(c4, 0.1, zo),
             Vec3::new(r, 0., 0.),
@@ -1705,12 +1705,12 @@ impl Scene {
                     .expect("Failed to load earthmap.png for master_stress_test"),
             ),
         );
-        // Moving metal sphere (motion blur + Metal::with_ior, random_world type 1 moving)
+        // Moving metal sphere (motion blur + Metal::from_ior, random_world type 1 moving)
         scene.add_sphere_moving(
             Point3::new(c2, r, zo + 70.),
             Point3::new(c2 + 30., r, zo + 70.),
             r,
-            MetalMaterial::with_ior(Color3::new(0.8, 0.6, 0.5), 0.2, 2.5),
+            MetalMaterial::from_reflectance(Color3::new(0.8, 0.6, 0.5) * 0.1837, 0.2),
         );
 
         // ── Camera ───────────────────────────────────────────────────
@@ -1769,14 +1769,14 @@ impl Scene {
         scene.add_sphere(
             Point3::new(-2.5, 1., 5.),
             1.,
-            LambertianMaterial::with_texture(Color3::ZERO, ws_checker.clone()),
+            LambertianMaterial::textured(ws_checker.clone()),
         );
 
         // Centre — coated checker (tinted dielectric over checker Lambertian).
         scene.add_sphere(
             Point3::new(0., 1., 5.),
             1.,
-            Material::from(LambertianMaterial::with_texture(Color3::ZERO, ws_checker))
+            Material::from(LambertianMaterial::textured(ws_checker))
                 .coated(DielectricMaterial::tinted(1.5, Color3::new(0.8, 0.8, 1.0)).into()),
         );
 
@@ -1792,7 +1792,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(-5., 1., 5.),
             1.,
-            LambertianMaterial::with_texture(Color3::ZERO, uv_checker),
+            LambertianMaterial::textured(uv_checker),
         );
 
         // --- Triplanar-mapped checker (projects checker from 3 axes, blends by normal) ---
@@ -1806,7 +1806,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(5., 1., 5.),
             1.,
-            LambertianMaterial::with_texture(Color3::ZERO, tri_checker),
+            LambertianMaterial::textured(tri_checker),
         );
 
         // Strong area light from upper-right to create a clear lit face

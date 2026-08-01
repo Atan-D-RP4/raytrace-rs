@@ -27,10 +27,28 @@ use crate::material::Material;
 /// Isotropic scattering medium (volumes).
 #[derive(Clone)]
 pub struct IsotropicMaterial {
-    /// Base albedo color. Used as fallback when `tex` is set, and for GPU serialization.
-    pub albedo: Color3,
-    /// Optional texture for spatial albedo variation. CPU-only.
-    pub tex: Option<Arc<dyn Texture>>,
+    /// Fraction of light reflected at each wavelength as a texture for spatial variation.
+    pub albedo: Arc<dyn Texture>,
+}
+
+impl IsotropicMaterial {
+    /// Create an isotropic material from a solid color.
+    pub fn new(albedo: Color3) -> Self {
+        Self {
+            albedo: Arc::new(crate::texture::SolidColor::new(albedo)),
+        }
+    }
+
+    /// Create an isotropic material from a texture.
+    pub fn textured(tex: Arc<dyn Texture>) -> Self {
+        Self { albedo: tex }
+    }
+}
+
+impl From<IsotropicMaterial> for Material {
+    fn from(m: IsotropicMaterial) -> Self {
+        Material::Isotropic(m)
+    }
 }
 
 impl Bsdf for IsotropicMaterial {
@@ -50,11 +68,7 @@ impl Bsdf for IsotropicMaterial {
     /// Isotropic phase function: `albedo / (4π)`. Returns the attenuation
     /// regardless of direction — every scattering direction is equally likely.
     fn eval(&self, _wo: Direction3, _wi: Direction3, si: &SurfaceInteraction) -> Color3 {
-        let attenuation = self
-            .tex
-            .as_ref()
-            .map(|t| t.value(&si.texture_coords()))
-            .unwrap_or(self.albedo);
+        let attenuation = self.albedo.value(&si.texture_coords());
         attenuation / (4.0 * PI)
     }
 
@@ -69,30 +83,10 @@ impl Bsdf for IsotropicMaterial {
     }
 }
 
-impl IsotropicMaterial {
-    /// Create an isotropic material from a solid color.
-    pub fn new(albedo: Color3) -> Self {
-        Self { albedo, tex: None }
-    }
-
-    /// Create an isotropic material from a texture.
-    pub fn textured(tex: Arc<dyn Texture>) -> Self {
-        Self {
-            albedo: Color3::ZERO,
-            tex: Some(tex),
-        }
-    }
-}
-
-impl From<IsotropicMaterial> for Material {
-    fn from(m: IsotropicMaterial) -> Self {
-        Material::Isotropic(m)
-    }
-}
-
 impl GpuSerializable for IsotropicMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
-        let params = vec![self.albedo.x(), self.albedo.y(), self.albedo.z()];
+        let (r, g, b, texture_index) = buf.gpu_color(&self.albedo);
+        let params = vec![r, g, b];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {
@@ -100,7 +94,7 @@ impl GpuSerializable for IsotropicMaterial {
             param_offset,
             child_a: GPU_NONE,
             child_b: GPU_NONE,
-            texture_index: GPU_NONE,
+            texture_index,
         });
         buf.nodes.len() as u32 - 1
     }

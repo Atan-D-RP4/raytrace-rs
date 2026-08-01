@@ -21,6 +21,7 @@ use crate::material::{
 };
 use crate::onb::Onb;
 use crate::pdf::cosine_hemisphere_direction;
+use crate::texture::{SolidColor, Texture};
 use crate::vec3::{Color3, Direction3};
 
 /// Maximum number of internal bounces for a Coated material. Each bounce
@@ -46,8 +47,10 @@ pub struct CoatedMaterial {
     pub coating: Arc<dyn Bsdf>,
     /// Refractive index of the coating layer (used for Fresnel).
     pub coating_ior: f32,
-    /// Tint color of the coating layer (used for Beer's law absorption).
-    pub coating_tint: Color3,
+    /// Tint texture of the coating layer (used for Beer's law absorption).
+    /// Sampled once per entry point; the sampled value is clamped to [0, 1]
+    /// before use (tint > 1 would amplify Beer's law via powf).
+    pub coating_tint: Arc<dyn Texture>,
     /// Thickness of the coating layer (used for absorption in the coating).
     pub thickness: f32,
 }
@@ -158,9 +161,9 @@ impl CoatedMaterial {
     /// `internal_cos` is the cosine of the direction **inside** the coating (not the external/global
     /// direction). The ray travels through the coating at the internal angle — using the external
     /// cosine would give the wrong path length and incorrect absorption.
-    fn coating_absorption(&self, internal_cos: f32) -> Color3 {
+    fn coating_absorption(&self, internal_cos: f32, coating_tint: Color3) -> Color3 {
         let path_len = self.thickness / internal_cos.abs().max(1e-10);
-        beers_absorption(Color3::ONE, self.coating_tint, path_len)
+        beers_absorption(Color3::ONE, coating_tint, path_len)
     }
 
     /// Handle a Delta substrate scatter result in the internal bounce loop.
@@ -298,7 +301,24 @@ impl CoatedMaterial {
             substrate,
             coating,
             coating_ior,
-            coating_tint: coating_tint.clamp(Vec3::ZERO, Vec3::ONE),
+            coating_tint: Arc::new(SolidColor::new(coating_tint.clamp(Vec3::ZERO, Vec3::ONE))),
+            thickness,
+        }
+    }
+
+    /// Create a coated material with a texture-driven coating tint.
+    pub fn textured(
+        substrate: Arc<dyn Bsdf>,
+        coating: Arc<dyn Bsdf>,
+        coating_ior: f32,
+        coating_tint: Arc<dyn Texture>,
+        thickness: f32,
+    ) -> Self {
+        Self {
+            substrate,
+            coating,
+            coating_ior,
+            coating_tint,
             thickness,
         }
     }
@@ -321,8 +341,14 @@ impl Bsdf for CoatedMaterial {
         let sn = si.shading_normal();
         let mut throughput = Color3::ONE;
 
-        // coating_tint is already clamped to [0, 1] in the constructor.
-        let coating_tint = self.coating_tint;
+        // Sample the coating tint ONCE per entry point. The internal bounce
+        // loop reuses this cached value via DeltaSubstrateParams/GgxScatterParams
+        // — the tint is never re-sampled per bounce (all bounces share `si`).
+        // Clamped to [0, 1]: tint > 1 would amplify Beer's law via powf.
+        let coating_tint = self
+            .coating_tint
+            .value(&si.texture_coords())
+            .clamp(Vec3::ZERO, Vec3::ONE);
 
         // Fresnel split at coating-air boundary (top interface).
         let top_fresnel = next_dim();
@@ -470,7 +496,7 @@ impl Bsdf for CoatedMaterial {
                     // strategy. Without this, the Cosine-only fallback lets the coating's
                     // narrow GGX eval peak leak through with a mismatched PDF, producing
                     // fireflies.
-                    if let Some(alpha) = self.coating.ggx_alpha() {
+                    if let Some(alpha) = self.coating.ggx_alpha(si) {
                         let mut pk = [None; MAX_BSDF_STRATS];
                         pk[0] = Some(PdfKind::Cosine { normal: sn });
                         pk[1] = Some(PdfKind::Ggx {
@@ -556,16 +582,22 @@ impl Bsdf for CoatedMaterial {
     }
 
     fn eval(&self, wo: Direction3, wi: Direction3, si: &SurfaceInteraction) -> Color3 {
-        let sn = si.shading_normal().into_inner();
+        let sn = si.shading_normal();
         // Both wo and wi must be in the front-facing hemisphere.
         // Back-side directions are not reachable for a reflective coating BSDF.
-        if wo.dot(sn) <= 0.0 || wi.dot(sn) <= 0.0 {
+        if wo.dot(sn.into_inner()) <= 0.0 || wi.dot(sn.into_inner()) <= 0.0 {
             return Color3::ZERO;
         }
+        // Sample the coating tint once per entry point (clamped to [0, 1]:
+        // tint > 1 would amplify Beer's law via powf).
+        let coating_tint = self
+            .coating_tint
+            .value(&si.texture_coords())
+            .clamp(Vec3::ZERO, Vec3::ONE);
         // Compute the cosine of the angle between the outgoing/incoming directions and the
         // shading normal.
-        let cos_wo = wo.dot(sn);
-        let cos_wi = wi.dot(sn);
+        let cos_wo = wo.dot(sn.into_inner());
+        let cos_wi = wi.dot(sn.into_inner());
         // Precompute Fresnel reflectance at normal incidence for the coating layer.
         let r0 = fresnel_r0(self.coating_ior);
 
@@ -578,7 +610,7 @@ impl Bsdf for CoatedMaterial {
         let fresnel_i = self.fresnel_transmittance(cos_wi);
 
         // Refract global incoming direction into the coating's internal frame.
-        let wi_internal = (-wi).refract(sn, 1.0 / self.coating_ior);
+        let wi_internal = (-wi).refract(sn.into_inner(), 1.0 / self.coating_ior);
         if wi_internal.length_squared() <= 0.0 {
             // TIR — only the Fresnel reflection of the coating contributes.
             let r0 = fresnel_r0(self.coating_ior);
@@ -588,21 +620,21 @@ impl Bsdf for CoatedMaterial {
         }
 
         // Compute internal frame: direction inside coating that refracts to wo_global.
-        let wo_frame = match self.snell_internal_frame(wo, sn.into()) {
+        let wo_frame = match self.snell_internal_frame(wo, sn) {
             Some(f) => f,
             None => return direct_coat, // TIR — substrate invisible from this angle
         };
         let wo_internal = wo_frame.wo_internal;
 
         // Absorption in the coating layer (Beer's law) for outgoing and incoming paths.
-        // coating_tint is already clamped to [0, 1] in the constructor.
         // wo_frame.cos_wi_inside and (-wi_internal).dot(&sn).abs() are both internal cosines
         // — same semantic, just from different sources (wo_frame vs inline).
-        let coating_absorption_o = self.coating_absorption(wo_frame.cos_wi_inside);
-        let coating_absorption_i = self.coating_absorption((-wi_internal).dot(sn).abs());
+        let coating_absorption_o = self.coating_absorption(wo_frame.cos_wi_inside, coating_tint);
+        let coating_absorption_i =
+            self.coating_absorption((-wi_internal).dot(sn.into_inner()).abs(), coating_tint);
 
         // Jacobian cosine: internal-frame cosine for the incoming direction.
-        let cos_wi_int = (-wi_internal).dot(sn).abs().max(1e-10);
+        let cos_wi_int = (-wi_internal).dot(sn.into_inner()).abs().max(1e-10);
 
         // Transmission coefficient/components through the coating layer (Beer's law).
         let t_o = coating_absorption_o * fresnel_o;
@@ -699,14 +731,18 @@ impl Bsdf for CoatedMaterial {
         let cos_wo = wo.dot(sn.into_inner()).abs();
         // Fresnel transmittance at coating-air boundary for the exit direction
         let fresnel_t = self.fresnel_transmittance(cos_wo);
+        // Sample the coating tint once per entry point (clamped to [0, 1]).
+        let coating_tint = self
+            .coating_tint
+            .value(&si.texture_coords())
+            .clamp(Vec3::ZERO, Vec3::ONE);
         // Compute internal frame: direction inside coating that refracts to wo_global.
         let wo_frame = match self.snell_internal_frame(wo, sn) {
             Some(f) => f,
             None => return self.coating.emitted(wo, si), // TIR
         };
-        // Beer's law absorption through the coating at the INTERNAL angle coating_tint is already
-        // clamped to [0, 1] in the constructor.
-        let coating_absorption = self.coating_absorption(wo_frame.cos_wi_inside);
+        // Beer's law absorption through the coating at the INTERNAL angle.
+        let coating_absorption = self.coating_absorption(wo_frame.cos_wi_inside, coating_tint);
         self.coating.emitted(wo, si)
             + coating_absorption * fresnel_t * self.substrate.emitted(wo, si)
     }
@@ -734,12 +770,17 @@ impl GpuSerializable for CoatedMaterial {
         let coating_index = self.coating.serialize_gpu(buf);
         let substrate_index = self.substrate.serialize_gpu(buf);
 
+        let (tr, tg, tb, tint_tex) = buf.gpu_color(&self.coating_tint);
+        // Texture references ride after the baked colors. GPU_NONE (u32::MAX)
+        // cannot round-trip through f32, so use −1.0 as the "no texture" sentinel.
+        let tex_ref = |i: u32| if i == GPU_NONE { -1.0 } else { i as f32 };
         let params = vec![
             self.coating_ior,
             self.thickness,
-            self.coating_tint.x(),
-            self.coating_tint.y(),
-            self.coating_tint.z(),
+            tr,
+            tg,
+            tb,
+            tex_ref(tint_tex),
         ];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
@@ -791,7 +832,10 @@ mod test {
         // through PdfKind separately, so the total BSDF sampling PDF integrates to 1.
         // This test checks that the substrate-path component integrates to fresnel_t(wo).
         let material = CoatedMaterial::new(
-            Arc::new(MetalMaterial::new(Color3::new(0.9, 0.9, 0.9), 0.1)),
+            Arc::new(MetalMaterial::from_reflectance(
+                Color3::splat(0.9) * 0.1837,
+                0.1,
+            )),
             Arc::new(DielectricMaterial::tinted(1.5, Color3::ONE)),
             1.5,
             Color3::new(0.8, 0.8, 0.8),

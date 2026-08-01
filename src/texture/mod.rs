@@ -15,14 +15,17 @@
 use crate::vec3::{Color3, Direction3, Point3};
 
 mod gpu;
+pub mod image;
 mod impls;
 pub mod mapping;
 
 pub use gpu::{GPU_TEX_NONE, GpuTextureBuffer, GpuTextureNode, GpuTextureType};
+pub use image::{ImageTexture, TextureWrap};
 pub use impls::{
-    CheckerTexture, ImageTexture, MappedTexture, NoiseTexture, SolidColor, SphericalUvMapping,
-    TriplanarMapping, UvCheckerTexture, WorldSpaceMapping,
+    CheckerTexture, NoiseTexture, SolidColor, SphericalUvMapping, TriplanarMapping,
+    UvCheckerTexture, WorldSpaceMapping,
 };
+pub use mapping::MappedTexture;
 
 /// A trait for surfaces that can provide UV coordinates and their derivatives.
 ///
@@ -137,6 +140,17 @@ impl TextureDerivatives {
             && self.dvdx.abs() < EPS
             && self.dvdy.abs() < EPS
     }
+
+    /// Scales the UV derivatives by UV scale factors (the 2D mapping
+    /// Jacobian). `ScaleUV { su, sv }` maps (u, v) → (su·u, sv·v), so the
+    /// screen-space UV derivatives scale by the same factors.
+    pub fn scale_uv(mut self, su: f32, sv: f32) -> Self {
+        self.dudx *= su;
+        self.dudy *= su;
+        self.dvdx *= sv;
+        self.dvdy *= sv;
+        self
+    }
 }
 
 /// Full texture evaluation context passed to mappings and textures.
@@ -189,6 +203,15 @@ impl TextureCoords {
         self.v = v;
         self
     }
+
+    /// Returns a copy with replaced screen-space derivatives.
+    ///
+    /// Mappings use this to propagate their Jacobians: derivatives must
+    /// describe the *mapped* UVs, not the originals.
+    pub fn with_derivatives(mut self, derivatives: TextureDerivatives) -> Self {
+        self.derivatives = derivatives;
+        self
+    }
 }
 
 /// A texture that evaluates a color at a surface point.
@@ -212,5 +235,14 @@ pub trait Texture: Send + Sync {
     /// Concrete texture types override this when GPU serialization is needed.
     fn serialize_gpu(&self, _buf: &mut gpu::GpuTextureBuffer) -> u32 {
         GPU_TEX_NONE
+    }
+
+    /// If this texture is a constant (UV-independent), return its value.
+    ///
+    /// Used for GPU serialization: constants bake into the material's flat
+    /// color parameters, while sampled textures defer to a texture buffer
+    /// the shader samples. Non-constant textures return `None`.
+    fn as_constant(&self) -> Option<Color3> {
+        None
     }
 }
