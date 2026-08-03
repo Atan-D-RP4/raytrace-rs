@@ -34,8 +34,9 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use crate::hittable::{Bounded, Intersectable, MaterialHit};
-use crate::interval::Interval;
+use crate::intersect::interaction::MaterialHit;
+use crate::intersect::{Bounded, Intersectable};
+use crate::math::interval::Interval;
 use crate::ray::Ray;
 
 pub mod aabb;

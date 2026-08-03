@@ -9,13 +9,15 @@ use crate::bvh::aabb::Aabb;
 use crate::bvh::builder::TreeBuilder;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
-use crate::environment::{EnvironmentLight, EnvironmentMap};
-use crate::hittable::{Intersectable, Sampleable};
+use crate::intersect::Intersectable;
+use crate::light::Sampleable;
+use crate::light::environment::{EnvironmentLight, EnvironmentMap};
 use crate::material::{Bsdf, CoatedMaterial};
 use crate::material::{
-    DielectricMaterial, DiffuseLightMaterial, DiffuseReflector, MicrofacetReflector,
+    DielectricMaterial, DiffuseEmitterMaterial, DiffuseReflector, MicrofacetReflector,
 };
 use crate::material::{IsotropicMaterial, Material};
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::shape::regions::FunctionRegion;
 use crate::shape::{
     DynEval, Scalar, SdfFn, SdfShape, ShapeObject, annulus, function_patch, moving_sphere, polygon,
@@ -26,7 +28,6 @@ use crate::texture::{
     TriplanarMapping, UvCheckerTexture, WorldSpaceMapping,
 };
 use crate::transform::{StaticTransform, TransformObject};
-use crate::vec3::{Color3, Direction3, Point3};
 
 pub struct Scene {
     /// Camera configuration for the scene.
@@ -283,7 +284,7 @@ impl Scene {
             Point3::new(123., 554., 147.),
             Vec3::new(300., 0., 0.),
             Vec3::new(0., 0., 265.),
-            DiffuseLightMaterial::new(Color3::splat(7.0)),
+            DiffuseEmitterMaterial::new(Color3::splat(7.0)),
         );
 
         let center1 = Point3::new(400., 400., 200.);
@@ -722,7 +723,7 @@ impl Scene {
         let red: Material = DiffuseReflector::new(Color3::new(0.65, 0.05, 0.05)).into();
         let white: Material = DiffuseReflector::new(Color3::new(0.73, 0.73, 0.73)).into();
         let green: Material = DiffuseReflector::new(Color3::new(0.12, 0.45, 0.15)).into();
-        let light: Material = DiffuseLightMaterial::new(Color3::splat(16.0)).into();
+        let light: Material = DiffuseEmitterMaterial::new(Color3::splat(16.0)).into();
 
         scene.add_quad(
             Point3::new(555., 0., 0.),
@@ -785,7 +786,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(0., 7., 0.),
             2.,
-            DiffuseLightMaterial::new(Color3::splat(4.0)),
+            DiffuseEmitterMaterial::new(Color3::splat(4.0)),
         );
 
         scene.config.aspect_ratio = 16. / 9.;
@@ -1045,7 +1046,7 @@ impl Scene {
             Point3::new(-4., 1., 0.),
             1.,
             Material::from(DiffuseReflector::new(Color3::new(0.4, 0.2, 0.1))).mix(
-                DiffuseLightMaterial::new(Color3::new(0.4, 0.2, 0.1)).into(),
+                DiffuseEmitterMaterial::new(Color3::new(0.4, 0.2, 0.1)).into(),
                 0.5,
             ),
         );
@@ -1060,14 +1061,14 @@ impl Scene {
         scene.add_sphere(
             Point3::new(-2., 4., 2.),
             1.5,
-            DiffuseLightMaterial::textured(
+            DiffuseEmitterMaterial::textured(
                 ImageTexture::load_arc("./earthmap.png").expect("Failed to load earthmap.png"),
             ),
         );
         scene.add_sphere(
             Point3::new(2., 4., -2.),
             1.5,
-            DiffuseLightMaterial::textured(NoiseTexture::with_scale(1. / 4.)),
+            DiffuseEmitterMaterial::textured(NoiseTexture::with_scale(1. / 4.)),
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
@@ -1198,7 +1199,7 @@ impl Scene {
         scene.add_sphere(
             Point3::new(COL_X[3], 1.0, ROW_Z[1]),
             1.0,
-            DiffuseLightMaterial::new(Color3::new(0.9, 0.2, 0.6)),
+            DiffuseEmitterMaterial::new(Color3::new(0.9, 0.2, 0.6)),
         );
 
         // Row 3 (z=11, back): composite materials — Mix and Coated combinations.
@@ -1215,7 +1216,7 @@ impl Scene {
             Point3::new(COL_X[1], 1.0, ROW_Z[2]),
             1.0,
             Material::from(DiffuseReflector::new(Color3::new(0.2, 0.2, 0.8))).mix(
-                DiffuseLightMaterial::new(Color3::new(0.2, 0.4, 0.9)).into(),
+                DiffuseEmitterMaterial::new(Color3::new(0.2, 0.4, 0.9)).into(),
                 0.3,
             ),
         );
@@ -1242,7 +1243,7 @@ impl Scene {
             Point3::new(-5., 8., 0.),
             Vec3::new(10., 0., 0.),
             Vec3::new(0., 0., 12.),
-            DiffuseLightMaterial::new(Color3::splat(6.0)),
+            DiffuseEmitterMaterial::new(Color3::splat(6.0)),
         );
 
         scene.config.aspect_ratio = 16.0 / 9.0;
@@ -1283,17 +1284,17 @@ impl Scene {
         // Sphere 2 — perlin noise (unique pattern)
         let perlin_tex: Arc<dyn Texture> = NoiseTexture::with_scale(1. / 4.);
         let coated_perlin = Material::from(DiffuseReflector::textured(perlin_tex))
-            .coated(DiffuseLightMaterial::new(Color3::new(0.5, 0.3, 0.7)).into());
+            .coated(DiffuseEmitterMaterial::new(Color3::new(0.5, 0.3, 0.7)).into());
         scene.add_sphere(Point3::new(2., 1., 4.), 1.0, coated_perlin);
 
         // Sphere 3 — blue-emitting glass (light under dielectric coating)
-        let coated_glass = Material::from(DiffuseLightMaterial::new(Color3::new(0.2, 0.4, 0.9)))
+        let coated_glass = Material::from(DiffuseEmitterMaterial::new(Color3::new(0.2, 0.4, 0.9)))
             .coated(DielectricMaterial::new(1.5).into());
         scene.add_sphere(Point3::new(0., 1., 8.), 1.0, coated_glass);
 
         // Sphere 4 — pink-emitting glass (light under dielectric coating)
         let light_coated_glass =
-            Material::from(DiffuseLightMaterial::new(Color3::new(0.9, 0.2, 0.6)))
+            Material::from(DiffuseEmitterMaterial::new(Color3::new(0.9, 0.2, 0.6)))
                 .coated(DielectricMaterial::new(1.5).into());
         scene.add_sphere(Point3::new(0., 3., 8.), 1.0, light_coated_glass);
 
@@ -1435,7 +1436,7 @@ impl Scene {
             Point3::new(213., 554., 227.),
             Vec3::new(130., 0., 0.),
             Vec3::new(0., 0., 105.),
-            DiffuseLightMaterial::new(Color3::splat(16.)),
+            DiffuseEmitterMaterial::new(Color3::splat(16.)),
         );
 
         // ── Vertical grid layout ─────────────────────────────────────
@@ -1500,17 +1501,17 @@ impl Scene {
         );
 
         // ── Level 2 (y=160) — Emissive, isotropic, coated ────────────
-        // C1 — DiffuseLight (area emitter)
+        // C1 — DiffuseEmitter (area emitter)
         scene.add_sphere(
             Point3::new(c1, y2, zf),
             r,
-            DiffuseLightMaterial::new(Color3::splat(4.)),
+            DiffuseEmitterMaterial::new(Color3::splat(4.)),
         );
-        // C2 — DiffuseLight (textured emitter — Perlin noise)
+        // C2 — DiffuseEmitter (textured emitter — Perlin noise)
         scene.add_sphere(
             Point3::new(c2, y2, zf),
             r,
-            DiffuseLightMaterial::textured(NoiseTexture::with_scale(0.5)),
+            DiffuseEmitterMaterial::textured(NoiseTexture::with_scale(0.5)),
         );
         // C3 — Isotropic (volume-scattering material on a surface)
         scene.add_sphere(
@@ -1598,12 +1599,12 @@ impl Scene {
                 0.5,
             ),
         );
-        // C2 — Mix: Lambertian + DiffuseLight (emissive blend)
+        // C2 — Mix: Lambertian + DiffuseEmitter (emissive blend)
         scene.add_sphere(
             Point3::new(c2, y4, zf),
             r,
             Material::from(DiffuseReflector::new(Color3::new(0.2, 0.2, 0.8))).mix(
-                DiffuseLightMaterial::new(Color3::new(0.2, 0.4, 0.9)).into(),
+                DiffuseEmitterMaterial::new(Color3::new(0.2, 0.4, 0.9)).into(),
                 0.3,
             ),
         );
@@ -1749,11 +1750,11 @@ impl Scene {
             Material::from(DielectricMaterial::new(1.5)),
         );
         scene.add_object(Arc::new(glass_box));
-        // DiffuseLight textured with image (random_world featured)
+        // DiffuseEmitter textured with image (random_world featured)
         scene.add_sphere(
             Point3::new(c1, r, zo + 70.),
             r,
-            DiffuseLightMaterial::textured(
+            DiffuseEmitterMaterial::textured(
                 ImageTexture::load_arc("./earthmap.png")
                     .expect("Failed to load earthmap.png for master_stress_test"),
             ),
@@ -1871,7 +1872,7 @@ impl Scene {
             Point3::new(0., 5., 3.),
             Vec3::new(4., 0., 0.),
             Vec3::new(0., 0., 4.),
-            DiffuseLightMaterial::new(Color3::splat(12.)),
+            DiffuseEmitterMaterial::new(Color3::splat(12.)),
         );
 
         scene.config.aspect_ratio = 16. / 9.;

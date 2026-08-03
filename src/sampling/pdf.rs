@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use glam::Vec3;
 
-use crate::environment::EnvironmentMap;
-use crate::hittable::Sampleable;
-use crate::onb::Onb;
-use crate::vec3::{Direction3, Point3, concentric_disk};
+use crate::light::Sampleable;
+use crate::light::environment::EnvironmentMap;
+use crate::math::onb::Onb;
+use crate::math::vec3::{Direction3, Point3, concentric_disk};
 
 // ================================================================
 // § PDF domain newtypes

@@ -10,9 +10,9 @@
 //! The UV generation converts a 3D point in mapping space to UV coordinates, which is useful for
 //! procedural textures that need UVs but the geometry doesn't provide them.
 
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::texture::gpu::{GPU_TEX_NONE, GpuTextureBuffer, GpuTextureNode, GpuTextureType};
 use crate::texture::{Texture, TextureCoords, TextureDerivatives};
-use crate::vec3::{Color3, Direction3, Point3};
 
 trait Packable {
     /// Applies this mapping to a texture context and returns the mapped copy.

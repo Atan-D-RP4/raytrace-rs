@@ -13,14 +13,14 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 
-use crate::hittable::SurfaceInteraction;
+use crate::intersect::interaction::SurfaceInteraction;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
     Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, MAX_BSDF_STRATS,
     PdfKind,
 };
+use crate::math::vec3::{Color3, Direction3};
 use crate::texture::Texture;
-use crate::vec3::{Color3, Direction3};
 
 use crate::material::Material;
 

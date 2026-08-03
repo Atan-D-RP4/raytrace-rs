@@ -9,16 +9,18 @@
 use std::f32::consts::PI;
 use std::sync::Arc;
 
-use crate::environment::EnvironmentMap;
-use crate::hittable::{Intersectable, Sampleable, SurfaceInteraction};
 use crate::integrator::Integrator;
-use crate::interval::Interval;
+use crate::intersect::Intersectable;
+use crate::intersect::interaction::SurfaceInteraction;
+use crate::light::Sampleable;
+use crate::light::environment::EnvironmentMap;
 use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
-use crate::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
+use crate::math::interval::Interval;
 use crate::ray::Ray;
 use crate::sampler::{SampleStream, SamplerRng};
+use crate::sampling::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
 
-use crate::vec3::{Color3, Direction3};
+use crate::math::vec3::{Color3, Direction3};
 
 /// Maximum depth for the split delta path (mirror direction from Mix one-delta).
 /// Prevents exponential cascade when `max_depth` is large (e.g. 50) and the

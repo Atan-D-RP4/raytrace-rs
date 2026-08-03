@@ -1598,7 +1598,7 @@ bilinear/anisotropic sampling. The atlas approach from v1 is obsolete.
 baseColorFactor = [r,g,b,1]                 → Lambertian { albedo }
 baseColorFactor + metallicFactor > 0.5      → Glossy (GGX dielectric)
 metallicFactor = 1, roughness = 0           → Metal (GGX conductor)
-emissiveFactor = [r,g,b]                    → DiffuseLight { color }
+emissiveFactor = [r,g,b]                    → DiffuseEmitter { color }
 alphaMode = "BLEND"                         → deferred (OIT required)
 alphaMode = "MASK"                          → raster path only (discard)
 ```
@@ -1954,7 +1954,7 @@ which serves as the reference for every GPU feature.
 #### C4. Material & BSDF System
 - **Prerequisites:** C1
 - A `Material` enum dispatching to 9 concrete types: 6 scattering
-  (Lambertian, Glossy/Microfacet, Metal, Dielectric, DiffuseLight,
+  (Lambertian, Glossy/Microfacet, Metal, Dielectric, DiffuseEmitter,
   ThinDielectric) + 3 composition (Mix, Coated, Custom). Each implements
   `sample()`, `eval()`, `pdf()` following pbrt-v4 conventions. `BsdfSample`
   carries `PdfKind` delta/non-delta for integrator routing.

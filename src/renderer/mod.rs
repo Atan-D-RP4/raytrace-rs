@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::camera::Camera;
 use crate::film::{Film, SharedFramebuffer};
-use crate::hittable::{Intersectable, Sampleable};
+use crate::intersect::Intersectable;
+use crate::light::Sampleable;
 
 pub mod cpu;
 

@@ -4,14 +4,15 @@ use std::f32::consts::PI;
 use glam::Vec3;
 
 use crate::bvh::aabb::Aabb;
-use crate::hittable::{Hit, LightSample};
-use crate::interval::Interval;
+use crate::intersect::interaction::Hit;
+use crate::light::LightSample;
 use crate::material::Material;
-use crate::onb::Onb;
+use crate::math::interval::Interval;
+use crate::math::onb::Onb;
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::{ParametricCurve, Ray};
 use crate::shape::{Shape3D, ShapeObject, ShapeSurfaceSampling};
 use crate::texture::UVDifferentiable;
-use crate::vec3::{Color3, Direction3, Point3};
 
 /// Sphere geometry defined by a linearly-moving center and radius.
 ///

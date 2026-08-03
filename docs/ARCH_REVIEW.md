@@ -107,7 +107,7 @@ src/
 │   ├── diffuse_reflector.rs         # DiffuseReflector — albedo/π
 │   ├── microfacet_reflector.rs      # MicrofacetReflector — GGX conductor/dielectric
 │   ├── dielectric.rs                # DielectricMaterial — Fresnel + tint (+ rough)
-│   ├── diffuse_light.rs             # DiffuseLightMaterial — emissive
+│   ├── diffuse_light.rs             # DiffuseEmitterMaterial — emissive
 │   ├── isotropic.rs                 # IsotropicMaterial — uniform sphere (volumes)
 │   ├── mix.rs                       # MixMaterial — weighted stochastic blend
 │   ├── coated.rs                    # CoatedMaterial — clear coat over substrate
@@ -349,7 +349,7 @@ Material enum (9 variants):
 ├── DiffuseReflector(DiffuseReflector) # albedo/π
 ├── MicrofacetReflector(MicrofacetReflector) # GGX conductor/dielectric (Fresnel dispatch)
 ├── Dielectric(DielectricMaterial) # Fresnel/refract/reflect + tint (+ rough)
-├── DiffuseLight(DiffuseLightMaterial) # emissive
+├── DiffuseEmitter(DiffuseEmitterMaterial) # emissive
 ├── Isotropic(IsotropicMaterial)   # uniform sphere (volumes)
 ├── Mix(MixMaterial)               # weighted stochastic blend
 ├── Coated(CoatedMaterial)         # clear coat over substrate

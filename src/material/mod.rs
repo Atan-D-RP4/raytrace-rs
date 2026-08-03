@@ -41,14 +41,14 @@
 
 use std::sync::Arc;
 
-use crate::hittable::SurfaceInteraction;
-use crate::pdf::{PdfKind, ggx_d, ggx_sample_h};
+use crate::intersect::interaction::SurfaceInteraction;
+use crate::math::vec3::{Color3, Direction3};
+use crate::sampling::pdf::{PdfKind, ggx_d, ggx_sample_h};
 use crate::texture::Texture;
-use crate::vec3::{Color3, Direction3};
 
 mod coated;
 mod dielectric;
-mod diffuse_light;
+mod diffuse_emitter;
 mod diffuse_reflector;
 mod gpu;
 mod isotropic;
@@ -60,7 +60,7 @@ use gpu::GPU_NONE;
 
 pub use coated::CoatedMaterial;
 pub use dielectric::DielectricMaterial;
-pub use diffuse_light::DiffuseLightMaterial;
+pub use diffuse_emitter::DiffuseEmitterMaterial;
 pub use diffuse_reflector::DiffuseReflector;
 pub use gpu::{GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, GpuSerializable};
 pub use isotropic::IsotropicMaterial;
@@ -234,7 +234,7 @@ pub trait Bsdf: Send + Sync + GpuSerializable {
 
     /// Returns emitted light at the hit point. Default: no emission. Emission is not a BSDF
     /// property, but this method is provided for convenience in integrators that treat it as such
-    /// (e.g., DiffuseLight).
+    /// (e.g., DiffuseEmitter).
     ///
     /// `wo` is the outgoing direction (surface → camera), world space.
     /// Pass `Vec3::ZERO` as a sentinel when direction is unavailable (e.g., NEE).
@@ -296,7 +296,7 @@ pub enum Material {
     /// RoughDielectric).
     Dielectric(DielectricMaterial),
     /// Light emitting surface.
-    DiffuseLight(DiffuseLightMaterial),
+    DiffuseEmitter(DiffuseEmitterMaterial),
     /// Isotropic scattering medium.
     Isotropic(IsotropicMaterial),
     /// Stochastic mix of two materials. `weight` is the probability of choosing `b`.
@@ -320,7 +320,7 @@ impl Material {
             Material::DiffuseReflector(inner) => inner.scatter(wo, si, next_dim),
             Material::MicrofacetReflector(inner) => inner.scatter(wo, si, next_dim),
             Material::Dielectric(inner) => inner.scatter(wo, si, next_dim),
-            Material::DiffuseLight(inner) => inner.scatter(wo, si, next_dim),
+            Material::DiffuseEmitter(inner) => inner.scatter(wo, si, next_dim),
             Material::Isotropic(inner) => inner.scatter(wo, si, next_dim),
             Material::Mix(inner) => inner.scatter(wo, si, next_dim),
             Material::Coated(inner) => inner.scatter(wo, si, next_dim),
@@ -338,7 +338,7 @@ impl Material {
             Material::DiffuseReflector(inner) => inner.eval(wo, wi, si),
             Material::MicrofacetReflector(inner) => inner.eval(wo, wi, si),
             Material::Dielectric(inner) => inner.eval(wo, wi, si),
-            Material::DiffuseLight(inner) => inner.eval(wo, wi, si),
+            Material::DiffuseEmitter(inner) => inner.eval(wo, wi, si),
             Material::Isotropic(inner) => inner.eval(wo, wi, si),
             Material::Mix(inner) => inner.eval(wo, wi, si),
             Material::Coated(inner) => inner.eval(wo, wi, si),
@@ -353,7 +353,7 @@ impl Material {
             Material::DiffuseReflector(inner) => inner.pdf(wo, wi, si),
             Material::MicrofacetReflector(inner) => inner.pdf(wo, wi, si),
             Material::Dielectric(inner) => inner.pdf(wo, wi, si),
-            Material::DiffuseLight(inner) => inner.pdf(wo, wi, si),
+            Material::DiffuseEmitter(inner) => inner.pdf(wo, wi, si),
             Material::Isotropic(inner) => inner.pdf(wo, wi, si),
             Material::Mix(inner) => inner.pdf(wo, wi, si),
             Material::Coated(inner) => inner.pdf(wo, wi, si),
@@ -368,7 +368,7 @@ impl Material {
             Material::DiffuseReflector(inner) => inner.pdf_kind(wo, si),
             Material::MicrofacetReflector(inner) => inner.pdf_kind(wo, si),
             Material::Dielectric(inner) => inner.pdf_kind(wo, si),
-            Material::DiffuseLight(inner) => inner.pdf_kind(wo, si),
+            Material::DiffuseEmitter(inner) => inner.pdf_kind(wo, si),
             Material::Isotropic(inner) => inner.pdf_kind(wo, si),
             Material::Mix(inner) => inner.pdf_kind(wo, si),
             Material::Coated(inner) => inner.pdf_kind(wo, si),
@@ -385,7 +385,7 @@ impl Material {
             Material::DiffuseReflector(inner) => inner.emitted(wo, si),
             Material::MicrofacetReflector(inner) => inner.emitted(wo, si),
             Material::Dielectric(inner) => inner.emitted(wo, si),
-            Material::DiffuseLight(inner) => inner.emitted(wo, si),
+            Material::DiffuseEmitter(inner) => inner.emitted(wo, si),
             Material::Isotropic(inner) => inner.emitted(wo, si),
             Material::Mix(inner) => inner.emitted(wo, si),
             Material::Coated(inner) => inner.emitted(wo, si),
@@ -397,7 +397,7 @@ impl Material {
     /// Recursively checks composition variants.
     pub fn is_emissive(&self) -> bool {
         match self {
-            Material::DiffuseLight(_) => true,
+            Material::DiffuseEmitter(_) => true,
             Material::Mix(inner) => inner.is_emissive(),
             Material::Coated(inner) => inner.is_emissive(),
             _ => false,
@@ -413,7 +413,7 @@ impl Material {
             Material::DiffuseReflector(inner) => inner.reflectance_estimate(wo, si),
             Material::MicrofacetReflector(inner) => inner.reflectance_estimate(wo, si),
             Material::Dielectric(inner) => inner.reflectance_estimate(wo, si),
-            Material::DiffuseLight(inner) => inner.reflectance_estimate(wo, si),
+            Material::DiffuseEmitter(inner) => inner.reflectance_estimate(wo, si),
             Material::Isotropic(inner) => inner.reflectance_estimate(wo, si),
             Material::Mix(inner) => inner.reflectance_estimate(wo, si),
             Material::Coated(inner) => inner.reflectance_estimate(wo, si),
@@ -499,7 +499,7 @@ impl GpuSerializable for Material {
             Material::DiffuseReflector(inner) => inner.serialize_gpu(buf),
             Material::MicrofacetReflector(inner) => inner.serialize_gpu(buf),
             Material::Dielectric(inner) => inner.serialize_gpu(buf),
-            Material::DiffuseLight(inner) => inner.serialize_gpu(buf),
+            Material::DiffuseEmitter(inner) => inner.serialize_gpu(buf),
             Material::Isotropic(inner) => inner.serialize_gpu(buf),
 
             // Custom materials have no GPU representation — push a passthrough.
@@ -563,9 +563,9 @@ impl Material {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hittable::Hit;
+    use crate::intersect::interaction::Hit;
     use crate::texture::{CheckerTexture, SolidColor};
-    use crate::vec3::Point3;
+    use crate::math::vec3::Point3;
 
     /// Construct a minimal [`SurfaceInteraction`] for unit tests.
     ///
@@ -763,7 +763,7 @@ mod tests {
             MicrofacetReflector::conductor_from_reflectance(Color3::splat(0.9) * 0.1837, 0.0)
                 .into(),
             DielectricMaterial::new(1.5).into(),
-            DiffuseLightMaterial::new(Color3::splat(4.0)).into(),
+            DiffuseEmitterMaterial::new(Color3::splat(4.0)).into(),
             IsotropicMaterial::new(Color3::splat(0.5)).into(),
             MicrofacetReflector::dielectric(Color3::splat(0.9), 0.3, 1.5).into(),
             DielectricMaterial::rough(1.5, 0.3).into(),

@@ -1,7 +1,7 @@
 use glam::Vec3;
 use rand::RngExt;
 
-use crate::vec3::Point3;
+use crate::math::vec3::Point3;
 
 /// Trilinear interpolation of a 2x2x2 grid of values `c` at the point `(u, v, w)` in [0, 1]^3.
 /// Legacy implementation, not used in the current codebase. Kept for reference.

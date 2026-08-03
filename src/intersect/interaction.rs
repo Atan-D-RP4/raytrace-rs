@@ -1,11 +1,7 @@
-use std::sync::Arc;
-
-use crate::bvh::aabb::Aabb;
-use crate::interval::Interval;
 use crate::material::Material;
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::Ray;
 use crate::texture::{TextureCoords, TextureDerivatives};
-use crate::vec3::{Color3, Direction3, Point3};
 
 /// Represents a ray-object intersection hit, containing geometric information about the
 /// intersection point.
@@ -253,114 +249,4 @@ pub struct MaterialHit<'a> {
     pub hit: Hit,
     /// Reference to the material of the intersected surface.
     pub material: &'a Material,
-}
-
-pub trait Intersectable: Send + Sync + Bounded {
-    /// Returns the closest hit inside `[ray_t.min, ray_t.max]`, if any,
-    /// along with a reference to the intersected material.
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>>;
-
-    // Returns bool and short-circuits the moment any primitive/node reports a hit inside the interval,
-    // rather than tightening best_t and continuing
-    fn occluded(&self, ray: &Ray, ray_t: Interval) -> bool {
-        self.intersect(ray, ray_t).is_some()
-    }
-}
-
-impl<T: Intersectable> Intersectable for Vec<T> {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
-        let mut closest = ray_t.max;
-        let mut result = None;
-
-        for object in self {
-            if let Some(mat_hit) = object.intersect(ray, Interval::from(ray_t.min, closest)) {
-                closest = mat_hit.hit.time;
-                result = Some(mat_hit);
-            }
-        }
-
-        result
-    }
-}
-
-impl<T: Intersectable + ?Sized> Intersectable for Arc<T> {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
-        (**self).intersect(ray, ray_t)
-    }
-}
-
-pub trait Bounded: Send + Sync {
-    /// Returns a conservative world-space AABB for acceleration structures.
-    fn bounding_box(&self) -> Aabb;
-}
-
-impl<T: Bounded> Bounded for Vec<T> {
-    fn bounding_box(&self) -> Aabb {
-        self.iter()
-            .fold(Aabb::empty(), |acc, obj| acc.merge(&obj.bounding_box()))
-    }
-}
-
-impl<T: Bounded + ?Sized> Bounded for Arc<T> {
-    fn bounding_box(&self) -> Aabb {
-        (**self).bounding_box()
-    }
-}
-
-/// Result of sampling a direction toward a light source.
-///
-/// Contains everything needed to evaluate the direct lighting contribution:
-/// the (non-normalized) direction from the surface point to the light,
-/// the light's surface normal at the sampled point, the distance, and
-/// the area PDF of the sample.
-pub struct LightSample {
-    /// Non-normalized direction from surface point to the sampled point on the light.
-    /// `.unit_vector()` gives the unit direction; `.length()` gives the distance.
-    pub direction: Direction3,
-    /// Light's outward surface normal at the sampled point (unit length).
-    pub normal: Direction3,
-    /// Distance from the surface point to the sampled point on the light.
-    pub distance: f32,
-    /// Area PDF of this sample (probability density per unit area on the light surface).
-    pub pdf: f32,
-    /// Emission color of the light at the sampled point (radiance).
-    pub emission: Color3,
-}
-
-pub trait Sampleable: Send + Sync {
-    /// Returns the PDF value for sampling this hittable from a given origin and direction.
-    /// Default returns 0.0 (no contribution to the PDF).
-    fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
-        let _ = (origin, direction, time);
-        0.0
-    }
-
-    /// Samples a random direction toward this hittable from a given origin.
-    /// Takes `(u, v)` in `[0, 1)` for sampling. Default returns Vec3::ZERO.
-    fn random_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
-        let _ = (origin, u, v, time);
-        Direction3::ZERO
-    }
-
-    /// Samples a point on the light and returns everything needed for direct lighting:
-    /// direction, surface normal, distance, and area PDF.
-    ///
-    /// The returned [`LightSample`] is self-consistent — the direction points from
-    /// `origin` to the sampled point, the normal is the outward normal at that point,
-    /// and the distance equals `direction.length()`.
-    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample;
-}
-
-impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
-    fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
-        (**self).pdf_value(origin, direction, time)
-    }
-
-    fn random_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
-        (**self).random_direction(origin, u, v, time)
-    }
-
-    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
-        (**self).sample_light(origin, u, v, time)
-    }
 }

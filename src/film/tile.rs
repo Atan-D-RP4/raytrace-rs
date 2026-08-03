@@ -1,4 +1,4 @@
-use crate::vec3::Color3;
+use crate::math::vec3::Color3;
 
 pub struct FilmTile {
     /// Bounds of the tile in pixel coordinates (x_min, x_max, y_min, y_max)

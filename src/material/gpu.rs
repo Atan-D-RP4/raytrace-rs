@@ -46,7 +46,7 @@ pub enum GpuMaterialType {
     DiffuseReflector = 0,
     MicrofacetReflector = 1,
     Dielectric = 2,
-    DiffuseLight = 3,
+    DiffuseEmitter = 3,
     Isotropic = 4,
     Mix = 5,
     Coated = 6,

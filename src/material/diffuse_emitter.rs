@@ -11,23 +11,23 @@
 
 use std::sync::Arc;
 
-use crate::hittable::SurfaceInteraction;
+use crate::intersect::interaction::SurfaceInteraction;
 use crate::material::gpu::{GPU_NONE, GpuSerializable};
 use crate::material::{
     Bsdf, BsdfScatter, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType, Material,
 };
-use crate::pdf::PdfKind;
+use crate::math::vec3::{Color3, Direction3};
+use crate::sampling::pdf::PdfKind;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Direction3};
 
 /// Light emitting surface.
 #[derive(Clone)]
-pub struct DiffuseLightMaterial {
+pub struct DiffuseEmitterMaterial {
     /// Emission color (radiance) as a texture for spatial variation.
     pub emission: Arc<dyn Texture>,
 }
 
-impl DiffuseLightMaterial {
+impl DiffuseEmitterMaterial {
     /// Create an emissive material from a solid color.
     pub fn new(emission: Color3) -> Self {
         Self {
@@ -41,13 +41,13 @@ impl DiffuseLightMaterial {
     }
 }
 
-impl From<DiffuseLightMaterial> for Material {
-    fn from(m: DiffuseLightMaterial) -> Self {
-        Material::DiffuseLight(m)
+impl From<DiffuseEmitterMaterial> for Material {
+    fn from(m: DiffuseEmitterMaterial) -> Self {
+        Material::DiffuseEmitter(m)
     }
 }
 
-impl Bsdf for DiffuseLightMaterial {
+impl Bsdf for DiffuseEmitterMaterial {
     /// Pure emitter — no scattering, always returns `None`.
     fn scatter(
         &self,
@@ -88,14 +88,14 @@ impl Bsdf for DiffuseLightMaterial {
     }
 }
 
-impl GpuSerializable for DiffuseLightMaterial {
+impl GpuSerializable for DiffuseEmitterMaterial {
     fn serialize_gpu(&self, buf: &mut GpuMaterialBuffer) -> u32 {
         let (r, g, b, texture_index) = buf.gpu_color(&self.emission);
         let params = vec![r, g, b];
         let param_offset = buf.params.len() as u32;
         buf.push_params(&params);
         buf.nodes.push(GpuMaterialNode {
-            material_type: GpuMaterialType::DiffuseLight as u32,
+            material_type: GpuMaterialType::DiffuseEmitter as u32,
             param_offset,
             child_a: GPU_NONE,
             child_b: GPU_NONE,

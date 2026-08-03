@@ -4,8 +4,9 @@ use std::sync::Arc;
 use tracing::trace;
 
 use crate::bvh::aabb::Aabb;
-use crate::hittable::{Bounded, Intersectable, MaterialHit};
-use crate::interval::Interval;
+use crate::intersect::interaction::MaterialHit;
+use crate::intersect::{Bounded, Intersectable};
+use crate::math::interval::Interval;
 use crate::ray::Ray;
 
 /// The number of bins to use for binned SAH BVH construction. More bins gives a more accurate SAH

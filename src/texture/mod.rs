@@ -12,7 +12,7 @@
 //! TODO(renderer-agnostic): replace direct path-tracer handoff with
 //! `SurfaceInteraction` so rasterizer/GPU/hybrid/SDF backends share this API.
 
-use crate::vec3::{Color3, Direction3, Point3};
+use crate::math::vec3::{Color3, Direction3, Point3};
 
 mod gpu;
 pub mod image;

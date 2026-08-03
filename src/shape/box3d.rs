@@ -3,11 +3,12 @@ use std::borrow::Borrow;
 use glam::Vec3;
 
 use crate::bvh::aabb::Aabb;
-use crate::interval::Interval;
+use crate::intersect::interaction::Hit;
 use crate::material::Material;
+use crate::math::interval::Interval;
+use crate::math::vec3::{Direction3, Point3};
 use crate::ray::Ray;
 use crate::texture::UVDifferentiable;
-use crate::vec3::{Direction3, Point3};
 
 use super::{Shape3D, ShapeObject, ShapeSurfaceSampling};
 
@@ -165,7 +166,7 @@ impl UVDifferentiable for BoxShape {
 }
 
 impl Shape3D for BoxShape {
-    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<crate::hittable::Hit> {
+    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
         let (face, t, a, b) = self.intersect_faces(ray, ray_t)?;
         let point = ray.at(t);
 
@@ -180,7 +181,7 @@ impl Shape3D for BoxShape {
             _ => Direction3::NEG_Z,
         };
 
-        let hit = crate::hittable::Hit::new(t, point, point, normal, Some((a, b)), None);
+        let hit = Hit::new(t, point, point, normal, Some((a, b)), None);
         Some(hit)
     }
 

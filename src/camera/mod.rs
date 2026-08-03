@@ -1,6 +1,6 @@
+use crate::math::vec3::Color3;
 use crate::ray::Ray;
 use crate::sampler::{SampleStream, SamplerRng};
-use crate::vec3::Color3;
 
 pub mod perspective;
 

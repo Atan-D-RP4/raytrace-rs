@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use crate::perlin::Perlin;
+use crate::math::perlin::Perlin;
+use crate::math::vec3::Color3;
 use crate::texture::mapping::{MappedTexture, TextureMapping3D};
 use crate::texture::{Texture, TextureCoords};
-use crate::vec3::Color3;
 
 /// Uniform color texture — returns the same [`Color3`] at every point.
 ///
@@ -190,8 +190,8 @@ impl<T: Texture> TriplanarMapping<T> {
 
 impl<T: Texture> Texture for TriplanarMapping<T> {
     fn value(&self, coords: &TextureCoords) -> Color3 {
+        use crate::math::vec3::Point3;
         use crate::texture::TextureCoords;
-        use crate::vec3::Point3;
 
         let inv_scale = 1.0 / self.scale;
         let point = coords.tex_points.texture * inv_scale;

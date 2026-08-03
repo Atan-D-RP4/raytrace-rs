@@ -1,6 +1,6 @@
 use crate::camera::{Camera, CameraRay, CameraSampler};
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::{Ray, RayDifferentials};
-use crate::vec3::{Color3, Direction3, Point3};
 
 const WIDTH: i32 = 800;
 

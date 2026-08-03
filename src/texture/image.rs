@@ -4,13 +4,13 @@ use std::sync::Arc;
 use glam::{Mat2, Vec2};
 use image::Rgba32FImage;
 
+use crate::math::vec3::Color3;
 use crate::texture::MappedTexture;
 use crate::texture::TextureDerivatives;
 use crate::texture::gpu::{
     GPU_TEX_NONE, GpuTextureBuffer, GpuTextureNode, GpuTextureType, ImagePayload,
 };
 use crate::texture::{Texture, TextureCoords};
-use crate::vec3::Color3;
 
 /// Per-axis addressing mode — what happens when a texture-space coordinate
 /// leaves the valid range.
@@ -315,7 +315,7 @@ impl Texture for ImageTexture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vec3::{Direction3, Point3};
+    use crate::math::vec3::{Direction3, Point3};
 
     #[test]
     fn wrap_repeat_maps_back_into_range() {

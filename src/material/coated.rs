@@ -13,16 +13,16 @@ use std::sync::Arc;
 
 use glam::Vec3;
 
-use crate::hittable::SurfaceInteraction;
+use crate::intersect::interaction::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
     Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
     MAX_BSDF_STRATS, Material, PdfKind, fresnel_r0, fresnel_schlick, ggx_sample_h,
 };
-use crate::onb::Onb;
-use crate::pdf::cosine_hemisphere_direction;
+use crate::math::onb::Onb;
+use crate::math::vec3::{Color3, Direction3};
+use crate::sampling::pdf::cosine_hemisphere_direction;
 use crate::texture::{SolidColor, Texture};
-use crate::vec3::{Color3, Direction3};
 
 /// Maximum number of internal bounces for a Coated material. Each bounce
 /// gets a fresh dimension from `next_dim()` for the internal Fresnel split.
@@ -802,11 +802,11 @@ mod test {
     use std::f32::consts::PI;
     use std::sync::Arc;
 
-    use crate::hittable::SurfaceInteraction;
+    use crate::intersect::interaction::SurfaceInteraction;
     use crate::material::{
         Bsdf, CoatedMaterial, DielectricMaterial, Material, MicrofacetReflector,
     };
-    use crate::vec3::{Color3, Direction3};
+    use crate::math::vec3::{Color3, Direction3};
 
     /// Uniform sphere direction via spherical coordinates.
     #[inline(always)]

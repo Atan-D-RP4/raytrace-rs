@@ -3,13 +3,13 @@ use std::sync::Arc;
 use glam::{Mat3, Vec3};
 
 use crate::bvh::aabb::Aabb;
-use crate::hittable::Hit;
-use crate::interval::Interval;
+use crate::intersect::interaction::Hit;
+use crate::math::interval::Interval;
+use crate::math::vec3::{Direction3, Point3};
 use crate::ray::Ray;
 use crate::shape::Shape3D;
 use crate::shape::ShapeSurfaceSampling;
 use crate::texture::UVDifferentiable;
-use crate::vec3::{Direction3, Point3};
 
 mod dispatch;
 pub mod dual;

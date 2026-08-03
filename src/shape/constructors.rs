@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use glam::Vec3;
 
-use crate::hittable::Intersectable;
+use crate::intersect::Intersectable;
 use crate::material::Material;
 
 use super::regions::FunctionRegion;
 use super::{PlanarShape, ShapeObject};
 
-use crate::vec3::Point3;
+use crate::math::vec3::Point3;
 
 /// Construct a parallelogram (quad) from corner `Q` and side vectors `u`, `v`.
 ///

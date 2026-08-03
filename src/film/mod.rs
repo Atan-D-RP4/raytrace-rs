@@ -5,7 +5,7 @@ use glam::Vec3;
 use image::{ImageResult, RgbImage};
 use rayon::prelude::*;
 
-use crate::vec3::Color3;
+use crate::math::vec3::Color3;
 
 pub mod rgb;
 pub mod tile;

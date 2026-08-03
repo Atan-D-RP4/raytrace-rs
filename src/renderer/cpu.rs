@@ -5,14 +5,15 @@ use tracing::info;
 
 use crate::camera::{Camera, get_camera_sample};
 use crate::film::{Film, FilmTile, SharedFramebuffer, rgb::FILTER_RADIUS};
-use crate::hittable::{Intersectable, Sampleable};
 use crate::integrator::Integrator;
+use crate::intersect::Intersectable;
+use crate::light::Sampleable;
+use crate::math::vec3::Color3;
 use crate::renderer::Renderer;
 use crate::sampler::{
     HashRng, SampleStreamWriter, morton_encode, owen_scramble_base_2, owen_scramble_base_4,
     pixel_seed,
 };
-use crate::vec3::Color3;
 
 pub struct CpuRenderer<I>
 where

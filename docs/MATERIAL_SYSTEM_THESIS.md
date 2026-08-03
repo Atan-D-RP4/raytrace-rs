@@ -10,7 +10,7 @@ cross-renderer analysis (§2.4, §4.10) pointed at has landed on top of it —
 `DiffuseReflector`, `MicrofacetReflector` (Fresnel: Conductor{η,κ} /
 Dielectric{ior}; absorbs former Metal + Glossy), `Dielectric` (smooth/rough
 unified; absorbs former Dielectric + RoughDielectric), plus the unchanged
-`DiffuseLight`/`Isotropic`/`Mix`/`Coated`. Verified behavior-preserving
+`DiffuseEmitter`/`Isotropic`/`Mix`/`Coated`. Verified behavior-preserving
 (byte-identical fixed-seed render). See changelog and §4.10's status note.
 
 Still deferred, deliberately: the three §0 gaps (measured reflectance data,
@@ -76,7 +76,7 @@ ______________________________________________________________________
 ## 0. Purpose & Scope
 
 The current material system (`DiffuseReflector`, `MicrofacetReflector`,
-`Dielectric`, `DiffuseLight`, `Isotropic`, `Mix`, `Coated`, all behind the
+`Dielectric`, `DiffuseEmitter`, `Isotropic`, `Mix`, `Coated`, all behind the
 `Bsdf` trait) is
 correctly interface-unified but has no answer to three gaps:
 
@@ -99,7 +99,7 @@ ______________________________________________________________________
 | Piece | Shape | Notes |
 |---|---|---|
 | `Bsdf` trait | `scatter`, `eval`, `pdf`, `pdf_kind`, `emitted`, `is_emissive`, `reflectance_estimate`, `is_delta`, `ggx_alpha` | Deterministic given `(wo, wi)` — no RNG in `eval`/`pdf` today; `scatter` draws from a `next_dim` closure over the two-stream `SampleStream`/`SamplerRng`. |
-| Leaf variants | `DiffuseReflector`, `MicrofacetReflector` (Fresnel: Conductor{η,κ} / Dielectric{ior}), `Dielectric` (smooth/rough unified), `DiffuseLight`, `Isotropic` | Inline structs, no heap allocation. `MicrofacetReflector` absorbs former Metal + Glossy; `Dielectric` absorbs former Dielectric + RoughDielectric (v3). |
+| Leaf variants | `DiffuseReflector`, `MicrofacetReflector` (Fresnel: Conductor{η,κ} / Dielectric{ior}), `Dielectric` (smooth/rough unified), `DiffuseEmitter`, `Isotropic` | Inline structs, no heap allocation. `MicrofacetReflector` absorbs former Metal + Glossy; `Dielectric` absorbs former Dielectric + RoughDielectric (v3). |
 | Composite variants | `Mix` (stochastic lobe selection), `Coated` (single-bounce Fresnel blend) | Both `Arc<dyn Bsdf>` children — the only place this codebase pays vtable cost on the material side. |
 | `PdfKind` | Enum, avoids `Box<dyn PDF>` in the hot path | Already the right shape for what follows. |
 | `GpuMaterialNode` | `material_type` / `param_offset` / `child_a` / `child_b` / `texture_index` | Flat, index-based — textures and (per this doc) measured/precomputed tables both reduce to "buffer + index" under this scheme with no new GPU-side concept required. v3: `GpuMaterialType` renumbered (DiffuseReflector=0 … Coated=6); `MicrofacetReflector` carries a `fresnel_kind` flag plus η/κ params, `Dielectric` an `is_rough` flag. No GPU shader consumes the buffer yet. |

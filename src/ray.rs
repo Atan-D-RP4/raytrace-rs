@@ -1,5 +1,5 @@
 use crate::bvh::aabb::Aabb;
-use crate::vec3::{Direction3, Point3};
+use crate::math::vec3::{Direction3, Point3};
 
 /// Ray differentials for computing pixel footprints and texture filtering.
 #[derive(Debug, Clone, Copy)]

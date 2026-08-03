@@ -3,13 +3,14 @@ use std::sync::Arc;
 use glam::Vec3;
 
 use crate::bvh::aabb::Aabb;
-use crate::hittable::{Bounded, Hit, Intersectable, MaterialHit};
-use crate::interval::Interval;
+use crate::intersect::interaction::{Hit, MaterialHit};
+use crate::intersect::{Bounded, Intersectable};
 use crate::material::{IsotropicMaterial, Material};
+use crate::math::interval::Interval;
+use crate::math::vec3::{Color3, Direction3};
 use crate::ray::Ray;
 use crate::sampler;
 use crate::texture::Texture;
-use crate::vec3::{Color3, Direction3};
 
 /// Dedicated dimension for volume scattering distance.
 const VOLUME_DIM: u32 = 4096;
@@ -31,7 +32,7 @@ fn phase_tag(m: &Material) -> u8 {
         // Dielectric absorbs RoughDielectric (was 0x04); we keep Dielectric's tag.
         // This deliberately changes volume seeds for rough-dielectric-in-media scenes.
         Material::Dielectric(_) => 0x03,
-        Material::DiffuseLight(_) => 0x05,
+        Material::DiffuseEmitter(_) => 0x05,
         Material::Isotropic(_) => 0x06,
         Material::Mix { .. } => 0x08,
         Material::Coated { .. } => 0x09,
@@ -191,12 +192,12 @@ impl<T: Intersectable, const SURFACE: bool> Bounded for ConstantMedium<T, SURFAC
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interval::Interval;
+    use crate::math::interval::Interval;
     use crate::material::{DielectricMaterial, Material};
     use crate::ray::Ray;
     use crate::shape::{ShapeObject, SphereShape};
 
-    use crate::vec3::{Color3, Direction3, Point3};
+    use crate::math::vec3::{Color3, Direction3, Point3};
 
     type TestSphere = ShapeObject<SphereShape, Material>;
 

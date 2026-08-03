@@ -1,15 +1,15 @@
 use std::borrow::Borrow;
 
 use crate::bvh::aabb::Aabb;
-use crate::hittable::{
-    Bounded, Hit, Intersectable, LightSample, MaterialHit, Sampleable, SurfaceInteraction,
-};
-use crate::interval::Interval;
+use crate::intersect::interaction::{Hit, MaterialHit, SurfaceInteraction};
+use crate::intersect::{Bounded, Intersectable};
+use crate::light::{LightSample, Sampleable};
 use crate::material::Material;
+use crate::math::interval::Interval;
 use crate::ray::Ray;
 
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::texture::UVDifferentiable;
-use crate::vec3::{Color3, Direction3, Point3};
 
 mod box3d;
 mod constructors;

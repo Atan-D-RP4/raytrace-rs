@@ -1,10 +1,12 @@
 use glam::{Affine3A, Mat3A, Quat, Vec3, Vec3A};
 
 use crate::bvh::aabb::Aabb;
-use crate::hittable::{Bounded, Hit, Intersectable, LightSample, MaterialHit, Sampleable};
-use crate::interval::Interval;
+use crate::intersect::interaction::{Hit, MaterialHit};
+use crate::intersect::{Bounded, Intersectable};
+use crate::light::{LightSample, Sampleable};
+use crate::math::interval::Interval;
+use crate::math::vec3::{Direction3, Point3};
 use crate::ray::Ray;
-use crate::vec3::{Direction3, Point3};
 
 /// A spatial transform that can be applied to intersectable objects.
 /// Implementations may be static (one matrix) or animated (interpolated over time).

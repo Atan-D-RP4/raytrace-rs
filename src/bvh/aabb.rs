@@ -4,9 +4,9 @@ use std::simd::{Mask, Simd};
 
 use glam::Vec3;
 
-use crate::interval::Interval;
+use crate::math::interval::Interval;
+use crate::math::vec3::Point3;
 use crate::ray::Ray;
-use crate::vec3::Point3;
 
 pub type Aabb = AabbPacked<1>;
 

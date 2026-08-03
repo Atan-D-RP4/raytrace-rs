@@ -7,13 +7,13 @@
 
 use std::sync::Arc;
 
-use crate::hittable::SurfaceInteraction;
+use crate::intersect::interaction::SurfaceInteraction;
 use crate::material::gpu::GpuSerializable;
 use crate::material::{
     Bsdf, BsdfScatter, GPU_NONE, GpuMaterialBuffer, GpuMaterialNode, GpuMaterialType,
     MAX_BSDF_STRATS, PdfKind,
 };
-use crate::vec3::{Color3, Direction3};
+use crate::math::vec3::{Color3, Direction3};
 
 use crate::material::Material;
 

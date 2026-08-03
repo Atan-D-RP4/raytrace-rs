@@ -7,12 +7,14 @@ use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 
 use crate::bvh::aabb::Aabb;
-use crate::distributions::Dist2D;
 use crate::film::rgb::LUMINANCE;
-use crate::hittable::{Bounded, Intersectable, LightSample, MaterialHit, Sampleable};
-use crate::interval::Interval;
+use crate::intersect::interaction::MaterialHit;
+use crate::intersect::{Bounded, Intersectable};
+use crate::light::{LightSample, Sampleable};
+use crate::math::interval::Interval;
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::Ray;
-use crate::vec3::{Color3, Direction3, Point3};
+use crate::sampling::distributions::Dist2D;
 
 /// Equirectangular HDR environment map with sin(θ)-weighted luminance importance sampling.
 /// The distribution is built once at construction and reused for all sample/pdf queries.

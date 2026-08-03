@@ -1,8 +1,10 @@
 use glam::Vec3;
 
 use crate::bvh::aabb::Aabb;
-use crate::hittable::{Hit, LightSample};
-use crate::interval::Interval;
+use crate::intersect::interaction::Hit;
+use crate::light::LightSample;
+use crate::math::interval::Interval;
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::Ray;
 use crate::shape::regions::{
     AnnulusRegion, EllipseRegion, FunctionRegion, PolygonRegion, QuadRegion, RoundedRectRegion,
@@ -10,7 +12,6 @@ use crate::shape::regions::{
 };
 use crate::shape::{Region2D, Shape3D, ShapeSurfaceSampling};
 use crate::texture::UVDifferentiable;
-use crate::vec3::{Color3, Direction3, Point3};
 
 /// A planar shape that lives in a 3D plane, defined by a parallelogram (corner + two side vectors)
 /// and a `Region2D` that carves a 2D shape out of that parallelogram.
@@ -283,7 +284,7 @@ impl UVDifferentiable for PlanarShape {
 }
 
 impl Shape3D for PlanarShape {
-    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<crate::hittable::Hit> {
+    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
         let planar_hit = self.hit_plane(ray, ray_t)?;
 
         if !self.region.contains(planar_hit.a, planar_hit.b) {

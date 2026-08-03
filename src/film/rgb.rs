@@ -3,7 +3,7 @@ use std::path::Path;
 use image::ImageResult;
 
 use crate::film::{Film, FilmTile, post_process};
-use crate::vec3::Color3;
+use crate::math::vec3::Color3;
 
 pub const LUMINANCE: Color3 = Color3::new(0.2126, 0.7152, 0.0722);
 

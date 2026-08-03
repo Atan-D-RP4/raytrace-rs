@@ -4,12 +4,12 @@ use glam::Vec3;
 
 use crate::bvh::TreeBuilder;
 use crate::bvh::{Bvh, BvhNode};
-use crate::hittable::{Bounded, Intersectable};
-use crate::interval::Interval;
+use crate::intersect::{Bounded, Intersectable};
+use crate::math::interval::Interval;
 use crate::material::{DiffuseReflector, Material};
 use crate::ray::Ray;
 use crate::shape::sphere;
-use crate::vec3::{Color3, Direction3, Point3};
+use crate::math::vec3::{Color3, Direction3, Point3};
 
 /// Number of bytes per flat BVH node. Currently 40B (fields + 3-byte pad for `#[repr(C)]`
 /// alignment). Bump `_pad` to 27 if 64B cache-line packing is desired — `FlatBvhNode` is

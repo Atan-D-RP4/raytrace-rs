@@ -1,4 +1,4 @@
-use crate::vec3::Direction3;
+use crate::math::vec3::Direction3;
 use glam::{Mat3, Vec3};
 
 /// An orthonormal basis (ONB) represented by three mutually perpendicular unit vectors: u, v, and w.
