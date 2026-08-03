@@ -563,7 +563,30 @@ impl Material {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hittable::Hit;
     use crate::texture::{CheckerTexture, SolidColor};
+    use crate::vec3::Point3;
+
+    /// Construct a minimal [`SurfaceInteraction`] for unit tests.
+    ///
+    /// The geometry is a trivial default (position at origin, zero curvature, no UV
+    /// gradients). Only `material` and `shading_normal` are meaningful — set them
+    /// to control what the BSDF code path sees.
+    #[cfg(test)]
+    impl<'a> SurfaceInteraction<'a> {
+        pub fn test_surface(
+            material: &'a Material,
+            shading_normal: Direction3,
+        ) -> SurfaceInteraction<'a> {
+            SurfaceInteraction::new(
+                Hit::new(0.0, Point3::ZERO, Point3::ZERO, shading_normal, None, None),
+                shading_normal,
+                true,
+                material,
+                None,
+            )
+        }
+    }
 
     /// Smoke test: GPU buffer generation for a flat material.
     #[test]

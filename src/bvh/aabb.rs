@@ -132,23 +132,30 @@ impl<const W: usize> AabbPacked<W> {
     #[inline]
     pub fn surface_area(&self) -> [f32; W] {
         let mut areas = [0.0; W];
-        for i in 0..W {
+
+        areas.iter_mut().enumerate().for_each(|(i, area)| {
             let dx = self.max[0][i] - self.min[0][i];
             let dy = self.max[1][i] - self.min[1][i];
             let dz = self.max[2][i] - self.min[2][i];
-            areas[i] = 2.0 * (dx * dy + dx * dz + dy * dz);
-        }
+            *area = 2.0 * (dx * dy + dx * dz + dy * dz);
+        });
+
         areas
     }
 
     #[inline]
     pub fn centroid(&self) -> [[f32; W]; 3] {
         let mut centroids = [[0.0; W]; 3];
-        for i in 0..W {
-            centroids[0][i] = 0.5 * (self.min[0][i] + self.max[0][i]);
-            centroids[1][i] = 0.5 * (self.min[1][i] + self.max[1][i]);
-            centroids[2][i] = 0.5 * (self.min[2][i] + self.max[2][i]);
-        }
+
+        centroids
+            .iter_mut()
+            .enumerate()
+            .for_each(|(axis, centroid)| {
+                centroid.iter_mut().enumerate().for_each(|(i, v)| {
+                    *v = 0.5 * (self.min[axis][i] + self.max[axis][i]);
+                });
+            });
+
         centroids
     }
 

@@ -118,6 +118,7 @@ fn slab_aabb_test(min: [f32; 3], max: [f32; 3], ray: &Ray, tmin: f32, tmax: f32)
 /// | 63     | 1    | split_axis: u8       — split axis for direction-sign ordering |
 /// | **64** |      | Total (align(64) pads to 64) |
 #[repr(C, align(64))]
+#[derive(Debug, Clone)]
 pub struct BvhNode<const W: usize> {
     /// SoA AABBs: W bounding boxes stored component-wise for SIMD gather.
     /// min[0] = first child's xmin, min[1] = second child's xmin, etc.

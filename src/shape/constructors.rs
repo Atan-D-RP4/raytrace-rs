@@ -6,10 +6,7 @@ use glam::Vec3;
 use crate::hittable::Intersectable;
 use crate::material::Material;
 
-use super::regions::{
-    AnnulusRegion, EllipseRegion, FunctionRegion, PolygonRegion, QuadRegion, RoundedRectRegion,
-    SuperellipseRegion, TriRegion,
-};
+use super::regions::FunctionRegion;
 use super::{PlanarShape, ShapeObject};
 
 use crate::vec3::Point3;
@@ -23,8 +20,8 @@ pub fn quad<M: Borrow<Material>>(
     u: Vec3,
     v: Vec3,
     material: M,
-) -> ShapeObject<PlanarShape<QuadRegion>, M> {
-    let shape = PlanarShape::new(Q, u, v, QuadRegion);
+) -> ShapeObject<PlanarShape, M> {
+    let shape = PlanarShape::quad(Q, u, v);
     ShapeObject::new(shape, material)
 }
 
@@ -34,8 +31,8 @@ pub fn ellipse<M: Borrow<Material>>(
     side_a: Vec3,
     side_b: Vec3,
     material: M,
-) -> ShapeObject<PlanarShape<EllipseRegion>, M> {
-    let shape = PlanarShape::new(center, side_a, side_b, EllipseRegion);
+) -> ShapeObject<PlanarShape, M> {
+    let shape = PlanarShape::ellipse(center, side_a, side_b);
     ShapeObject::new(shape, material)
 }
 
@@ -45,8 +42,8 @@ pub fn tri<M: Borrow<Material>>(
     side_a: Vec3,
     side_b: Vec3,
     material: M,
-) -> ShapeObject<PlanarShape<TriRegion>, M> {
-    let shape = PlanarShape::new(corner, side_a, side_b, TriRegion);
+) -> ShapeObject<PlanarShape, M> {
+    let shape = PlanarShape::tri(corner, side_a, side_b);
     ShapeObject::new(shape, material)
 }
 
@@ -57,8 +54,8 @@ pub fn annulus<M: Borrow<Material>>(
     side_b: Vec3,
     inner: f32,
     material: M,
-) -> ShapeObject<PlanarShape<AnnulusRegion>, M> {
-    let shape = PlanarShape::new(center, side_a, side_b, AnnulusRegion { inner });
+) -> ShapeObject<PlanarShape, M> {
+    let shape = PlanarShape::annulus(center, side_a, side_b, inner);
     ShapeObject::new(shape, material)
 }
 
@@ -69,8 +66,8 @@ pub fn rounded_rect<M: Borrow<Material>>(
     side_b: Vec3,
     radius: f32,
     material: M,
-) -> ShapeObject<PlanarShape<RoundedRectRegion>, M> {
-    let shape = PlanarShape::new(corner, side_a, side_b, RoundedRectRegion { radius });
+) -> ShapeObject<PlanarShape, M> {
+    let shape = PlanarShape::rounded_rect(corner, side_a, side_b, radius);
     ShapeObject::new(shape, material)
 }
 
@@ -81,8 +78,8 @@ pub fn superellipse<M: Borrow<Material>>(
     side_b: Vec3,
     n: f32,
     material: M,
-) -> ShapeObject<PlanarShape<SuperellipseRegion>, M> {
-    let shape = PlanarShape::new(corner, side_a, side_b, SuperellipseRegion::new(n));
+) -> ShapeObject<PlanarShape, M> {
+    let shape = PlanarShape::superellipse(corner, side_a, side_b, n);
     ShapeObject::new(shape, material)
 }
 
@@ -96,8 +93,8 @@ pub fn polygon<M: Borrow<Material>>(
     side_b: Vec3,
     vertices: Vec<(f32, f32)>,
     material: M,
-) -> ShapeObject<PlanarShape<PolygonRegion>, M> {
-    let shape = PlanarShape::new(corner, side_a, side_b, PolygonRegion::new(vertices));
+) -> ShapeObject<PlanarShape, M> {
+    let shape = PlanarShape::polygon(corner, side_a, side_b, vertices);
     ShapeObject::new(shape, material)
 }
 
@@ -112,8 +109,8 @@ pub fn function_patch<M: Borrow<Material>>(
     side_b: Vec3,
     region: FunctionRegion,
     material: M,
-) -> ShapeObject<PlanarShape<FunctionRegion>, M> {
-    let shape = PlanarShape::new(corner, side_a, side_b, region);
+) -> ShapeObject<PlanarShape, M> {
+    let shape = PlanarShape::function(corner, side_a, side_b, region);
     ShapeObject::new(shape, material)
 }
 

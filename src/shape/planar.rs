@@ -4,6 +4,10 @@ use crate::bvh::aabb::Aabb;
 use crate::hittable::{Hit, LightSample};
 use crate::interval::Interval;
 use crate::ray::Ray;
+use crate::shape::regions::{
+    AnnulusRegion, EllipseRegion, FunctionRegion, PolygonRegion, QuadRegion, RoundedRectRegion,
+    SuperellipseRegion, TriRegion,
+};
 use crate::shape::{Region2D, Shape3D, ShapeSurfaceSampling};
 use crate::texture::UVDifferentiable;
 use crate::vec3::{Color3, Direction3, Point3};
@@ -11,10 +15,10 @@ use crate::vec3::{Color3, Direction3, Point3};
 /// A planar shape that lives in a 3D plane, defined by a parallelogram (corner + two side vectors)
 /// and a `Region2D` that carves a 2D shape out of that parallelogram.
 ///
-/// The geometry is pure (no material) — wrap via `ShapeObject<PlanarShape<R>, M>` to make it
+/// The geometry is pure (no material) — wrap via `ShapeObject<PlanarShape, M>` to make it
 /// intersectable with a material. This replaces the old `PlanarPatch<R, M>` which combined
 /// geometry and material in one type.
-pub struct PlanarShape<R: Region2D> {
+pub struct PlanarShape {
     /// The corner point of the planar patch, corresponding to (a, b) = (0, 0).
     corner: Point3,
     /// The side vector corresponding to the (a, b) = (1, 0) direction.
@@ -33,7 +37,90 @@ pub struct PlanarShape<R: Region2D> {
     /// The area of the planar patch in world space, precomputed for efficiency.
     area: f32,
     /// The 2D region that defines the shape of the patch (e.g. quad, ellipse, triangle).
-    region: R,
+    region: Region,
+}
+
+/// Unifies the 8 region kinds into a single type, resolved with static dispatch.
+///
+/// `PlanarShape` stores one of these; the `Region2D` impl below routes every
+/// method call to the inner variant's `Region2D` impl, so the shape stays
+/// non-generic while each region kind keeps its specialized behavior.
+enum Region {
+    Quad(QuadRegion),
+    Ellipse(EllipseRegion),
+    Tri(TriRegion),
+    Annulus(AnnulusRegion),
+    RoundedRect(RoundedRectRegion),
+    Superellipse(SuperellipseRegion),
+    Polygon(PolygonRegion),
+    Function(FunctionRegion),
+}
+
+impl Region2D for Region {
+    fn contains(&self, a: f32, b: f32) -> bool {
+        match self {
+            Region::Quad(r) => r.contains(a, b),
+            Region::Ellipse(r) => r.contains(a, b),
+            Region::Tri(r) => r.contains(a, b),
+            Region::Annulus(r) => r.contains(a, b),
+            Region::RoundedRect(r) => r.contains(a, b),
+            Region::Superellipse(r) => r.contains(a, b),
+            Region::Polygon(r) => r.contains(a, b),
+            Region::Function(r) => r.contains(a, b),
+        }
+    }
+
+    fn uv(&self, a: f32, b: f32) -> (f32, f32) {
+        match self {
+            Region::Quad(r) => r.uv(a, b),
+            Region::Ellipse(r) => r.uv(a, b),
+            Region::Tri(r) => r.uv(a, b),
+            Region::Annulus(r) => r.uv(a, b),
+            Region::RoundedRect(r) => r.uv(a, b),
+            Region::Superellipse(r) => r.uv(a, b),
+            Region::Polygon(r) => r.uv(a, b),
+            Region::Function(r) => r.uv(a, b),
+        }
+    }
+
+    fn area(&self) -> f32 {
+        match self {
+            Region::Quad(r) => r.area(),
+            Region::Ellipse(r) => r.area(),
+            Region::Tri(r) => r.area(),
+            Region::Annulus(r) => r.area(),
+            Region::RoundedRect(r) => r.area(),
+            Region::Superellipse(r) => r.area(),
+            Region::Polygon(r) => r.area(),
+            Region::Function(r) => r.area(),
+        }
+    }
+
+    fn bounding_box_area(&self) -> f32 {
+        match self {
+            Region::Quad(r) => r.bounding_box_area(),
+            Region::Ellipse(r) => r.bounding_box_area(),
+            Region::Tri(r) => r.bounding_box_area(),
+            Region::Annulus(r) => r.bounding_box_area(),
+            Region::RoundedRect(r) => r.bounding_box_area(),
+            Region::Superellipse(r) => r.bounding_box_area(),
+            Region::Polygon(r) => r.bounding_box_area(),
+            Region::Function(r) => r.bounding_box_area(),
+        }
+    }
+
+    fn sample(&self, u: f32, v: f32) -> (f32, f32) {
+        match self {
+            Region::Quad(r) => r.sample(u, v),
+            Region::Ellipse(r) => r.sample(u, v),
+            Region::Tri(r) => r.sample(u, v),
+            Region::Annulus(r) => r.sample(u, v),
+            Region::RoundedRect(r) => r.sample(u, v),
+            Region::Superellipse(r) => r.sample(u, v),
+            Region::Polygon(r) => r.sample(u, v),
+            Region::Function(r) => r.sample(u, v),
+        }
+    }
 }
 
 /// A hit record for a ray-plane intersection, including the parametric (a, b) coordinates
@@ -49,8 +136,10 @@ struct PlanarHit {
     b: f32,
 }
 
-impl<R: Region2D> PlanarShape<R> {
-    pub fn new(corner: Point3, side_a: Vec3, side_b: Vec3, region: R) -> Self {
+impl PlanarShape {
+    /// Shared geometry setup: computes the precomputed plane fields from the
+    /// parallelogram (corner + two side vectors) and the region kind.
+    fn from_region(corner: Point3, side_a: Vec3, side_b: Vec3, region: Region) -> Self {
         // Compute the AABB from the two diagonals of the parallelogram.
         // This is tighter than computing the min/max of all four corners separately.
         let bbox_diagonal1 = Aabb::from_corners(corner, corner + side_a + side_b);
@@ -75,6 +164,72 @@ impl<R: Region2D> PlanarShape<R> {
             area: n.length(),
             region,
         }
+    }
+
+    /// Construct a full parallelogram (quad) region from corner `Q` and side vectors `u`, `v`.
+    ///
+    /// Parameter naming matches *Ray Tracing in One Weekend* (RTIOW) notation.
+    pub fn quad(corner: Point3, side_a: Vec3, side_b: Vec3) -> Self {
+        Self::from_region(corner, side_a, side_b, Region::Quad(QuadRegion))
+    }
+
+    /// Construct a triangle region (a ≥ 0, b ≥ 0, a + b ≤ 1) from corner and side vectors.
+    pub fn tri(corner: Point3, side_a: Vec3, side_b: Vec3) -> Self {
+        Self::from_region(corner, side_a, side_b, Region::Tri(TriRegion))
+    }
+
+    /// Construct an ellipse region (unit disk in parametric space) from center and side vectors.
+    pub fn ellipse(corner: Point3, side_a: Vec3, side_b: Vec3) -> Self {
+        Self::from_region(corner, side_a, side_b, Region::Ellipse(EllipseRegion))
+    }
+
+    /// Construct an annulus (ring) region with configurable inner radius.
+    pub fn annulus(corner: Point3, side_a: Vec3, side_b: Vec3, inner: f32) -> Self {
+        Self::from_region(
+            corner,
+            side_a,
+            side_b,
+            Region::Annulus(AnnulusRegion { inner }),
+        )
+    }
+
+    /// Construct a rounded rectangle region with configurable corner radius.
+    pub fn rounded_rect(corner: Point3, side_a: Vec3, side_b: Vec3, radius: f32) -> Self {
+        Self::from_region(
+            corner,
+            side_a,
+            side_b,
+            Region::RoundedRect(RoundedRectRegion { radius }),
+        )
+    }
+
+    /// Construct a superellipse region `|a|ⁿ + |b|ⁿ ≤ 1` with configurable exponent `n`.
+    pub fn superellipse(corner: Point3, side_a: Vec3, side_b: Vec3, n: f32) -> Self {
+        Self::from_region(
+            corner,
+            side_a,
+            side_b,
+            Region::Superellipse(SuperellipseRegion::new(n)),
+        )
+    }
+
+    /// Construct an arbitrary N-gon polygon region from a list of `(a, b)` vertices.
+    pub fn polygon(corner: Point3, side_a: Vec3, side_b: Vec3, vertices: Vec<(f32, f32)>) -> Self {
+        Self::from_region(
+            corner,
+            side_a,
+            side_b,
+            Region::Polygon(PolygonRegion::new(vertices)),
+        )
+    }
+
+    /// Construct a boolean-predicate function region from a `FunctionRegion`.
+    ///
+    /// The function defines `contains(a, b)` — any (a, b) that satisfies the predicate
+    /// is inside the shape. Useful for analytical or procedural shapes that don't fit
+    /// into a fixed parametric form.
+    pub fn function(corner: Point3, side_a: Vec3, side_b: Vec3, region: FunctionRegion) -> Self {
+        Self::from_region(corner, side_a, side_b, Region::Function(region))
     }
 
     /// Returns the intersection of the ray with the plane of the patch, if there is any, alongside
@@ -109,7 +264,7 @@ impl<R: Region2D> PlanarShape<R> {
     }
 }
 
-impl<R: Region2D> UVDifferentiable for PlanarShape<R> {
+impl UVDifferentiable for PlanarShape {
     /// Returns (∂u/∂P, ∂v/∂P) as 3-vectors. Constant across the patch.
     fn uv_gradient(&self, _mapping_point: &Point3) -> (Direction3, Direction3) {
         let a = self.side_a;
@@ -127,7 +282,7 @@ impl<R: Region2D> UVDifferentiable for PlanarShape<R> {
     }
 }
 
-impl<R: Region2D> Shape3D for PlanarShape<R> {
+impl Shape3D for PlanarShape {
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<crate::hittable::Hit> {
         let planar_hit = self.hit_plane(ray, ray_t)?;
 
@@ -152,7 +307,7 @@ impl<R: Region2D> Shape3D for PlanarShape<R> {
     }
 }
 
-impl<R: Region2D> ShapeSurfaceSampling for PlanarShape<R> {
+impl ShapeSurfaceSampling for PlanarShape {
     fn area(&self) -> f32 {
         self.area * self.region.area()
     }

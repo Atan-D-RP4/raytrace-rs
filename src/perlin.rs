@@ -98,8 +98,8 @@ impl Perlin {
         // Creates a 2x2x2 grid of gradient vectors for interpolation.
         let mut c = [[[Vec3::ZERO; 2]; 2]; 2];
 
-        /// Fills the 2x2x2 grid of gradient vectors `c` using the permutation tables and the random
-        /// gradient vectors.
+        // Fills the 2x2x2 grid of gradient vectors `c` using the permutation tables and the random
+        // gradient vectors.
         c.iter_mut().enumerate().for_each(|(di, x)| {
             x.iter_mut().enumerate().for_each(|(dj, y)| {
                 y.iter_mut().enumerate().for_each(|(dk, z)| {
