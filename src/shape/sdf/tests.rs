@@ -1,4 +1,4 @@
-use crate::interval::Interval;
+use crate::math::interval::Interval;
 use crate::ray::Ray;
 use crate::shape::*;
 

@@ -18,6 +18,7 @@ use raytrace_rs::camera::perspective::PerspectiveCamera;
 use raytrace_rs::film::RgbFilm;
 use raytrace_rs::film::{Framebuffer, SharedFramebuffer};
 use raytrace_rs::integrator::PathTracingIntegrator;
+use raytrace_rs::light::Sampleable;
 use raytrace_rs::renderer::CpuRenderer;
 use raytrace_rs::renderer::Renderer;
 use raytrace_rs::scene::Scene;
@@ -459,6 +460,25 @@ fn build_render_context(
     (camera, film, renderer)
 }
 
+/// Consumes a scene into its world BVH and light list.
+///
+/// Builds a binary BVH from the scene objects, then widens it to W=4 for
+/// wide traversal. Shared by the headless and live-preview render paths so
+/// both use the same acceleration structure.
+fn build_world_bvh<const W: usize>(scene: Scene) -> (Bvh<W>, Vec<Arc<dyn Sampleable>>) {
+    profiling::scope!("scene_build");
+    let (mut objects, light_objects) = scene.into_objects();
+    info!(
+        object_count = objects.len(),
+        light_count = light_objects.len(),
+        "building world BVH"
+    );
+    profiling::scope!("root_bvh_build");
+    let world_bvh = TreeBuilder::new(&mut objects);
+    let world = Bvh::<2>::from(world_bvh).widen::<W>();
+    (world, light_objects)
+}
+
 fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, u32, u32) {
     let (camera, mut film, renderer) = build_render_context(&scene);
     let (width, height) = camera.image_resolution();
@@ -471,19 +491,8 @@ fn setup_render_pipeline(scene: Scene, scene_name: &str) -> (SharedFramebuffer, 
         let _span = tracing::info_span!("render_thread").entered();
         info!("starting render thread");
 
-        profiling::scope!("scene_build");
-        let (mut objects, light_objects) = scene.into_objects();
-        info!(
-            object_count = objects.len(),
-            light_count = light_objects.len(),
-            "building world BVH"
-        );
-        profiling::scope!("root_bvh_build");
-        let world_bvh = TreeBuilder::new(&mut objects);
-        let world = Bvh::<2>::from(world_bvh);
+        let (world, light_objects) = build_world_bvh::<4>(scene);
 
-        // TODO(opt-preview): propagate cancellation signal so worker can stop on app exit.
-        // TODO(opt-preview): move to tile scheduler with periodic publish for faster perceived convergence.
         profiling::scope!("render");
         renderer.render(
             &camera,
@@ -520,29 +529,12 @@ fn native_live_render(
 
 #[profiling::function]
 fn headless_render(scene: Scene, scene_name: &str) {
-    profiling::scope!("scene_build");
-
     let filename = format!("{}.png", scene_name);
 
     let (camera, mut film, renderer) = build_render_context(&scene);
     let (width, height) = camera.image_resolution();
 
-    let (mut objects, light_objects) = scene.into_objects();
-
-    let world_len = objects.len();
-    let light_len = light_objects.len();
-    info!(
-        object_count = world_len,
-        light_count = light_len,
-        "building world BVH"
-    );
-    // TODO(gpu): split accel build from upload/flatten so CPU and GPU can profile same phases.
-    profiling::scope!("root_bvh_build");
-    let world_bvh = TreeBuilder::new(&mut objects);
-
-    // Build a binary BVH then widen to W=4 for wide traversal.
-    let binary_bvh = Bvh::<2>::from(world_bvh);
-    let world = binary_bvh.widen::<8>();
+    let (world, light_objects) = build_world_bvh::<4>(scene);
 
     info!(
         threads = rayon::current_num_threads(),

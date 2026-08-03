@@ -192,8 +192,8 @@ impl<T: Intersectable, const SURFACE: bool> Bounded for ConstantMedium<T, SURFAC
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::interval::Interval;
     use crate::material::{DielectricMaterial, Material};
+    use crate::math::interval::Interval;
     use crate::ray::Ray;
     use crate::shape::{ShapeObject, SphereShape};
 

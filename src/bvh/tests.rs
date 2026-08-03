@@ -5,11 +5,11 @@ use glam::Vec3;
 use crate::bvh::TreeBuilder;
 use crate::bvh::{Bvh, BvhNode};
 use crate::intersect::{Bounded, Intersectable};
-use crate::math::interval::Interval;
 use crate::material::{DiffuseReflector, Material};
+use crate::math::interval::Interval;
+use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::Ray;
 use crate::shape::sphere;
-use crate::math::vec3::{Color3, Direction3, Point3};
 
 /// Number of bytes per flat BVH node. Currently 40B (fields + 3-byte pad for `#[repr(C)]`
 /// alignment). Bump `_pad` to 27 if 64B cache-line packing is desired — `FlatBvhNode` is
@@ -181,7 +181,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
     // Verify that widening to W=4 produces identical intersection results.
     let wide: Bvh<4> = flat.widen();
     for &(origin, direction, should_hit) in &test_rays {
-        let ray = Ray::new_with_time(origin.into(), direction.into(), 0.0);
+        let ray = Ray::new_with_time(Point3(origin), Direction3(direction), 0.0);
         let wide_result = wide.intersect(&ray, Interval::from(0.001, f32::INFINITY));
         assert_eq!(
             wide_result.is_some(),
@@ -198,4 +198,66 @@ fn flat_bvh_matches_bvh_node_multi_object() {
         wide.node_count(),
         flat.node_count()
     );
+}
+
+/// `widen::<2>()` must be a no-op: Bvh<2> and Bvh<W> (W=2) are the same type,
+/// and a collapse would emit a wide-leaf/wide-interior layout the W=2
+/// traversal paths cannot read (prim counts in `leaf_info[0]` vs `child_count`,
+/// leaf prim_starts pushed as node indices). The result must be the same tree.
+#[test]
+fn widen_w2_is_identity() {
+    use crate::shape::quad;
+
+    let s1: Arc<dyn Intersectable> = Arc::new(sphere(
+        Point3::new(-2., 0., -3.),
+        0.5,
+        Material::from(DiffuseReflector::new(Color3::new(1.0, 0.0, 0.0))),
+    ));
+    let s2: Arc<dyn Intersectable> = Arc::new(sphere(
+        Point3::new(0., 0., -3.),
+        0.5,
+        Material::from(DiffuseReflector::new(Color3::new(0.0, 1.0, 0.0))),
+    ));
+    let s3: Arc<dyn Intersectable> = Arc::new(sphere(
+        Point3::new(2., 0., -3.),
+        0.5,
+        Material::from(DiffuseReflector::new(Color3::new(0.0, 0.0, 1.0))),
+    ));
+    let s4: Arc<dyn Intersectable> = Arc::new(quad(
+        Point3::new(-3., -1., -5.),
+        Vec3::new(6., 0., 0.),
+        Vec3::new(0., 2., 0.),
+        Material::from(DiffuseReflector::new(Color3::new(0.5, 0.5, 0.5))),
+    ));
+
+    let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];
+    let bvh = TreeBuilder::new(&mut objects);
+    let flat = Bvh::<2>::from(bvh);
+    let binary_node_count = flat.node_count();
+
+    // Widen to W=2 and confirm the tree is unchanged.
+    let wide: Bvh<2> = flat.widen();
+    assert_eq!(
+        wide.node_count(),
+        binary_node_count,
+        "widen::<2>() must not rebuild the tree"
+    );
+
+    let test_rays = vec![
+        (Vec3::ZERO, Vec3::new(-2., 0., -3.).normalize(), true),
+        (Vec3::ZERO, Vec3::new(0., 0., -3.).normalize(), true),
+        (Vec3::ZERO, Vec3::new(2., 0., -3.).normalize(), true),
+        (Vec3::ZERO, Vec3::new(0., 0., -1.), true),
+        (Vec3::ZERO, Vec3::new(0., 10., 0.), false),
+        (Vec3::new(10., 0., 0.), Vec3::new(0., 1., 0.), false),
+    ];
+    for &(origin, direction, should_hit) in &test_rays {
+        let ray = Ray::new_with_time(Point3(origin), Direction3(direction), 0.0);
+        let wide_result = wide.intersect(&ray, Interval::from(0.001, f32::INFINITY));
+        assert_eq!(
+            wide_result.is_some(),
+            should_hit,
+            "widen::<2>: ray from {origin} dir {direction}: expected hit={should_hit}"
+        );
+    }
 }

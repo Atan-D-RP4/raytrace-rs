@@ -50,9 +50,9 @@ mod tests {
     use crate::bvh::builder::TreeBuilder;
     use crate::film::{Film, RgbFilm};
     use crate::material::{DiffuseEmitterMaterial, DiffuseReflector, Material};
+    use crate::math::vec3::{Color3, Direction3, Point3};
     use crate::sampler::NaiveRandomSampler;
     use crate::shape::quad;
-    use crate::math::vec3::{Color3, Direction3, Point3};
     use glam::Vec3;
 
     /// Minimal integration test: render a 4×4 image of a lit Cornell-box-like

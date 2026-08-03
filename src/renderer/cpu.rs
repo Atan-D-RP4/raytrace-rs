@@ -212,8 +212,9 @@ where
                 .for_each(|(_tile_idx, tile)| {
                     let [x_start, x_end, y_start, y_end] = tile.bounds;
 
-                    let thread_idx = rayon::current_thread_index()
-                        .expect("tile processing always runs inside rayon thread pool");
+                    // Single-tile renders run the closure inline on the caller
+                    // thread (not a rayon worker), so fall back to sampler 0.
+                    let thread_idx = rayon::current_thread_index().unwrap_or(0);
                     let mut guard = samplers[thread_idx].lock().unwrap();
                     let (ref mut stream, ref mut rng) = *guard;
 
@@ -240,8 +241,11 @@ where
                             let seed = pixel_seed(x as i32, y as i32);
                             let scrambled_sample = owen_scramble_base_2(sample_idx, seed);
 
-                            // Compute the actual Sobol index for this pixel-sample
-                            let actual_idx = pixel_base + scrambled_sample;
+                            // Compute the actual Sobol index for this pixel-sample.
+                            // wrapping_add: pixel_base is already truncated to u32
+                            // and scrambled_sample is a full 32-bit hash, so the
+                            // sum can overflow — release wraps, debug must too.
+                            let actual_idx = pixel_base.wrapping_add(scrambled_sample);
 
                             // Reset the stream & rng for this pixel-sample.
                             *stream = SampleStreamWriter::for_pixel(x as i32, y as i32, actual_idx);

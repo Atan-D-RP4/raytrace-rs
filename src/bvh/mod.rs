@@ -389,7 +389,24 @@ impl Bvh<2> {
     ///
     /// The result has the same primitives (shared via `Arc` clones) and
     /// produces identical intersection results.
+    ///
+    /// `W = 2` is the identity. A collapse to two slots would emit nodes the
+    /// W=2 traversal paths cannot read: wide leaves store the prim count in
+    /// `leaf_info[0]` with `child_count = 1`, but the compact leaf path reads
+    /// `prim_count()` from `child_count`; and wide interiors' leaf children
+    /// carry prim_start in `child_offset[i]`, which the binary interior path
+    /// would push as a node index. So `widen::<2>()` returns `self` unchanged.
     pub fn widen<const W: usize>(self) -> Bvh<W> {
+        // W = 2 is a compile-time identity: Bvh<W> and Bvh<2> are the same
+        // type, so this is a plain move, not a reinterpretation. The branch
+        // is eliminated for every other W before codegen.
+        if const { W == 2 } {
+            // SAFETY: `if const` guarantees W == 2 here, making Bvh<W> the
+            // identical type to Bvh<2> — a same-type move via transmute.
+            #[allow(clippy::missing_transmute_annotations)]
+            return unsafe { std::mem::transmute(self) };
+        }
+
         let collapse_depth = W.ilog2() as usize;
         let mut wide_nodes = Vec::new();
 

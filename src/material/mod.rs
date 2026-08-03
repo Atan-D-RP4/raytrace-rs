@@ -564,8 +564,8 @@ impl Material {
 mod tests {
     use super::*;
     use crate::intersect::interaction::Hit;
-    use crate::texture::{CheckerTexture, SolidColor};
     use crate::math::vec3::Point3;
+    use crate::texture::{CheckerTexture, SolidColor};
 
     /// Construct a minimal [`SurfaceInteraction`] for unit tests.
     ///
