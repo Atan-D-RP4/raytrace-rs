@@ -49,6 +49,7 @@ fn volume_seed(density: f32, tag: u8) -> u64 {
     )
 }
 
+#[derive(Clone)]
 pub struct ConstantMedium<T: Intersectable, const SURFACE: bool = true> {
     /// The boundary defines the shape of the volume (e.g., a sphere or box).
     boundary: T,

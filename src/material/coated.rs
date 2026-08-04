@@ -42,9 +42,9 @@ fn beers_absorption(throughput: Color3, tint: Color3, path_len: f32) -> Color3 {
 #[derive(Clone)]
 pub struct CoatedMaterial {
     /// Bottom layer (absorbs transmitted light).
-    pub substrate: Arc<dyn Bsdf>,
+    pub substrate: Arc<Material>,
     /// Top layer (thin dielectric, reflects some light via Fresnel).
-    pub coating: Arc<dyn Bsdf>,
+    pub coating: Arc<Material>,
     /// Refractive index of the coating layer (used for Fresnel).
     pub coating_ior: f32,
     /// Tint texture of the coating layer (used for Beer's law absorption).
@@ -291,8 +291,8 @@ impl CoatedMaterial {
 impl CoatedMaterial {
     /// Create a coated material (thin dielectric coating over a substrate).
     pub fn new(
-        substrate: Arc<dyn Bsdf>,
-        coating: Arc<dyn Bsdf>,
+        substrate: Arc<Material>,
+        coating: Arc<Material>,
         coating_ior: f32,
         coating_tint: Color3,
         thickness: f32,
@@ -308,8 +308,8 @@ impl CoatedMaterial {
 
     /// Create a coated material with a texture-driven coating tint.
     pub fn textured(
-        substrate: Arc<dyn Bsdf>,
-        coating: Arc<dyn Bsdf>,
+        substrate: Arc<Material>,
+        coating: Arc<Material>,
         coating_ior: f32,
         coating_tint: Arc<dyn Texture>,
         thickness: f32,
@@ -834,11 +834,11 @@ mod test {
         // through PdfKind separately, so the total BSDF sampling PDF integrates to 1.
         // This test checks that the substrate-path component integrates to fresnel_t(wo).
         let material = CoatedMaterial::new(
-            Arc::new(MicrofacetReflector::conductor_from_reflectance(
-                Color3::splat(0.9) * 0.1837,
-                0.1,
-            )),
-            Arc::new(DielectricMaterial::tinted(1.5, Color3::ONE)),
+            Arc::new(
+                MicrofacetReflector::conductor_from_reflectance(Color3::splat(0.9) * 0.1837, 0.1)
+                    .into(),
+            ),
+            Arc::new(DielectricMaterial::tinted(1.5, Color3::ONE).into()),
             1.5,
             Color3::new(0.8, 0.8, 0.8),
             0.01,

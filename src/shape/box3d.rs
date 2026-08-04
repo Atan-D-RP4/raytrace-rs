@@ -19,6 +19,7 @@ use super::{Shape3D, ShapeObject, ShapeSurfaceSampling};
 /// via the [`box3d`] constructor.
 ///
 /// Wrap via `ShapeObject<BoxShape, M>` or use [`shape_box3d`].
+#[derive(Clone)]
 pub struct BoxShape {
     /// The minimum corner of the box (smallest x, y, z).
     min: Point3,

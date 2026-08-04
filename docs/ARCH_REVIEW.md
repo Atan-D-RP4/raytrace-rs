@@ -353,7 +353,7 @@ Material enum (9 variants):
 ├── Isotropic(IsotropicMaterial)   # uniform sphere (volumes)
 ├── Mix(MixMaterial)               # weighted stochastic blend
 ├── Coated(CoatedMaterial)         # clear coat over substrate
-└── Custom(Arc<dyn Bsdf>)         # Escape hatch
+└── Custom(Arc<Material>)         # Escape hatch
 
 Bsdf trait (private to material module, 7 methods):
   scatter(&self, wo, si, &mut next_dim) → Option<BsdfScatter>

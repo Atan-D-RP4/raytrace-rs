@@ -18,7 +18,7 @@ use raytrace_rs::camera::perspective::PerspectiveCamera;
 use raytrace_rs::film::RgbFilm;
 use raytrace_rs::film::{Framebuffer, SharedFramebuffer};
 use raytrace_rs::integrator::PathTracingIntegrator;
-use raytrace_rs::light::Sampleable;
+use raytrace_rs::primitives::{LightPrimitive, Primitive};
 use raytrace_rs::renderer::CpuRenderer;
 use raytrace_rs::renderer::Renderer;
 use raytrace_rs::scene::Scene;
@@ -465,7 +465,7 @@ fn build_render_context(
 /// Builds a binary BVH from the scene objects, then widens it to W=4 for
 /// wide traversal. Shared by the headless and live-preview render paths so
 /// both use the same acceleration structure.
-fn build_world_bvh<const W: usize>(scene: Scene) -> (Bvh<W>, Vec<Arc<dyn Sampleable>>) {
+fn build_world_bvh<const W: usize>(scene: Scene) -> (Bvh<W, Primitive>, Vec<LightPrimitive>) {
     profiling::scope!("scene_build");
     let (mut objects, light_objects) = scene.into_objects();
     info!(
@@ -475,7 +475,7 @@ fn build_world_bvh<const W: usize>(scene: Scene) -> (Bvh<W>, Vec<Arc<dyn Samplea
     );
     profiling::scope!("root_bvh_build");
     let world_bvh = TreeBuilder::new(&mut objects);
-    let world = Bvh::<2>::from(world_bvh).widen::<W>();
+    let world = Bvh::<2, _>::from(world_bvh).widen::<W>();
     (world, light_objects)
 }
 

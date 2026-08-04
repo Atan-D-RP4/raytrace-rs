@@ -19,6 +19,7 @@ use crate::texture::UVDifferentiable;
 /// The geometry is pure (no material) — wrap via `ShapeObject<PlanarShape, M>` to make it
 /// intersectable with a material. This replaces the old `PlanarPatch<R, M>` which combined
 /// geometry and material in one type.
+#[derive(Clone)]
 pub struct PlanarShape {
     /// The corner point of the planar patch, corresponding to (a, b) = (0, 0).
     corner: Point3,
@@ -46,6 +47,7 @@ pub struct PlanarShape {
 /// `PlanarShape` stores one of these; the `Region2D` impl below routes every
 /// method call to the inner variant's `Region2D` impl, so the shape stays
 /// non-generic while each region kind keeps its specialized behavior.
+#[derive(Clone)]
 enum Region {
     Quad(QuadRegion),
     Ellipse(EllipseRegion),

@@ -30,7 +30,6 @@
 use std::simd::num::SimdFloat;
 use std::simd::prelude::*;
 use std::simd::{Mask, Simd};
-use std::sync::Arc;
 
 use tracing::info;
 
@@ -216,16 +215,19 @@ impl<const W: usize> BvhNode<W> {
 }
 
 /// Flat BVH container: array-of-nodes + flat primitive list.
-pub struct Bvh<const W: usize> {
+pub struct Bvh<const W: usize, P>
+where
+    P: Intersectable + Bounded + Clone,
+{
     /// Contiguous array of flat BVH nodes in DFS (pre-order) layout.
     nodes: Vec<BvhNode<W>>,
     /// Scene primitives in the order they appear in the flat leaf nodes.
-    primitives: Vec<Arc<dyn Intersectable>>,
+    primitives: Vec<P>,
 }
 
-impl<const W: usize> Bvh<W> {
+impl<const W: usize, P: Intersectable + Bounded + Clone> Bvh<W, P> {
     /// Creates a BVH from a list of scene objects.
-    pub fn new(objects: &mut Vec<Arc<dyn Intersectable>>) -> Self {
+    pub fn new(objects: &mut [P]) -> Self {
         // Force const evaluation of BvhNode<W>'s width assertion.
         BvhNode::<W>::ASSERT;
         info!(object_count = objects.len(), "building bvh");
@@ -236,14 +238,17 @@ impl<const W: usize> Bvh<W> {
     }
 }
 
-impl<const W: usize> From<TreeBuilder> for Bvh<W> {
+impl<const W: usize, P> From<TreeBuilder<P>> for Bvh<W, P>
+where
+    P: Intersectable + Bounded + Clone,
+{
     /// Builds a flat BVH from a tree BVH.
     ///
     /// Traverses the tree in depth-first pre-order, collecting leaf
     /// primitives and emitting flat nodes. Interior children are stored
     /// by index; the DFS ordering guarantees children are emitted
     /// immediately after their parent.
-    fn from(bvh: TreeBuilder) -> Self {
+    fn from(bvh: TreeBuilder<P>) -> Self {
         let mut flat_nodes = Vec::new();
         let mut primitives = Vec::new();
 
@@ -257,7 +262,10 @@ impl<const W: usize> From<TreeBuilder> for Bvh<W> {
     }
 }
 
-impl<const W: usize> Bvh<W> {
+impl<const W: usize, P> Bvh<W, P>
+where
+    P: Intersectable + Bounded + Clone,
+{
     /// Recursively flattens a tree BVH node into the flat array.
     ///
     /// Takes ownership of the tree node and its children, moving leaf
@@ -265,9 +273,9 @@ impl<const W: usize> Bvh<W> {
     ///
     /// Returns the index of the emitted node.
     fn flatten_node(
-        node: TreeBuilder,
+        node: TreeBuilder<P>,
         flat_nodes: &mut Vec<BvhNode<W>>,
-        primitives: &mut Vec<Arc<dyn Intersectable>>,
+        primitives: &mut Vec<P>,
     ) -> u32 {
         match node {
             TreeBuilder::Empty => {
@@ -380,7 +388,10 @@ impl<const W: usize> Bvh<W> {
 // the original binary tree by only collapsing within those levels.
 // ---------------------------------------------------------------------------
 
-impl Bvh<2> {
+impl<P> Bvh<2, P>
+where
+    P: Intersectable + Bounded + Clone,
+{
     /// Widen this binary BVH to a wide BVH of width W.
     ///
     /// Collapses consecutive levels of the binary tree so that each wide
@@ -396,7 +407,7 @@ impl Bvh<2> {
     /// `prim_count()` from `child_count`; and wide interiors' leaf children
     /// carry prim_start in `child_offset[i]`, which the binary interior path
     /// would push as a node index. So `widen::<2>()` returns `self` unchanged.
-    pub fn widen<const W: usize>(self) -> Bvh<W> {
+    pub fn widen<const W: usize>(self) -> Bvh<W, P> {
         // W = 2 is a compile-time identity: Bvh<W> and Bvh<2> are the same
         // type, so this is a plain move, not a reinterpretation. The branch
         // is eliminated for every other W before codegen.
@@ -614,10 +625,11 @@ impl Bvh<2> {
     }
 }
 
-impl<const W: usize> Intersectable for Bvh<W>
+impl<const W: usize, P> Intersectable for Bvh<W, P>
 where
     Simd<f32, W>: SimdPartialOrd + SimdFloat,
     <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
+    P: Intersectable + Bounded + Clone,
 {
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         if self.nodes.is_empty() {
@@ -841,7 +853,10 @@ where
     }
 }
 
-impl<const W: usize> Bounded for Bvh<W> {
+impl<const W: usize, P> Bounded for Bvh<W, P>
+where
+    P: Intersectable + Bounded + Clone,
+{
     fn bounding_box(&self) -> Aabb {
         if self.nodes.is_empty() {
             return Aabb::empty();

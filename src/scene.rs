@@ -9,19 +9,18 @@ use crate::bvh::aabb::Aabb;
 use crate::bvh::builder::TreeBuilder;
 use crate::camera::perspective::CameraConfig;
 use crate::const_medium::ConstantMedium;
-use crate::intersect::Intersectable;
-use crate::light::Sampleable;
 use crate::light::environment::{EnvironmentLight, EnvironmentMap};
-use crate::material::{Bsdf, CoatedMaterial};
+use crate::material::CoatedMaterial;
 use crate::material::{
     DielectricMaterial, DiffuseEmitterMaterial, DiffuseReflector, MicrofacetReflector,
 };
 use crate::material::{IsotropicMaterial, Material};
 use crate::math::vec3::{Color3, Direction3, Point3};
+use crate::primitives::{LightPrimitive, Primitive};
 use crate::shape::regions::FunctionRegion;
 use crate::shape::{
-    DynEval, Scalar, SdfFn, SdfShape, ShapeObject, annulus, function_patch, moving_sphere, polygon,
-    quad, rounded_rect, shape_box3d, sphere, superellipse, tri,
+    CylinderSdf, MandelbulbSdf, SdfExpr, SdfShape, ShapeObject, annulus, function_patch,
+    moving_sphere, polygon, quad, rounded_rect, shape_box3d, sphere, superellipse, tri,
 };
 use crate::texture::{
     CheckerTexture, ImageTexture, NoiseTexture, SolidColor, SphericalUvMapping, Texture,
@@ -33,11 +32,11 @@ pub struct Scene {
     /// Camera configuration for the scene.
     config: CameraConfig,
     /// All intersectable objects in the scene, including lights.
-    objects: Vec<Arc<dyn Intersectable>>,
+    objects: Vec<Primitive>,
     /// Objects whose directions are worth sampling toward (area lights).
     /// Used by `EmitterPDF` for MIS. Delta materials (glass, metal) should
     /// NOT be included — they have no meaningful PDF for importance sampling.
-    important_objects: Vec<Arc<dyn Sampleable>>,
+    lights: Vec<LightPrimitive>,
     /// Optional environment map for background lighting. If present, used for
     /// rays that miss all scene geometry (includes MIS-weighted contribution
     /// for indirect bounces).
@@ -49,14 +48,14 @@ impl Scene {
         Self {
             config: CameraConfig::new(),
             objects: Vec::new(),
-            important_objects: Vec::new(),
+            lights: Vec::new(),
             env_map: None,
         }
     }
 
     pub fn with_env_map(mut self, env_map: Arc<EnvironmentMap>) -> Self {
-        self.important_objects
-            .push(Arc::new(EnvironmentLight::new(env_map.clone())));
+        self.lights
+            .push(EnvironmentLight::new(env_map.clone()).into());
         self.env_map = Some(env_map);
         self
     }
@@ -78,8 +77,8 @@ impl Scene {
     ///
     /// `important_objects` are geometry-only copies for importance sampling
     /// via `EmitterPDF` (area lights only — delta materials excluded).
-    pub fn into_objects(self) -> (Vec<Arc<dyn Intersectable>>, Vec<Arc<dyn Sampleable>>) {
-        (self.objects, self.important_objects)
+    pub fn into_objects(self) -> (Vec<Primitive>, Vec<LightPrimitive>) {
+        (self.objects, self.lights)
     }
 
     pub fn aspect_ratio(mut self, ratio: f32) -> Self {
@@ -137,11 +136,11 @@ impl Scene {
     /// for refraction).
     pub fn add_intersectable(
         &mut self,
-        object: Arc<dyn Intersectable>,
-        importance_target: Option<Arc<dyn Sampleable>>,
+        object: Primitive,
+        importance_target: Option<LightPrimitive>,
     ) {
         if let Some(target) = importance_target {
-            self.important_objects.push(target);
+            self.lights.push(target);
         }
         self.objects.push(object);
     }
@@ -150,21 +149,19 @@ impl Scene {
     ///
     /// Pushes to `important_objects` only. Use `add_intersectable` for
     /// objects that need both intersection and importance sampling.
-    pub fn add_importance_target(&mut self, object: Arc<dyn Sampleable>) {
-        self.important_objects.push(object);
+    pub fn add_importance_target(&mut self, object: LightPrimitive) {
+        self.lights.push(object);
     }
 
     pub fn add_sphere(&mut self, center: Point3, radius: f32, material: impl Into<Material>) {
         let material = material.into();
         trace!(?center, radius, "add sphere");
-        if material.is_emissive() {
-            let material = Arc::new(material);
-            self.add_intersectable(
-                Arc::new(sphere(center, radius, material.clone())),
-                Some(Arc::new(sphere(center, radius, material))),
-            );
+        let is_emissive = material.is_emissive();
+        let primitive: Primitive = sphere(center, radius, material).into();
+        if is_emissive {
+            self.add_intersectable(primitive.clone(), Some(LightPrimitive::from(primitive)));
         } else {
-            self.add_intersectable(Arc::new(sphere(center, radius, material)), None);
+            self.add_intersectable(primitive, None);
         }
     }
 
@@ -172,14 +169,12 @@ impl Scene {
     pub fn add_quad(&mut self, Q: Point3, u: Vec3, v: Vec3, material: impl Into<Material>) {
         let material = material.into();
         trace!(?Q, ?u, ?v, "add quad");
-        if material.is_emissive() {
-            let material = Arc::new(material);
-            self.add_intersectable(
-                Arc::new(quad(Q, u, v, material.clone())),
-                Some(Arc::new(quad(Q, u, v, material))),
-            );
+        let is_emissive = material.is_emissive();
+        let primitive: Primitive = quad(Q, u, v, material).into();
+        if is_emissive {
+            self.add_intersectable(primitive.clone(), Some(LightPrimitive::from(primitive)));
         } else {
-            self.add_intersectable(Arc::new(quad(Q, u, v, material)), None);
+            self.add_intersectable(primitive, None);
         }
     }
 
@@ -191,10 +186,10 @@ impl Scene {
     pub fn add_box(&mut self, a: Point3, b: Point3, material: impl Into<Material>) {
         let material = material.into();
         trace!(?a, ?b, "add box");
-        let material = Arc::new(material);
-        let box_3d = Arc::new(shape_box3d(a, b, material.clone()));
-        if material.is_emissive() {
-            self.add_intersectable(box_3d.clone(), Some(box_3d.clone()));
+        let is_emissive = material.is_emissive();
+        let box_3d: Primitive = shape_box3d(a, b, material).into();
+        if is_emissive {
+            self.add_intersectable(box_3d.clone(), Some(LightPrimitive::from(box_3d)));
         } else {
             self.add_intersectable(box_3d, None);
         }
@@ -209,33 +204,23 @@ impl Scene {
     ) {
         let material = material.into();
         trace!(?center_start, ?center_end, radius, "add moving sphere");
-        if material.is_emissive() {
-            let material = Arc::new(material);
-            self.add_intersectable(
-                Arc::new(moving_sphere(
-                    center_start,
-                    center_end,
-                    radius,
-                    material.clone(),
-                )),
-                Some(Arc::new(moving_sphere(
-                    center_start,
-                    center_end,
-                    radius,
-                    material,
-                ))),
-            );
+        let is_emissive = material.is_emissive();
+        // Moving spheres share `SphereShape` with static spheres; the variant records the kind.
+        let so = moving_sphere(center_start, center_end, radius, material);
+        let primitive = Primitive::MovingSphere(ShapeObject::new(
+            so.shape().clone(),
+            Arc::new(so.material().clone()),
+        ));
+        if is_emissive {
+            self.add_intersectable(primitive.clone(), Some(LightPrimitive::from(primitive)));
         } else {
-            self.add_intersectable(
-                Arc::new(moving_sphere(center_start, center_end, radius, material)),
-                None,
-            );
+            self.add_intersectable(primitive, None);
         }
     }
 
     /// Add an intersectable object for intersection only (no importance sampling).
-    pub fn add_object(&mut self, object: Arc<dyn Intersectable>) {
-        self.objects.push(object);
+    pub fn add_object(&mut self, object: impl Into<Primitive>) {
+        self.objects.push(object.into());
     }
 }
 
@@ -247,8 +232,7 @@ impl Scene {
         let ground: Material = DiffuseReflector::new(Color3::new(0.48, 0.83, 0.53)).into();
 
         let boxes_per_side = 20;
-        let mut boxes1: Vec<Arc<dyn Intersectable>> =
-            Vec::with_capacity(boxes_per_side * boxes_per_side);
+        let mut boxes1: Vec<Box<Primitive>> = Vec::with_capacity(boxes_per_side * boxes_per_side);
         for i in 0..boxes_per_side {
             for j in 0..boxes_per_side {
                 let w = 100.0;
@@ -265,20 +249,20 @@ impl Scene {
                     ground.clone(),
                 );
 
-                boxes1.push(Arc::new(box_quads));
+                boxes1.push(Box::new(box_quads.into()));
             }
         }
 
-        let boxes1_bvh = {
+        let boxes1_bvh: Arc<Bvh<2, Box<Primitive>>> = {
             let mut boxes = boxes1;
             let boxes_len = boxes.len();
             info!(
                 box_count = boxes_len,
                 "assembled complex_scene ground boxes"
             );
-            Arc::new(Bvh::<2>::from(TreeBuilder::new(&mut boxes)))
+            Arc::new(Bvh::<2, _>::from(TreeBuilder::new(&mut boxes)))
         };
-        scene.objects.push(boxes1_bvh);
+        scene.objects.push(Primitive::Aggregate(boxes1_bvh));
 
         scene.add_quad(
             Point3::new(123., 554., 147.),
@@ -317,26 +301,36 @@ impl Scene {
             ),
         );
 
-        scene.objects.push(Arc::new(ConstantMedium::new_albedo(
-            sphere(
-                Point3::new(360., 150., 145.),
-                70.,
-                Material::from(DielectricMaterial::new(0.9)),
-            ),
-            0.2,
-            Vec3::new(0.2, 0.4, 0.9),
-        )));
+        scene
+            .objects
+            .push(Primitive::Volume(ConstantMedium::new_albedo(
+                Arc::new(
+                    sphere(
+                        Point3::new(360., 150., 145.),
+                        70.,
+                        Material::from(DielectricMaterial::new(0.9)),
+                    )
+                    .into(),
+                ),
+                0.2,
+                Vec3::new(0.2, 0.4, 0.9),
+            )));
 
-        scene.objects.push(Arc::new(ConstantMedium::new_albedo(
-            sphere(
-                Point3::ZERO,
-                5000.,
-                Material::from(DielectricMaterial::new(0.9)),
-            ),
-            0.0001,
-            // Color3::from(1., 1., 1.), // Pure white
-            Vec3::new(0.7, 0.1, 0.1), // A faint red tint to visualize the volume better
-        )));
+        scene
+            .objects
+            .push(Primitive::Volume(ConstantMedium::new_albedo(
+                Arc::new(
+                    sphere(
+                        Point3::ZERO,
+                        5000.,
+                        Material::from(DielectricMaterial::new(0.9)),
+                    )
+                    .into(),
+                ),
+                0.0001,
+                // Color3::from(1., 1., 1.), // Pure white
+                Vec3::new(0.7, 0.1, 0.1), // A faint red tint to visualize the volume better
+            )));
 
         let emat: Arc<dyn Texture> = ImageTexture::load_arc("./earthmap.png")
             .expect("Failed to load earthmap.png for complex_scene");
@@ -354,17 +348,20 @@ impl Scene {
         );
 
         let white: Material = DiffuseReflector::new(Color3::new(0.73, 0.73, 0.73)).into();
-        let mut boxes2: Vec<Arc<dyn Intersectable>> = Vec::with_capacity(1000);
+        let mut boxes2: Vec<Box<Primitive>> = Vec::with_capacity(1000);
         for _ in 0..1000 {
-            boxes2.push(Arc::new(sphere(
-                Point3::new(
-                    rand::rng().random_range(0.0..165.),
-                    rand::rng().random_range(0.0..165.),
-                    rand::rng().random_range(0.0..165.),
-                ),
-                10.,
-                white.clone(),
-            )));
+            boxes2.push(Box::new(
+                sphere(
+                    Point3::new(
+                        rand::rng().random_range(0.0..165.),
+                        rand::rng().random_range(0.0..165.),
+                        rand::rng().random_range(0.0..165.),
+                    ),
+                    10.,
+                    white.clone(),
+                )
+                .into(),
+            ));
         }
 
         let cluster = {
@@ -374,18 +371,23 @@ impl Scene {
                 sphere_count = boxes_len,
                 "assembled complex_scene sphere cluster"
             );
-            TransformObject::new(
+            // Nested BVH aggregate (W = 2) inside two transforms.
+            let cluster_bvh =
+                Arc::new(Bvh::<2, Box<Primitive>>::from(TreeBuilder::new(&mut boxes)));
+            let rotated: Primitive = TransformObject::new(
+                StaticTransform::rotation_y(15.),
+                Box::new(Primitive::Aggregate(cluster_bvh)),
+            )
+            .into();
+            Primitive::Transformed(TransformObject::new(
                 // Translate::new(Vec3::new(-100., 270., 395.)),
                 StaticTransform::from_affine3a(Affine3A::from_translation(Vec3::new(
                     -100., 270., 395.,
                 ))),
-                TransformObject::new(
-                    StaticTransform::rotation_y(15.),
-                    TreeBuilder::new(&mut boxes),
-                ),
-            )
+                Box::new(rotated),
+            ))
         };
-        scene.objects.push(Arc::new(cluster));
+        scene.objects.push(cluster);
 
         scene.config.aspect_ratio = 1.0;
         scene.config.image_width = 800;
@@ -426,18 +428,23 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat, phase_fn)| {
-                let quad_box = shape_box3d(Point3::ZERO, Point3(*size), mat.clone());
+                let quad_box: Primitive =
+                    shape_box3d(Point3::ZERO, Point3(*size), mat.clone()).into();
 
-                let rotated =
-                    TransformObject::new(StaticTransform::rotation_y(*rotate_angle), quad_box);
+                let rotated: Primitive = TransformObject::new(
+                    StaticTransform::rotation_y(*rotate_angle),
+                    Box::new(quad_box),
+                )
+                .into();
 
-                let wrapped = TransformObject::new(
+                let wrapped: Primitive = TransformObject::new(
                     StaticTransform::from_affine3a(Affine3A::from_translation(*translate_vec)),
-                    rotated,
-                );
+                    Box::new(rotated),
+                )
+                .into();
                 let const_medium = ConstantMedium::new(Arc::new(wrapped), 0.01, phase_fn.clone());
 
-                Arc::new(const_medium) as Arc<dyn Intersectable>
+                Primitive::Volume(const_medium)
             });
 
         scene.objects.extend(boxes);
@@ -477,16 +484,19 @@ impl Scene {
         let boxes = box_params
             .iter()
             .map(|(size, translate_vec, rotate_angle, mat)| {
-                let quad_box = shape_box3d(Point3::ZERO, Point3(*size), mat.clone());
+                let quad_box: Primitive =
+                    shape_box3d(Point3::ZERO, Point3(*size), mat.clone()).into();
 
-                let rotated =
-                    TransformObject::new(StaticTransform::rotation_y(*rotate_angle), quad_box);
-                let wrapped = TransformObject::new(
+                let rotated: Primitive = TransformObject::new(
+                    StaticTransform::rotation_y(*rotate_angle),
+                    Box::new(quad_box),
+                )
+                .into();
+                TransformObject::new(
                     StaticTransform::from_affine3a(Affine3A::from_translation(*translate_vec)),
-                    rotated,
-                );
-
-                Arc::new(wrapped) as Arc<dyn Intersectable>
+                    Box::new(rotated),
+                )
+                .into()
             });
 
         scene.objects.extend(boxes);
@@ -527,38 +537,18 @@ impl Scene {
         let material: Material =
             DielectricMaterial::rough_tinted(1.5, 0.1, Color3::new(0.8, 0.8, 1.0)).into();
 
-        struct CylinderSdf {
-            center: Point3,
-            radius: f32,
-            height: f32,
-        }
-
-        impl SdfFn for CylinderSdf {
-            fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
-                let cx = x - T::from_f32(self.center.x());
-                let cy = y - T::from_f32(self.center.y());
-                let cz = z - T::from_f32(self.center.z());
-                let d = (cx * cx + cz * cz).sqrt() - T::from_f32(self.radius);
-                let h = cy.abs() - T::from_f32(self.height / 2.0);
-                d.max(h)
-            }
-        }
-
         let center = Point3::new(278.0, 278.0, 278.0);
         let half = Vec3::splat(50.0);
 
-        // SDF shape
+        // SDF shape — data-only leaves: the kit structs ride inside `SdfExpr` variants.
         let shape = SdfShape::new(
-            CylinderSdf {
-                center,
-                radius: 50.0,
-                height: 100.0,
-            },
+            SdfExpr::Cylinder(CylinderSdf::new(center, 50.0, 100.0)),
             Aabb::from_corners(center - half, center + half),
         );
-        let sdf_shape = ShapeObject::new(shape, material);
-        let sdf_shape = TransformObject::new(StaticTransform::rotation_x(45.0), sdf_shape);
-        scene.add_intersectable(Arc::new(sdf_shape), None);
+        let sdf_shape: Primitive = ShapeObject::new(shape, material).into();
+        let sdf_shape: Primitive =
+            TransformObject::new(StaticTransform::rotation_x(45.0), Box::new(sdf_shape)).into();
+        scene.add_intersectable(sdf_shape, None);
 
         scene.config.aspect_ratio = 1.0;
         scene.config.image_width = 800;
@@ -603,94 +593,6 @@ impl Scene {
         let rotated_offset = rotation * camera_offset.into_inner();
         scene.config.look_from = scene.config.look_at + rotated_offset;
 
-        struct MandelbulbSdf {
-            power: i32,
-            iters: usize,
-            bailout: f32,
-        }
-        impl SdfFn for MandelbulbSdf {
-            fn eval<T: Scalar + DynEval>(&self, x: T, y: T, z: T) -> T {
-                let mut zx = x;
-                let mut zy = y;
-                let mut zz = z;
-                let mut dr = T::one();
-                let mut escaped = false;
-                let mut did_iterate = false;
-
-                for _ in 0..self.iters {
-                    let r2 = zx * zx + zy * zy + zz * zz;
-                    if r2 > T::from_f32(self.bailout * self.bailout) {
-                        // Already outside the bailout sphere — point is outside the set.
-                        escaped = true;
-                        break;
-                    }
-
-                    did_iterate = true;
-                    let r = r2.sqrt();
-                    // Guard against polar singularity r ≈ 0.
-                    let r_safe = r.max(T::from_f32(1e-8));
-                    let inv_r = T::one() / r_safe;
-                    let r_xy = (zx * zx + zy * zy).sqrt();
-
-                    let ct = zz * inv_r;
-                    let st = r_xy * inv_r;
-
-                    let (cp, sp) = if r_xy >= T::from_f32(f32::EPSILON) {
-                        (zx / r_xy, zy / r_xy)
-                    } else {
-                        (T::one(), T::zero())
-                    };
-
-                    // Multiple-angle iteration for power n
-                    let mut cos_nt = ct;
-                    let mut sin_nt = st;
-                    for _ in 1..self.power {
-                        (cos_nt, sin_nt) = (cos_nt * ct - sin_nt * st, sin_nt * ct + cos_nt * st);
-                    }
-
-                    let mut cos_np = cp;
-                    let mut sin_np = sp;
-                    for _ in 1..self.power {
-                        (cos_np, sin_np) = (cos_np * cp - sin_np * sp, sin_np * cp + cos_np * sp);
-                    }
-
-                    dr = T::from_f32(self.power as f32) * r.powi(self.power - 1) * dr + T::one();
-
-                    let rn = r.powi(self.power);
-                    zx = rn * sin_nt * cos_np + x;
-                    zy = rn * sin_nt * sin_np + y;
-                    zz = rn * cos_nt + z;
-
-                    // Check bailout on the NEW z (after iteration) so dr is from the
-                    // iteration that caused escape, not the one before it.
-                    let r2_new = zx * zx + zy * zy + zz * zz;
-                    if r2_new > T::from_f32(self.bailout * self.bailout) {
-                        escaped = true;
-                        break;
-                    }
-                }
-
-                let r = (zx * zx + zy * zy + zz * zz).sqrt().max(T::from_f32(1e-8));
-                // Exterior distance estimate (common for all paths so Dual AD
-                // differentiates the same expression regardless of escape status).
-                let mut de = T::from_f32(0.5) * r / dr;
-
-                if did_iterate && !escaped {
-                    // Inside the set — negate the distance; the derivative of
-                    // -(0.5·r/dr) = -(0.5·dr⁻¹)·dr/dp which is continuous
-                    // across the surface boundary.
-                    de = -de;
-                } else if !did_iterate {
-                    // No iteration ran — started outside the bailout sphere.
-                    // dr = 1, so de = 0.5·r.  Use Euclidean distance to bailout
-                    // sphere instead: same far-field limit, tighter near the
-                    // bailout sphere.  Negligible for gradient (never hit surface).
-                    de = (r - T::from_f32(self.bailout)).max(T::from_f32(1e-3));
-                }
-                de
-            }
-        }
-
         // The Mandelbulb SDF evaluates around the origin in local space, so the
         // AABB must be centered at the origin.  TransformObject translates the
         // shape to look_at in world space.
@@ -698,22 +600,18 @@ impl Scene {
         let corner_min = Point3::splat(-half);
         let corner_max = Point3::splat(half);
         let mandelbulb = SdfShape::new(
-            MandelbulbSdf {
-                power: 8,
-                iters: 20,
-                bailout: 2.0,
-            },
+            SdfExpr::Mandelbulb(MandelbulbSdf::new(8, 20, 2.0)),
             Aabb::from_corners(corner_min, corner_max),
         );
-        let sdf_shape = ShapeObject::new(mandelbulb, material);
+        let sdf_shape: Primitive = ShapeObject::new(mandelbulb, material).into();
         // Scale the Mandelbulb up from its natural ~3-unit diameter to ~60 units,
         // then translate to the look_at point.
         let xform = StaticTransform::from_affine3a(
             Affine3A::from_translation(scene.config.look_at.into_inner())
                 * Affine3A::from_scale(Vec3::splat(100.0)),
         );
-        let sdf_shape = TransformObject::new(xform, sdf_shape);
-        scene.add_intersectable(Arc::new(sdf_shape), None);
+        let sdf_shape: Primitive = TransformObject::new(xform, Box::new(sdf_shape)).into();
+        scene.add_intersectable(sdf_shape, None);
 
         scene
     }
@@ -1300,12 +1198,10 @@ impl Scene {
 
         // Sphere 5 — red glossy
         let _coated_glossy = Material::Coated(CoatedMaterial {
-            substrate: Arc::new(MicrofacetReflector::dielectric(
-                Color3::new(1., 0.0, 0.0),
-                0.5,
-                1.5,
-            )) as Arc<dyn Bsdf>,
-            coating: Arc::new(Material::from(DielectricMaterial::new(1.5))) as Arc<dyn Bsdf>,
+            substrate: Arc::new(
+                MicrofacetReflector::dielectric(Color3::new(1., 0.0, 0.0), 0.5, 1.5).into(),
+            ),
+            coating: Arc::new(Material::from(DielectricMaterial::new(1.5))),
             coating_tint: Arc::new(SolidColor::new(Color3::new(1., 0.0, 0.0))),
             coating_ior: 1.5,
             thickness: 0.20,
@@ -1322,8 +1218,8 @@ impl Scene {
                     MicrofacetReflector::dielectric(Color3::new(0.1, 0.9, 0.6), 0.5, 1.5).into(),
                     0.5,
                 ),
-            ) as Arc<dyn Bsdf>,
-            coating: Arc::new(Material::from(DielectricMaterial::new(1.5))) as Arc<dyn Bsdf>,
+            ),
+            coating: Arc::new(Material::from(DielectricMaterial::new(1.5))),
             coating_tint: Arc::new(SolidColor::new(Color3::new(0.1, 0.9, 0.6))),
             coating_ior: 1.5,
             thickness: 0.20,
@@ -1359,7 +1255,7 @@ impl Scene {
         let box_max = box_center + box_size / 2.;
 
         let glass_box = shape_box3d(box_min, box_max, glass_material);
-        scene.objects.push(Arc::new(glass_box));
+        scene.objects.push(glass_box.into());
 
         scene.config.aspect_ratio = 16.0 / 9.0;
         scene.config.image_width = 800;
@@ -1663,50 +1559,52 @@ impl Scene {
             r,
             DielectricMaterial::new(1.0), // invisible boundary
         );
-        scene.objects.push(Arc::new(ConstantMedium::new_albedo(
-            sphere(Point3::new(c3, y5, zf), r, Material::Void),
-            0.5,
-            Color3::new(0.8, 0.2, 0.1).into_inner(),
-        )));
+        scene
+            .objects
+            .push(Primitive::Volume(ConstantMedium::new_albedo(
+                Arc::new(sphere(Point3::new(c3, y5, zf), r, Material::Void).into()),
+                0.5,
+                Color3::new(0.8, 0.2, 0.1).into_inner(),
+            )));
         // C4 — Triangle (tri constructor)
         let tri_mat: Material = DiffuseReflector::new(Color3::new(0.3, 0.3, 0.9)).into();
-        scene.add_object(Arc::new(tri(
+        scene.add_object(tri(
             Point3::new(c4 - r, y5, zf - r),
             Vec3::new(r * 2., 0., 0.),
             Vec3::new(0., 0., r * 2.),
             tri_mat,
-        )));
+        ));
         // C5 — Annulus (ring shape)
         let ann_mat: Material =
             MicrofacetReflector::dielectric(Color3::new(0.6, 0.1, 0.6), 0.15, 1.5).into();
-        scene.add_object(Arc::new(annulus(
+        scene.add_object(annulus(
             Point3::new(c5, y5, zf),
             Vec3::new(r, 0., 0.),
             Vec3::new(0., 0., r),
             0.4, // inner radius ratio
             ann_mat,
-        )));
+        ));
 
         // ── Overflow (floor, z=100) — additional shapes ──────────────
         // Rounded rectangle
         let rr_mat: Material = DiffuseReflector::new(Color3::new(0.1, 0.8, 0.6)).into();
-        scene.add_object(Arc::new(rounded_rect(
+        scene.add_object(rounded_rect(
             Point3::new(c1, 0.1, zo),
             Vec3::new(r, 0., 0.),
             Vec3::new(0., 0., r),
             0.3,
             rr_mat,
-        )));
+        ));
         // Superellipse (n > 2 = squircle, n < 2 = diamond-like)
         let se_mat: Material =
             MicrofacetReflector::dielectric(Color3::new(0.9, 0.5, 0.1), 0.2, 1.5).into();
-        scene.add_object(Arc::new(superellipse(
+        scene.add_object(superellipse(
             Point3::new(c2, 0.1, zo),
             Vec3::new(r, 0., 0.),
             Vec3::new(0., 0., r),
             4.0, // squircle exponent
             se_mat,
-        )));
+        ));
         // Polygon (pentagon)
         let pentagon_verts: Vec<(f32, f32)> = (0..5)
             .map(|i| {
@@ -1716,13 +1614,13 @@ impl Scene {
             })
             .collect();
         let poly_mat: Material = DiffuseReflector::new(Color3::new(0.9, 0.9, 0.2)).into();
-        scene.add_object(Arc::new(polygon(
+        scene.add_object(polygon(
             Point3::new(c3, 0.1, zo),
             Vec3::new(r, 0., 0.),
             Vec3::new(0., 0., r),
             pentagon_verts,
             poly_mat,
-        )));
+        ));
         // Cross-shaped FunctionRegion patch
         let cross_fn = FunctionRegion::new(
             Arc::new(|a: f32, b: f32| {
@@ -1736,20 +1634,20 @@ impl Scene {
             0.0,
         )
         .into();
-        scene.add_object(Arc::new(function_patch(
+        scene.add_object(function_patch(
             Point3::new(c4, 0.1, zo),
             Vec3::new(r, 0., 0.),
             Vec3::new(0., 0., r),
             cross_fn,
             fn_mat,
-        )));
+        ));
         // Glass box (shape_box3d with dielectric)
         let glass_box = shape_box3d(
             Point3::new(c5 - r * 0.7, 0.1, zo - r * 0.7),
             Point3::new(c5 + r * 0.7, r * 1.4, zo + r * 0.7),
             Material::from(DielectricMaterial::new(1.5)),
         );
-        scene.add_object(Arc::new(glass_box));
+        scene.add_object(glass_box);
         // DiffuseEmitter textured with image (random_world featured)
         scene.add_sphere(
             Point3::new(c1, r, zo + 70.),

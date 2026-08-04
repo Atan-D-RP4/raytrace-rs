@@ -21,9 +21,9 @@ use crate::material::Material;
 #[derive(Clone)]
 pub struct MixMaterial {
     /// Material chosen with probability `(1 - weight)`.
-    pub a: Arc<dyn Bsdf>,
+    pub a: Arc<Material>,
     /// Material chosen with probability `weight`.
-    pub b: Arc<dyn Bsdf>,
+    pub b: Arc<Material>,
     /// Selection probability for `b`. ∈ [0, 1].
     pub weight: f32,
 }
@@ -211,7 +211,7 @@ impl Bsdf for MixMaterial {
 
 impl MixMaterial {
     /// Create a stochastic mix of two materials. `weight` is the probability of choosing `b`.
-    pub fn new(a: Arc<dyn Bsdf>, b: Arc<dyn Bsdf>, weight: f32) -> Self {
+    pub fn new(a: Arc<Material>, b: Arc<Material>, weight: f32) -> Self {
         Self {
             a,
             b,

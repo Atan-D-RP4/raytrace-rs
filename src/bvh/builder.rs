@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::sync::Arc;
 
 use tracing::trace;
 
@@ -24,22 +23,22 @@ const BVH_LEAF_THRESHOLD: usize = 4;
 /// No generic parameter needed — leaf objects are trait-object slices
 /// that provide both `Intersectable` and `Bounded`.
 #[derive(Clone)]
-pub enum TreeBuilder {
+pub enum TreeBuilder<P: Clone + Intersectable + Bounded> {
     /// An empty BVH node, used for empty scenes or empty child nodes.
     Empty,
     /// An interior BVH node with two child nodes and a bounding box that encloses both children.
     Interior {
         /// The left child node.
-        left: Box<TreeBuilder>,
+        left: Box<Self>,
         /// The right child node.
-        right: Box<TreeBuilder>,
+        right: Box<Self>,
         /// The bounding box that encloses both child nodes.
         bbox: Aabb,
     },
     /// A leaf BVH node that contains multiple objects and a bounding box that encloses all of them.
     LeafN {
         /// The objects contained in this leaf node.
-        objects: [Arc<dyn Intersectable>; BVH_LEAF_THRESHOLD],
+        objects: [P; BVH_LEAF_THRESHOLD],
         /// The number of objects contained in this leaf node.
         count: usize,
         /// The bounding box that encloses all objects in this leaf node.
@@ -48,20 +47,20 @@ pub enum TreeBuilder {
     /// A leaf BVH node that contains a single object and a bounding box that encloses it.
     Leaf {
         /// The object contained in this leaf node.
-        object: Arc<dyn Intersectable>,
+        object: P,
         /// The bounding box that encloses the object in this leaf node.
         bbox: Aabb,
     },
 }
 
-impl TreeBuilder {
+impl<P: Clone + Intersectable + Bounded> TreeBuilder<P> {
     /// Builds a BVH subtree from `objects` (a mutable slice).
     ///
     /// Strategy:
     /// - compute merged bounds for all objects,
     /// - bin centroids on each axis and evaluate SAH cost,
     /// - split at cheapest partition, recurse.
-    pub fn new(objects: &mut [Arc<dyn Intersectable>]) -> Self {
+    pub fn new(objects: &mut [P]) -> Self {
         let obj_span = objects.len();
 
         let mut centroids = objects
@@ -89,11 +88,9 @@ impl TreeBuilder {
             }
             2..BVH_LEAF_THRESHOLD => {
                 trace!(object_count = obj_span, "bvh leaf");
-                let mut leaf_objects = core::array::from_fn(|_| {
-                    Arc::new(TreeBuilder::Empty) as Arc<dyn Intersectable>
-                });
+                let mut leaf_objects = core::array::from_fn(|_| centroids[0].0.clone());
                 for (i, (object, _, _)) in centroids.iter().enumerate() {
-                    leaf_objects[i] = object.clone();
+                    leaf_objects[i] = object.clone() as P;
                 }
                 Self::LeafN {
                     objects: leaf_objects,
@@ -193,9 +190,7 @@ impl TreeBuilder {
                     // Not worth splitting — pack into a multi-object leaf.
                     // Only pack if we can fit all objects; otherwise force split below.
                     if obj_span <= BVH_LEAF_THRESHOLD {
-                        let mut leaf_objects = core::array::from_fn(|_| {
-                            Arc::new(TreeBuilder::Empty) as Arc<dyn Intersectable>
-                        });
+                        let mut leaf_objects = core::array::from_fn(|_| centroids[0].0.clone());
                         for (i, (object, _, _)) in centroids.iter().enumerate() {
                             leaf_objects[i] = object.clone();
                         }
@@ -252,7 +247,7 @@ impl TreeBuilder {
     }
 }
 
-impl Intersectable for TreeBuilder {
+impl<P: Clone + Intersectable + Bounded> Intersectable for TreeBuilder<P> {
     fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
         match self {
             Self::Empty => None,
@@ -296,7 +291,7 @@ impl Intersectable for TreeBuilder {
     }
 }
 
-impl Bounded for TreeBuilder {
+impl<P: Clone + Intersectable + Bounded> Bounded for TreeBuilder<P> {
     fn bounding_box(&self) -> Aabb {
         match self {
             Self::Empty => Aabb::empty(),

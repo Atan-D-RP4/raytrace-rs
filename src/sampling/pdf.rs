@@ -7,6 +7,7 @@ use crate::light::Sampleable;
 use crate::light::environment::EnvironmentMap;
 use crate::math::onb::Onb;
 use crate::math::vec3::{Direction3, Point3, concentric_disk};
+use crate::primitives::LightPrimitive;
 
 // ================================================================
 // § PDF domain newtypes
@@ -216,7 +217,7 @@ pub trait PDF {
 /// PDF for sampling directions from a set of light emitters
 pub struct EmitterPDF<'a> {
     /// The set of light emitters to sample from.
-    objects: &'a [Arc<dyn Sampleable>],
+    objects: &'a [LightPrimitive],
     /// The origin point from which to sample direction.
     origin: Point3,
     /// The time at which to sample the emitter.
@@ -224,7 +225,7 @@ pub struct EmitterPDF<'a> {
 }
 
 impl<'a> EmitterPDF<'a> {
-    pub fn new(objects: &'a [Arc<dyn Sampleable>], origin: Point3, time: f32) -> Self {
+    pub fn new(objects: &'a [LightPrimitive], origin: Point3, time: f32) -> Self {
         EmitterPDF {
             objects,
             origin,
@@ -266,13 +267,13 @@ impl<'a> PDF for EmitterPDF<'a> {
 /// Light selection is handled by the integrator — this PDF only generates
 /// directions from the selected light. Wraps a reference to avoid cloning.
 pub struct LightPDF<'a> {
-    object: &'a Arc<dyn Sampleable>,
+    object: &'a LightPrimitive,
     origin: Point3,
     time: f32,
 }
 
 impl<'a> LightPDF<'a> {
-    pub fn new(object: &'a Arc<dyn Sampleable>, origin: Point3, time: f32) -> Self {
+    pub fn new(object: &'a LightPrimitive, origin: Point3, time: f32) -> Self {
         Self {
             object,
             origin,

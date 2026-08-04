@@ -16,6 +16,7 @@ use crate::light::Sampleable;
 use crate::light::environment::EnvironmentMap;
 use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
 use crate::math::interval::Interval;
+use crate::primitives::LightPrimitive;
 use crate::ray::Ray;
 use crate::sampler::{SampleStream, SamplerRng};
 use crate::sampling::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
@@ -170,7 +171,7 @@ impl Integrator for PathTracingIntegrator {
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
-        lights: &[Arc<dyn Sampleable>],
+        lights: &[LightPrimitive],
         stream: &mut S,
         rng: &mut R,
     ) -> Color3 {
@@ -183,7 +184,7 @@ impl PathTracingIntegrator {
         &self,
         initial_ray: &mut Ray,
         world: &dyn Intersectable,
-        lights: &[Arc<dyn Sampleable>],
+        lights: &[LightPrimitive],
         stream: &mut S,
         rng: &mut R,
         remaining_depth: u32,

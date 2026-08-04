@@ -207,7 +207,7 @@ impl<T: Intersectable + 'static> From<Arc<T>> for Primitive { ... }
 > bounding box into a single `Intersectable` value. The `From` impls make
 > construction ergonomic: `scene.add_object(SphereShape::new(center, r), mat)`.
 
-The `Custom` variant follows the same escape-hatch pattern as `Material::Custom(Arc<dyn Bsdf>)`.
+The `Custom` variant follows the same escape-hatch pattern as `Material::Custom(Arc<Material>)`.
 It enables pluggable geometry from library consumers without modifying the enum.
 
 #### LightPrimitive (subset that can be sampled as a light source)

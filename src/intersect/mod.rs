@@ -35,12 +35,6 @@ impl<T: Intersectable> Intersectable for Vec<T> {
     }
 }
 
-impl<T: Intersectable + ?Sized> Intersectable for Arc<T> {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
-        (**self).intersect(ray, ray_t)
-    }
-}
-
 pub trait Bounded: Send + Sync {
     /// Returns a conservative world-space AABB for acceleration structures.
     fn bounding_box(&self) -> Aabb;
@@ -53,8 +47,30 @@ impl<T: Bounded> Bounded for Vec<T> {
     }
 }
 
-impl<T: Bounded + ?Sized> Bounded for Arc<T> {
-    fn bounding_box(&self) -> Aabb {
-        (**self).bounding_box()
-    }
+macro_rules! impl_intersectable_for {
+    ($($wrapper:ty),+ $(,)?) => {
+        $(
+            impl<T: ?Sized + Intersectable> Intersectable for $wrapper {
+                fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
+                    (**self).intersect(ray, ray_t)
+                }
+                fn occluded(&self, ray: &Ray, ray_t: Interval) -> bool {
+                    (**self).occluded(ray, ray_t)
+                }
+            }
+        )+
+    };
 }
+impl_intersectable_for!(Arc<T>, Box<T>, &T);
+
+macro_rules! impl_bounded_for {
+    ($($wrapper:ty),+ $(,)?) => {
+        $(
+            impl<T: ?Sized + Bounded> Bounded for $wrapper {
+                fn bounding_box(&self) -> Aabb { (**self).bounding_box() }
+            }
+        )+
+    };
+}
+
+impl_bounded_for!(Arc<T>, Box<T>, &T);

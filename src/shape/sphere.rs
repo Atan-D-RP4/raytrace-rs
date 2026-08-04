@@ -20,6 +20,7 @@ use crate::texture::UVDifferentiable;
 /// (object) space — wrap in [`TransformObject`] for scene placement.
 ///
 /// [TransformObject]: crate::transform::TransformObject
+#[derive(Clone)]
 pub struct SphereShape {
     /// Center position at t=0; `velocity` is the delta from t=0 to t=1
     /// (zero for stationary spheres).

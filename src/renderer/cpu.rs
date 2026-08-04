@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use rayon::prelude::*;
 use tracing::info;
 
@@ -7,8 +5,8 @@ use crate::camera::{Camera, get_camera_sample};
 use crate::film::{Film, FilmTile, SharedFramebuffer, rgb::FILTER_RADIUS};
 use crate::integrator::Integrator;
 use crate::intersect::Intersectable;
-use crate::light::Sampleable;
 use crate::math::vec3::Color3;
+use crate::primitives::LightPrimitive;
 use crate::renderer::Renderer;
 use crate::sampler::{
     HashRng, SampleStreamWriter, morton_encode, owen_scramble_base_2, owen_scramble_base_4,
@@ -74,7 +72,7 @@ where
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &[Arc<dyn Sampleable>]),
+        scene: (&W, &[LightPrimitive]),
         framebuffer: Option<SharedFramebuffer>,
     ) {
         let (width, height) = camera.image_resolution();

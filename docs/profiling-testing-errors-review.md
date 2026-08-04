@@ -214,7 +214,7 @@ runs the same category of checks against every `BxDF`):
 /// One material configuration to run the full conformance battery against.
 struct BsdfTestCase {
     name: &'static str,
-    bsdf: Arc<dyn Bsdf>,
+    bsdf: Arc<Material>,
     /// Representative incident directions, deliberately including grazing
     /// angles and near-normal incidence — divergence often concentrates at
     /// the extremes (this is exactly where the Coated bug's multi-bounce

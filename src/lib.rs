@@ -9,6 +9,7 @@ pub mod intersect;
 pub mod light;
 pub mod material;
 pub mod math;
+pub mod primitives;
 pub mod ray;
 pub mod renderer;
 pub mod sampler;

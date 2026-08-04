@@ -8,6 +8,7 @@ use crate::intersect::{Bounded, Intersectable};
 use crate::material::{DiffuseReflector, Material};
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
+use crate::primitives::Primitive;
 use crate::ray::Ray;
 use crate::shape::sphere;
 
@@ -24,8 +25,8 @@ fn flat_bvh_node_size() {
 
 #[test]
 fn flat_bvh_empty() {
-    let bvh: TreeBuilder = TreeBuilder::Empty;
-    let flat = Bvh::<2>::from(bvh);
+    let bvh: TreeBuilder<Primitive> = TreeBuilder::Empty;
+    let flat = Bvh::<2, _>::from(bvh);
     let ray = Ray::new_with_time(Point3::ZERO, Direction3::NEG_Z, 0.0);
     assert!(
         flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
@@ -41,11 +42,11 @@ fn flat_bvh_single_sphere() {
         Material::from(DiffuseReflector::new(Color3::new(0.8, 0.2, 0.2))),
     ));
     let bbox = sphere.bounding_box();
-    let bvh: TreeBuilder = TreeBuilder::Leaf {
+    let bvh = TreeBuilder::Leaf {
         object: sphere.clone(),
         bbox,
     };
-    let flat = Bvh::<2>::from(bvh);
+    let flat = Bvh::<2, _>::from(bvh);
     assert_eq!(flat.primitive_count(), 1);
     assert_eq!(flat.node_count(), 1);
 
@@ -81,7 +82,7 @@ fn flat_bvh_two_spheres() {
     let bbox2 = s2.bounding_box();
     let merged_bbox = bbox1.merge(&bbox2);
 
-    let interior: TreeBuilder = TreeBuilder::Interior {
+    let interior = TreeBuilder::Interior {
         left: Box::new(TreeBuilder::Leaf {
             object: s1.clone(),
             bbox: bbox1,
@@ -93,7 +94,7 @@ fn flat_bvh_two_spheres() {
         bbox: merged_bbox,
     };
 
-    let flat = Bvh::<2>::from(interior);
+    let flat = Bvh::<2, _>::from(interior);
     assert_eq!(flat.primitive_count(), 2);
     assert_eq!(flat.node_count(), 3); // 1 interior + 2 leaves
 
@@ -150,7 +151,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
 
     let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];
     let bvh = TreeBuilder::new(&mut objects);
-    let flat = Bvh::<2>::from(bvh.clone());
+    let flat = Bvh::<2, _>::from(bvh.clone());
 
     // Test several rays: some hit, some miss.
     let test_rays = vec![
@@ -179,7 +180,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
     }
 
     // Verify that widening to W=4 produces identical intersection results.
-    let wide: Bvh<4> = flat.widen();
+    let wide: Bvh<4, _> = flat.widen();
     for &(origin, direction, should_hit) in &test_rays {
         let ray = Ray::new_with_time(Point3(origin), Direction3(direction), 0.0);
         let wide_result = wide.intersect(&ray, Interval::from(0.001, f32::INFINITY));
@@ -190,7 +191,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
         );
     }
 
-    let flat = Bvh::<2>::from(bvh);
+    let flat = Bvh::<2, _>::from(bvh);
     // Wide node count should be ≤ original binary node count.
     assert!(
         wide.node_count() <= flat.node_count(),
@@ -232,11 +233,11 @@ fn widen_w2_is_identity() {
 
     let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];
     let bvh = TreeBuilder::new(&mut objects);
-    let flat = Bvh::<2>::from(bvh);
+    let flat = Bvh::<2, _>::from(bvh);
     let binary_node_count = flat.node_count();
 
     // Widen to W=2 and confirm the tree is unchanged.
-    let wide: Bvh<2> = flat.widen();
+    let wide: Bvh<2, _> = flat.widen();
     assert_eq!(
         wide.node_count(),
         binary_node_count,

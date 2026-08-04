@@ -539,6 +539,7 @@ impl Decomposed {
 /// A zero-cost wrapper that applies a transform to any intersectable object.
 /// The transform type is a generic parameter — `StaticTransform` for most objects,
 /// `AnimatedTransform` for moving objects. Zero-cost monomorphization.
+#[derive(Clone)]
 pub struct TransformObject<O: Intersectable, T: Transform = StaticTransform> {
     xform: T,
     object: O,

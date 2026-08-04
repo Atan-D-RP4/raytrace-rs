@@ -13,6 +13,7 @@ use crate::intersect::{Bounded, Intersectable};
 use crate::light::{LightSample, Sampleable};
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
+use crate::primitives::LightPrimitive;
 use crate::ray::Ray;
 use crate::sampling::distributions::Dist2D;
 
@@ -194,5 +195,11 @@ impl Sampleable for EnvironmentLight {
             pdf,
             emission: radiance,
         }
+    }
+}
+
+impl From<EnvironmentLight> for LightPrimitive {
+    fn from(light: EnvironmentLight) -> Self {
+        LightPrimitive::EnvLight(Arc::new(light))
     }
 }

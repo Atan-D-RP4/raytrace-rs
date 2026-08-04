@@ -19,7 +19,10 @@ mod impls;
 mod tests;
 
 pub use dispatch::DynEval;
-pub use impls::SdfRepeat;
+pub use expr::SdfExpr;
+pub use impls::{
+    BoxSdf, CapsuleSdf, CylinderSdf, MandelbulbSdf, RoundBoxSdf, SdfRepeat, SphereSdf, TorusSdf,
+};
 
 use dual::{Dual, Scalar};
 
@@ -79,6 +82,7 @@ impl<T: SdfFn + ?Sized> SdfFn for Arc<T> {
 ///
 /// The generic `F` is erased at the scene boundary through
 /// `ShapeObject<SdfShape<F>, M>` → `Arc<dyn Intersectable>`.
+#[derive(Clone)]
 pub struct SdfShape<F: SdfFn> {
     sdf: F,
     bbox: Aabb,

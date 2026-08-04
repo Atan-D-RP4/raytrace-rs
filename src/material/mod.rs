@@ -2,7 +2,7 @@
 //!
 //! [`Material`] is a recursive enum — composition variants ([`Material::Mix`],
 //! [`Material::Coated`]) wrap dedicated structs ([`MixMaterial`], [`CoatedMaterial`])
-//! that contain `Arc<dyn Bsdf>` children. No cycles by construction.
+//! that contain `Arc<Material>` children. No cycles by construction.
 //!
 //! # Authoring
 //!
@@ -519,8 +519,8 @@ impl Material {
     pub fn mix(self, other: Material, weight: f32) -> Self {
         let weight = weight.clamp(0.0, 1.0);
         Material::Mix(MixMaterial {
-            a: Arc::new(self) as Arc<dyn Bsdf>,
-            b: Arc::new(other) as Arc<dyn Bsdf>,
+            a: Arc::new(self),
+            b: Arc::new(other),
             weight,
         })
     }
@@ -537,8 +537,8 @@ impl Material {
         // CoatedMaterial::new clamps the tint to [0, 1] per component.
         // Values > 1 would amplify via powf (physically invalid Beer's law).
         Material::Coated(CoatedMaterial::new(
-            Arc::new(self) as Arc<dyn Bsdf>,
-            Arc::new(coat) as Arc<dyn Bsdf>,
+            Arc::new(self) as Arc<Material>,
+            Arc::new(coat) as Arc<Material>,
             coating_ior,
             coating_tint,
             0.01,
@@ -695,8 +695,8 @@ mod tests {
     #[test]
     fn gpu_buffer_coated_textured() {
         let mat = Material::from(CoatedMaterial::textured(
-            Arc::new(DiffuseReflector::new(Color3::new(0.7, 0.2, 0.2))) as Arc<dyn Bsdf>,
-            Arc::new(DielectricMaterial::new(1.5)) as Arc<dyn Bsdf>,
+            Arc::new(DiffuseReflector::new(Color3::new(0.7, 0.2, 0.2)).into()),
+            Arc::new(DielectricMaterial::new(1.5).into()),
             1.5,
             CheckerTexture::with_scale(0.5, Color3::new(0.9, 0.1, 0.1), Color3::new(0.2, 0.8, 0.9)),
             0.01,

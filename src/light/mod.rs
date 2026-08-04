@@ -6,13 +6,11 @@ pub mod environment;
 
 /// Result of sampling a direction toward a light source.
 ///
-/// Contains everything needed to evaluate the direct lighting contribution:
-/// the (non-normalized) direction from the surface point to the light,
-/// the light's surface normal at the sampled point, the distance, and
-/// the area PDF of the sample.
+/// Contains everything needed to evaluate the direct lighting contribution: the (non-normalized)
+/// direction from the surface point to the light, the light's surface normal at the sampled point,
+/// the distance, and the area PDF of the sample.
 pub struct LightSample {
     /// Non-normalized direction from surface point to the sampled point on the light.
-    /// `.unit_vector()` gives the unit direction; `.length()` gives the distance.
     pub direction: Direction3,
     /// Light's outward surface normal at the sampled point (unit length).
     pub normal: Direction3,
@@ -39,25 +37,31 @@ pub trait Sampleable: Send + Sync {
         Direction3::ZERO
     }
 
-    /// Samples a point on the light and returns everything needed for direct lighting:
-    /// direction, surface normal, distance, and area PDF.
+    /// Samples a point on the light and returns everything needed for direct lighting: direction,
+    /// surface normal, distance, and area PDF.
     ///
-    /// The returned [`LightSample`] is self-consistent — the direction points from
-    /// `origin` to the sampled point, the normal is the outward normal at that point,
-    /// and the distance equals `direction.length()`.
+    /// The returned [`LightSample`] is self-consistent — the direction points from `origin` to the
+    /// sampled point, the normal is the outward normal at that point, and the distance equals
+    /// `direction.length()`.
     fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample;
 }
 
-impl<T: Sampleable + ?Sized> Sampleable for Arc<T> {
-    fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
-        (**self).pdf_value(origin, direction, time)
-    }
-
-    fn random_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
-        (**self).random_direction(origin, u, v, time)
-    }
-
-    fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
-        (**self).sample_light(origin, u, v, time)
+macro_rules! impl_sampleable_for {
+    ($($wrapper:ty),+ $(,)?) => {
+        $(
+            impl<T: ?Sized + Sampleable> Sampleable for $wrapper {
+                fn pdf_value(&self, origin: Point3, direction: Direction3, time: f32) -> f32 {
+                    (**self).pdf_value(origin, direction, time)
+                }
+                fn random_direction(&self, origin: Point3, u: f32, v: f32, time: f32) -> Direction3 {
+                    (**self).random_direction(origin, u, v, time)
+                }
+                fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
+                    (**self).sample_light(origin, u, v, time)
+                }
+            }
+        )+
     }
 }
+
+impl_sampleable_for!(Arc<T>, Box<T>, &T);

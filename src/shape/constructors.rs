@@ -1,9 +1,7 @@
 use std::borrow::Borrow;
-use std::sync::Arc;
 
 use glam::Vec3;
 
-use crate::intersect::Intersectable;
 use crate::material::Material;
 
 use super::regions::FunctionRegion;
@@ -112,67 +110,4 @@ pub fn function_patch<M: Borrow<Material>>(
 ) -> ShapeObject<PlanarShape, M> {
     let shape = PlanarShape::function(corner, side_a, side_b, region);
     ShapeObject::new(shape, material)
-}
-
-/// Construct an axis-aligned box from 6 independent quads (per-face materials).
-///
-/// Each face is a separate `Arc<dyn Intersectable>`, useful when faces need
-/// different materials. For uniform material, prefer `shape_box3d()` which
-/// creates a single `ShapeObject<BoxShape>` entry in the scene BVH.
-pub fn box3d(a: Point3, b: Point3, material: impl Into<Material>) -> Vec<Arc<dyn Intersectable>> {
-    let material: Material = material.into();
-    let mut sides: Vec<Arc<dyn Intersectable>> = Vec::with_capacity(6);
-
-    let min = a.min(b.into_inner());
-    let max = a.max(b.into_inner());
-
-    let d = (max - min).into_inner();
-    let dx = Vec3::X * d.x;
-    let dy = Vec3::Y * d.y;
-    let dz = Vec3::Z * d.z;
-
-    // Front face is CCW from outside, so normal points outwards.
-    sides.push(Arc::new(quad(
-        Point3::new(min.x(), min.y(), max.z()),
-        dx,
-        dy,
-        material.clone(),
-    )));
-    // Back face is CCW from outside, so normal points outwards.
-    sides.push(Arc::new(quad(
-        Point3::new(max.x(), min.y(), max.z()),
-        -dz,
-        dy,
-        material.clone(),
-    )));
-    // Left face is CCW from outside, so normal points outwards.
-    sides.push(Arc::new(quad(
-        Point3::new(max.x(), min.y(), min.z()),
-        -dx,
-        dy,
-        material.clone(),
-    )));
-    // Right face is CCW from outside, so normal points outwards.
-    sides.push(Arc::new(quad(
-        Point3::new(min.x(), min.y(), min.z()),
-        dz,
-        dy,
-        material.clone(),
-    )));
-    // Top face is CCW from outside, so normal points outwards.
-    sides.push(Arc::new(quad(
-        Point3::new(min.x(), max.y(), max.z()),
-        dx,
-        -dz,
-        material.clone(),
-    )));
-    // Bottom face is CCW from outside, so normal points outwards.
-    sides.push(Arc::new(quad(
-        Point3::new(min.x(), min.y(), min.z()),
-        dx,
-        dz,
-        material,
-    )));
-
-    sides
 }

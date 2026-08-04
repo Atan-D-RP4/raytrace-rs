@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use crate::camera::Camera;
 use crate::film::{Film, SharedFramebuffer};
 use crate::intersect::Intersectable;
-use crate::light::Sampleable;
+use crate::primitives::LightPrimitive;
 
 pub mod cpu;
 
@@ -29,7 +27,7 @@ where
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &[Arc<dyn Sampleable>]),
+        scene: (&W, &[LightPrimitive]),
         framebuffer: Option<SharedFramebuffer>,
     );
 
