@@ -1,7 +1,11 @@
 # BVH Performance Optimization Spec
 
 ## Changelog
-
+- **v5 (2026-08-04)** — De-duplicated idea catalog. Removed the standalone
+  "Complete Catalog" section and merged its labels (S/T/E) into the Comparative
+  Analysis tables, which are now the single canonical source for the label→idea
+  mapping. Added missing rows for S3 (shape→node backpointer) and T5 (hot-path
+  stack check), and labeled B3/S6 in the pbrt-v4 table.
 - **v4 (2026-07-23)** — Traversal review + benchmark data. (a) Added Benchmark
   Results section with measured spp/s from 1024×576 @ 1024 spp, 8 threads, 1764
   objects. (b) Added pbrt-v4 and rs-pbrt to comparative analysis. (c) New items:
@@ -217,34 +221,35 @@ This gives the compiler better branch prediction for coherent rays (primary, sha
 
 ### What Embree does that we don't
 
-| Feature | Embree | raytrace-rs | Gap |
-|---------|--------|-------------|-----|
-| Quantized AABB | 8-bit relative coords, 136B (BVH8) | Full f32, 256B (W=8) | 1.88× more bytes |
-| Inline triangle SoA | `Triangle4`: 28B/tri, precomputed edges | `Arc<dyn Intersectable>` per triangle | 3-6× slower leaf intersection |
-| Precomputed `org_rdir` | FMA slab test: `msub(bounds, rdir, org_rdir)` | `(bounds - org) * rdir` | 2 ops vs 1 FMA per axis |
-| Stack compress | SIMD filter on hit, distance-sorted | No compress, no sort | Testing nodes past `best_t` |
-| ISA compilation | 4-5 kernel variants, runtime dispatch | Portable `std::simd` | Compiler may miss FMA fusion |
-| Compact leaf refs | 4-bit count in pointer tag | 8B per leaf (start+count) | Minor |
+| # | Feature | Embree | raytrace-rs | Gap |
+|---|---------|--------|-------------|-----|
+| E1 | Quantized AABB | 8-bit relative coords, 136B (BVH8) | Full f32, 256B (W=8) | 1.88× more bytes |
+| E2 | Inline triangle SoA | `Triangle4`: 28B/tri, precomputed edges | `Arc<dyn Intersectable>` per triangle | 3-6× slower leaf intersection |
+| E3 | Stack compress | SIMD filter on hit, distance-sorted | No compress, no sort | Testing nodes past `best_t` |
+| E4 | Precomputed `org_rdir` | FMA slab test: `msub(bounds, rdir, org_rdir)` | `(bounds - org) * rdir` | 2 ops vs 1 FMA per axis |
+| E5 | ISA compilation | 4-5 kernel variants, runtime dispatch | Portable `std::simd` | Compiler may miss FMA fusion |
+| E6 | Compact leaf refs | 4-bit count in pointer tag | 8B per leaf (start+count) | Minor |
 
 ### What tinybvh does that we don't
 
-| Feature | tinybvh | raytrace-rs | Gap |
-|---------|---------|-------------|-----|
-| Stack compress after hit | `__popc(mask & validMask)` ~8-16 cycles | None | Wasted node tests |
-| Direction-sign specialization | 8 template variants, zero sign branches | Runtime branch | ~5-10% overhead |
-| Inline SoA triangles | BVHTri4Leaf: 4 triangles in SoA MT | Virtual dispatch per triangle | Biggest leaf gap |
-| Precomputed `org * rdir` | FMA slab test | Sub+mul slab test | ~2× more ops per axis |
+| # | Feature | tinybvh | raytrace-rs | Gap |
+|---|---------|---------|-------------|-----|
+| T1 | Stack compress after hit | `__popc(mask & validMask)` ~8-16 cycles | None | Wasted node tests |
+| T2 | Direction-sign specialization | 8 template variants, zero sign branches | Runtime branch | ~5-10% overhead |
+| T3 | Inline SoA triangles | BVHTri4Leaf: 4 triangles in SoA MT | Virtual dispatch per triangle | Biggest leaf gap |
+| T4 | Precomputed `org * rdir` | FMA slab test | Sub+mul slab test | ~2× more ops per axis |
+| T5 | Hot-path stack check | No overflow check, fixed large stack | Branch + `tracing::warn!` in hot path | ~1-2% overhead |
 
 ### What pbrt-v4 does that we don't
 
-| Feature | pbrt-v4 | raytrace-rs | Gap |
-|---------|---------|-------------|-----|
-| BVH builder | Binned SAH with spatial splits (SBVH) | Binned SAH, no spatial splits | Overlapping geometry overlap more |
-| Embree backend | Optional — delegates to Embree for production | N/A | Feature gap (we are the accel, not a wrapper) |
-| Primitive decomposition | Splits complex shapes into triangle soup at build time | `Arc<dyn Intersectable>` — any shape inline | More general, but no SoA leaf optimization |
-| Memory layout | Linear BVH — nodes stored contiguously after build | Flat array with child indices | Same approach |
-| Traversal | Scalar, iterative, near-first | SIMD `hit_mask` + iterative stack | We have wider SIMD; pbrt has robust mode |
-| Robustness | Standard (Watertight ray-triangle) | No robust AABB rounding | See S6 |
+| # | Feature | pbrt-v4 | raytrace-rs | Gap |
+|---|---------|---------|-------------|-----|
+| B3 | BVH builder | Binned SAH with spatial splits (SBVH) | Binned SAH, no spatial splits | Overlapping geometry overlap more |
+| — | Embree backend | Optional — delegates to Embree for production | N/A | Feature gap (we are the accel, not a wrapper) |
+| — | Primitive decomposition | Splits complex shapes into triangle soup at build time | `Arc<dyn Intersectable>` — any shape inline | More general, but no SoA leaf optimization |
+| — | Memory layout | Linear BVH — nodes stored contiguously after build | Flat array with child indices | Same approach |
+| — | Traversal | Scalar, iterative, near-first | SIMD `hit_mask` + iterative stack | We have wider SIMD; pbrt has robust mode |
+| S6 | Robustness | Standard (Watertight ray-triangle) | No robust AABB rounding | See S6 |
 
 **Net**: pbrt-v4's BVH is architecturally simpler (binary, scalar) but has
 higher build quality (SBVH spatial splits) and robust intersection. Our SIMD
@@ -268,12 +273,13 @@ something we lack.
 
 ### What svenstaro/bvh does that we don't
 
-| Feature | svenstaro | raytrace-rs | Gap |
-|---------|-----------|-------------|-----|
-| Consistency assertions | `assert_consistent`, `assert_tight` | None | Debugging time |
-| Entry/exit traversal | Stackless, Hapala-style | Explicit stack | Simpler hot path |
-| Point queries | `nearest_to`, iterators | None | Feature gap |
-| Node-count precomputation | Pre-allocates exact flat array | Two-pass (tree→flatten) | Extra allocation |
+| # | Feature | svenstaro | raytrace-rs | Gap |
+|---|---------|-----------|-------------|-----|
+| S1 | Consistency assertions | `assert_consistent`, `assert_tight` | None | Debugging time |
+| S2 | Node-count precomputation | Pre-allocates exact flat array | Two-pass (tree→flatten) | Extra allocation |
+| S3 | Shape→node backpointer | Per-primitive leaf backpointer | None | Enables refit for animated scenes |
+| S4 | Point queries | `nearest_to`, iterators | None | Feature gap |
+| S5 | Entry/exit traversal | Stackless, Hapala-style | Explicit stack | Simpler hot path |
 
 ---
 
