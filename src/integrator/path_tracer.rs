@@ -197,7 +197,7 @@ impl PathTracingIntegrator {
 
         for bounce in 0..remaining_depth {
             if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f32::INFINITY)) {
-                let si = SurfaceInteraction::from_material_hit(mat_hit, &ray);
+                let si = SurfaceInteraction::from_material_hit(&mat_hit, &ray);
                 let material = si.material();
                 let normal = si.shading_normal();
                 let hit_time = si.time();

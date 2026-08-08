@@ -147,7 +147,7 @@ pub trait SamplerRng: Send + Sync {
 /// Sobol' quasi-random sampler — stateless, uses direct Gray-code
 /// computation so `sample(n, d)` is fully deterministic and independent
 /// of prior sample history.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct SobolQmcSampler {
     seed: u64,
 }
@@ -315,6 +315,7 @@ pub trait RngFactory: Send + Sync {
 }
 
 /// Factory for `SampleStreamWriter` — per-pixel Sobol stream.
+#[derive(Clone, Copy, Default)]
 pub struct SobolStreamFactory;
 
 impl SampleStreamFactory for SobolStreamFactory {
@@ -325,6 +326,7 @@ impl SampleStreamFactory for SobolStreamFactory {
 }
 
 /// Factory for `HashRng` — per-pixel hash RNG.
+#[derive(Clone, Copy, Default)]
 pub struct HashRngFactory;
 
 impl RngFactory for HashRngFactory {
@@ -337,7 +339,7 @@ impl RngFactory for HashRngFactory {
 /// Stateful Sobol stream — wraps a stateless `SobolQmcSampler` and advances
 /// through 2D dimension pairs. Each `next_2d()` call returns the next
 /// correlated (u, v) pair from sequential Sobol dimensions.
-#[derive(Clone)]
+#[derive(Clone, Copy, Default)]
 pub struct SampleStreamWriter {
     sampler: SobolQmcSampler,
     sample_idx: u32,

@@ -8,7 +8,7 @@ use crate::texture::{TextureCoords, TextureDerivatives};
 ///
 /// This is a low-level struct focused on geometric details, used as an intermediate
 /// representation.
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 pub struct Hit {
     /// Ray parameter `t` at the intersection point.
     pub time: f32,
@@ -130,7 +130,7 @@ impl<'si> SurfaceInteraction<'si> {
 
     /// Construct from a MaterialHit, resolving front_face and shading_normal.
     #[inline]
-    pub fn from_material_hit(mat_hit: MaterialHit<'si>, ray: &Ray) -> Self {
+    pub fn from_material_hit(mat_hit: &MaterialHit<'si>, ray: &Ray) -> Self {
         let geometric_normal = mat_hit.hit.geometric_normal;
 
         let tex_derivatives = if let Some(gradients) = mat_hit.hit.uv_gradients
