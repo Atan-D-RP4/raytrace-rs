@@ -19,7 +19,9 @@ use crate::math::interval::Interval;
 use crate::primitives::LightPrimitive;
 use crate::ray::Ray;
 use crate::sampler::{SampleStream, SamplerRng};
-use crate::sampling::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
+use crate::sampling::pdf::{
+    EmitterPDF, MisHeuristic, PdfConvCtx, PdfKind, PdfStrategy, SolidAnglePdf,
+};
 
 use crate::math::vec3::{Color3, Direction3};
 
@@ -49,8 +51,8 @@ const PATH_THROUGHPUT_LIMIT: f32 = f32::MAX - 1.;
 /// `sel_idx` is the pre-selected strategy index (from `SamplerRng`).
 /// `(pdf_u, pdf_v)` are the correlated 2D samples for direction generation.
 #[inline(always)]
-fn mis_sample<const N: usize>(
-    pdfs: [&dyn PDF; N],
+fn mis_sample<'a, const N: usize>(
+    pdfs: [PdfStrategy<'a>; N],
     count: usize,
     eval_fn: impl FnOnce(Direction3) -> Color3,
     sel_idx: usize,
@@ -102,7 +104,7 @@ fn bsdf_mixture_pdf(
 ) -> f32 {
     // env_pdf value: UniformHemisphere (surfaces) or UniformSphere (volumes)
     let env_value = match env_map {
-        Some(env_map) => env_map.to_solid_angle_pdf(wi),
+        Some(env_map) => env_map.to_solid_angle_pdf(wi).0,
         None => {
             if is_volume {
                 1.0 / (4.0 * PI)
@@ -258,45 +260,63 @@ impl Integrator for PathTracingIntegrator {
             let light_unit = sample.direction.normalize();
             let light_emission = sample.emission;
 
-            // Shadow ray: test visibility/occlusion between the surface point and the light source
-            let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time);
-            let far = (sample.distance - 0.001).max(0.001);
-            let shadow_ray_interval = Interval::from(0.001, far);
-            let occluded = world.occluded(&shadow_ray, shadow_ray_interval);
-            if !occluded {
-                // Unoccluded — compute direct lighting contribution.
-                // Area-sampling form: L ≈ f_r · L_e · |cos θ_s| · |cos θ_l| · V / (p_A · d²)
+            // Lights at infinity (environment) have no finite area to sample —
+            // their contribution is handled by the background/emission paths,
+            // not NEE. Skipping them also avoids a degenerate area→solid-angle
+            // conversion (0 · ∞²).
+            if sample.distance.is_finite() {
+                // Shadow ray: test visibility/occlusion between the surface point and the light source
+                let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time);
+                let far = (sample.distance - 0.001).max(0.001);
+                let shadow_ray_interval = Interval::from(0.001, far);
+                let occluded = world.occluded(&shadow_ray, shadow_ray_interval);
+                if !occluded {
+                    // Unoccluded — compute direct lighting contribution.
+                    // Area-sampling form: L ≈ f_r · L_e · |cos θ_s| · |cos θ_l| · V / (p_A · d²)
 
-                // MIS weight: compare the light sampler's PDF against the BSDF mixture PDF
-                // at the NEE direction. This weights NEE proportionally to how much better
-                // it is than the continuation ray for this particular direction.
-                // Re-evaluate light PDF at the NEE direction (not the incoming ray's
-                // direction): the MIS weight compares how well the light-sampling
-                // strategy and the BSDF continuation strategy explain this sampled
-                // NEE direction.
-                let light_pdf_at_nee =
-                    EmitterPDF::new(lights, si.point(), ray.time).value(light_unit);
-                let bsdf_pdf_at_nee = bsdf_mixture_pdf(
-                    wo,
-                    light_unit,
-                    &si,
-                    material,
-                    self.env_map.as_ref(),
-                    is_volume,
-                );
-                let w_nee =
-                    MisHeuristic::Power.weight::<2>(0, &[light_pdf_at_nee, bsdf_pdf_at_nee]);
+                    // MIS weight: compare the light sampler's PDF against the BSDF mixture PDF
+                    // at the NEE direction. This weights NEE proportionally to how much better
+                    // it is than the continuation ray for this particular direction.
+                    // Re-evaluate light PDF at the NEE direction (not the incoming ray's
+                    // direction): the MIS weight compares how well the light-sampling
+                    // strategy and the BSDF continuation strategy explain this sampled
+                    // NEE direction.
+                    let light_pdf_at_nee =
+                        EmitterPDF::new(lights, si.point(), ray.time).value(light_unit);
+                    let bsdf_pdf_at_nee = bsdf_mixture_pdf(
+                        wo,
+                        light_unit,
+                        &si,
+                        material,
+                        self.env_map.as_ref(),
+                        is_volume,
+                    );
+                    let w_nee =
+                        MisHeuristic::Power.weight::<2>(0, &[light_pdf_at_nee, bsdf_pdf_at_nee]);
 
-                let f = material.eval(wo, light_unit, &si);
-                let cos_light = sample.normal.dot((-light_unit).into_inner()).abs();
+                    let f = material.eval(wo, light_unit, &si);
+                    let cos_light = sample.normal.dot((-light_unit).into_inner()).abs();
 
-                // N factor: uniform selection over N lights, estimator = N * contribution.
-                // material.eval() already includes the surface cosine factor (|cos θ_s|)
-                // as required by the rendering equation — no additional cos_surface here.
-                let n_lights = lights.len() as f32;
-                let direct = w_nee * n_lights * state.throughput * light_emission * f * cos_light
-                    / (sample.pdf * sample.distance * sample.distance);
-                contribution += direct;
+                    // Convert the light's area PDF to solid angle: p_ω = p_A · d² / |cosθ_l|.
+                    // The domain newtypes make the conversion explicit — the sample is
+                    // measured per unit area on the light surface, but the estimator
+                    // needs a solid-angle density.
+                    let pdf_solid = SolidAnglePdf::from((
+                        sample.pdf,
+                        PdfConvCtx {
+                            dist: sample.distance,
+                            cos_there: cos_light,
+                        },
+                    ));
+
+                    // N factor: uniform selection over N lights, estimator = N * contribution.
+                    // material.eval() already includes the surface cosine factor (|cos θ_s|)
+                    // as required by the rendering equation — no additional cos_surface here.
+                    let n_lights = lights.len() as f32;
+                    let direct =
+                        w_nee * n_lights * state.throughput * light_emission * f / pdf_solid.0;
+                    contribution += direct;
+                }
             }
         }
 
@@ -447,7 +467,7 @@ impl Integrator for PathTracingIntegrator {
 
         // MIS weight for background contribution based on previous BSDF PDF
         let env_pdf = match &self.env_map {
-            Some(env_map) => env_map.to_solid_angle_pdf(direction),
+            Some(env_map) => env_map.to_solid_angle_pdf(direction).0,
             None => 1.0 / (4.0 * PI),
         };
         let w_miss = MisHeuristic::Power.weight::<2>(0, &[state.prev_bsdf_pdf, env_pdf]);
@@ -486,7 +506,6 @@ impl PathTracingIntegrator {
         let env_fallback = PdfKind::UniformHemisphere { normal };
         let vol_fallback = PdfKind::UniformSphere;
         let is_volume = normal.length_squared() < 1e-10;
-        let env_holder = self.env_map.as_ref().map(EnvPdf::new);
 
         // Material strategies — PdfKind is Copy, so we can store copies directly.
         let mut mat_strats: [PdfKind; MAX_BSDF_STRATS] = [PdfKind::UniformSphere; MAX_BSDF_STRATS];
@@ -496,22 +515,16 @@ impl PathTracingIntegrator {
             mat_count += 1;
         }
 
-        // Build reference array: env at index 0, materials follow.
-        let mut pdf_refs = [&env_fallback as &dyn PDF; MAX_BSDF_STRATS + 1];
-
-        // Index 0: environment strategy
-        if let Some(ref env_pdf) = env_holder {
-            pdf_refs[0] = env_pdf;
-        } else if is_volume {
-            pdf_refs[0] = &vol_fallback;
-        } else {
-            pdf_refs[0] = &env_fallback;
-        }
+        // Build strategy array: env at index 0, materials follow.
+        let mut strategies = [PdfStrategy::Kind(PdfKind::UniformSphere); MAX_BSDF_STRATS + 1];
+        strategies[0] = match self.env_map.as_deref() {
+            Some(env) => PdfStrategy::Env(env),
+            None if is_volume => PdfStrategy::Kind(vol_fallback),
+            None => PdfStrategy::Kind(env_fallback),
+        };
         let mut n = 1usize;
-
-        // Material strategies at indices 1..n
         mat_strats.iter().take(mat_count).for_each(|mat| {
-            pdf_refs[n] = mat;
+            strategies[n] = PdfStrategy::Kind(*mat);
             n += 1;
         });
 
@@ -521,7 +534,8 @@ impl PathTracingIntegrator {
         // Direction: correlated 2D from stream
         let (pdf_u, pdf_v) = stream.next_2d();
 
-        let (direction, contribution, p_mix) = mis_sample(pdf_refs, n, eval, sel_idx, pdf_u, pdf_v);
+        let (direction, contribution, p_mix) =
+            mis_sample(strategies, n, eval, sel_idx, pdf_u, pdf_v);
         (direction, contribution, p_mix)
     }
 }

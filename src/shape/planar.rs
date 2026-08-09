@@ -6,6 +6,7 @@ use crate::light::LightSample;
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::Ray;
+use crate::sampling::pdf::AreaPdf;
 use crate::shape::regions::{
     AnnulusRegion, EllipseRegion, FunctionRegion, PolygonRegion, QuadRegion, RoundedRectRegion,
     SuperellipseRegion, TriRegion,
@@ -344,7 +345,7 @@ impl ShapeSurfaceSampling for PlanarShape {
             direction,
             normal,
             distance,
-            pdf: area_pdf,
+            pdf: AreaPdf(area_pdf),
             emission: Color3::ZERO,
         }
     }

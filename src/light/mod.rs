@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::math::vec3::{Color3, Direction3, Point3};
+use crate::sampling::pdf::AreaPdf;
 
 pub mod environment;
 
@@ -17,7 +18,8 @@ pub struct LightSample {
     /// Distance from the surface point to the sampled point on the light.
     pub distance: f32,
     /// Area PDF of this sample (probability density per unit area on the light surface).
-    pub pdf: f32,
+    /// Convert to solid angle with `PdfConvCtx` before MIS weighting.
+    pub pdf: AreaPdf,
     /// Emission color of the light at the sampled point (radiance).
     pub emission: Color3,
 }

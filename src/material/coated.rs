@@ -807,12 +807,13 @@ mod test {
         Bsdf, CoatedMaterial, DielectricMaterial, Material, MicrofacetReflector,
     };
     use crate::math::vec3::{Color3, Direction3};
+    use crate::sampler::{NaiveRandomSampler, SamplerRng};
 
     /// Uniform sphere direction via spherical coordinates.
     #[inline(always)]
-    pub fn uniform_sphere_sample() -> Direction3 {
-        let u = rand::random::<f32>();
-        let v = rand::random::<f32>();
+    pub fn uniform_sphere_sample(rng: &mut NaiveRandomSampler) -> Direction3 {
+        let u = rng.next();
+        let v = rng.next();
         let phi = 2.0 * PI * u;
         let (sin_phi, cos_phi) = phi.sin_cos();
         let z = 1.0 - 2.0 * v;
@@ -851,8 +852,11 @@ mod test {
         let sn = Direction3::new(0.0, 0.0, 1.0);
         let si = SurfaceInteraction::test_surface(&Material::Void, sn);
 
+        // Fixed seed: the Monte-Carlo integral must be deterministic, or this
+        // test flakes on the 0.1 tolerance (rand::random() previously did).
+        let mut rng = NaiveRandomSampler::with_seed(42);
         for _ in 0..n {
-            let wi = uniform_sphere_sample();
+            let wi = uniform_sphere_sample(&mut rng);
             sum += material.pdf(wo, wi, &si) / uniform_sphere_pdf(wi);
         }
         let integral = sum / n as f32;

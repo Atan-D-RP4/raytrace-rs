@@ -7,6 +7,7 @@ use crate::light::{LightSample, Sampleable};
 use crate::material::Material;
 use crate::math::interval::Interval;
 use crate::ray::Ray;
+use crate::sampling::pdf::AreaPdf;
 
 use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::texture::UVDifferentiable;
@@ -133,7 +134,7 @@ pub trait ShapeSurfaceSampling: Shape3D {
             direction: Direction3(offset.into_inner()),
             normal,
             distance,
-            pdf: area_pdf,
+            pdf: AreaPdf(area_pdf),
             emission: Color3::ZERO,
         }
     }

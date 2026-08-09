@@ -12,6 +12,7 @@ use crate::material::Material;
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::Ray;
+use crate::sampling::pdf::AreaPdf;
 use crate::shape::{BoxShape, PlanarShape, SdfExpr, SdfShape, ShapeObject, SphereShape};
 use crate::transform::{AnimatedTransform, StaticTransform, TransformObject};
 
@@ -120,7 +121,7 @@ impl Sampleable for Primitive {
                     direction: Direction3::ZERO,
                     normal: Direction3::ZERO,
                     distance: 0.0,
-                    pdf: 0.0,
+                    pdf: AreaPdf(0.0),
                     emission: Color3::ZERO,
                 }
             }

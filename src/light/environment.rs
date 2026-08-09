@@ -16,6 +16,7 @@ use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::primitives::LightPrimitive;
 use crate::ray::Ray;
 use crate::sampling::distributions::Dist2D;
+use crate::sampling::pdf::{AreaPdf, SolidAnglePdf};
 
 /// Equirectangular HDR environment map with sin(θ)-weighted luminance importance sampling.
 /// The distribution is built once at construction and reused for all sample/pdf queries.
@@ -124,14 +125,17 @@ impl EnvironmentMap {
         (i, j)
     }
 
-    pub fn to_solid_angle_pdf(&self, direction: Direction3) -> f32 {
+    /// Solid-angle PDF (sr⁻¹) for a world-space direction. The return type
+    /// declares the domain: this is a probability density w.r.t. solid angle,
+    /// not pixel area — callers must not mix it with area PDFs.
+    pub fn to_solid_angle_pdf(&self, direction: Direction3) -> SolidAnglePdf {
         let (i, j) = self.pixel_uv_from_direction(direction);
         let pdf_pixel = self.pdf(i, j);
 
         let theta = direction.y().acos(); // y-up: θ = 0 at north pole
         let sin_theta = theta.sin().max(1e-10);
 
-        pdf_pixel / (sin_theta * 2.0 * PI * PI)
+        SolidAnglePdf(pdf_pixel / (sin_theta * 2.0 * PI * PI))
     }
 }
 
@@ -162,7 +166,7 @@ impl Intersectable for EnvironmentLight {
 
 impl Sampleable for EnvironmentLight {
     fn pdf_value(&self, _origin: Point3, direction: Direction3, _time: f32) -> f32 {
-        self.env_map.to_solid_angle_pdf(direction)
+        self.env_map.to_solid_angle_pdf(direction).0
     }
 
     fn random_direction(&self, _origin: Point3, u: f32, v: f32, _time: f32) -> Direction3 {
@@ -185,14 +189,13 @@ impl Sampleable for EnvironmentLight {
 
     fn sample_light(&self, origin: Point3, u: f32, v: f32, time: f32) -> LightSample {
         let direction = self.random_direction(origin, u, v, time);
-        let pdf = self.pdf_value(origin, direction, time);
         let radiance = self.env_map.le(direction);
 
         LightSample {
             direction,
             normal: Direction3::ZERO, // Environment light has no surface normal
             distance: f32::INFINITY,  // Environment light is at infinity
-            pdf,
+            pdf: AreaPdf(0.0),        // No finite area — NEE skips infinite-distance lights
             emission: radiance,
         }
     }

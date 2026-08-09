@@ -11,6 +11,7 @@ use crate::math::interval::Interval;
 use crate::math::onb::Onb;
 use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::{ParametricCurve, Ray};
+use crate::sampling::pdf::AreaPdf;
 use crate::shape::{Shape3D, ShapeObject, ShapeSurfaceSampling};
 use crate::texture::UVDifferentiable;
 
@@ -243,7 +244,7 @@ impl ShapeSurfaceSampling for SphereShape {
             direction: direction * distance, // displacement from surface to light
             normal,
             distance,
-            pdf: area_pdf,
+            pdf: AreaPdf(area_pdf),
             emission: Color3::ZERO, // filled in by ShapeObject::sample_light via material
         }
     }
