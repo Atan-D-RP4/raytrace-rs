@@ -10,11 +10,11 @@ use std::f32::consts::PI;
 use std::sync::Arc;
 
 use crate::integrator::Integrator;
-use crate::intersect::Intersectable;
 use crate::intersect::interaction::{MaterialHit, SurfaceInteraction};
-use crate::light::Sampleable;
+use crate::intersect::Intersectable;
 use crate::light::environment::EnvironmentMap;
-use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
+use crate::light::Sampleable;
+use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
 use crate::math::interval::Interval;
 use crate::primitives::LightPrimitive;
 use crate::ray::Ray;
@@ -25,7 +25,7 @@ use crate::sampling::pdf::{
 
 use crate::math::vec3::{Color3, Direction3};
 
-use super::BounceResult;
+use super::{BounceResult, PathState, SPLIT_MAX_DEPTH};
 
 /// Per-bounce throughput clamp to prevent fireflies from high-variance paths.
 /// MIS-weighted contributions (e.g. from coated material NonDelta fallback) can
@@ -139,6 +139,7 @@ fn bsdf_mixture_pdf(
     let n = 1 + n_mat; // env + material strategies
     (env_value + mat_sum) / n as f32
 }
+
 /// Per-path state for the integrator. This is a small struct that is copied around and mutated in
 /// place during path tracing. It contains information about the accumulated throughput, the
 /// previous BSDF PDF, and whether the previous scatter was delta (specular). This state is used to
@@ -153,6 +154,30 @@ pub struct TracingState {
     pub prev_bsdf_pdf: f32,
     /// Whether the previous scatter was delta (specular).
     pub prev_was_delta: bool,
+    /// The current bounce count (0 for the first bounce).
+    bounce: u32,
+    /// The remaining depth for the path.
+    remaining_depth: u32,
+}
+
+impl PathState for TracingState {
+    fn bounce(&self) -> u32 {
+        self.bounce
+    }
+
+    fn remaining_depth(&self) -> u32 {
+        // Return the remaining depth
+        self.remaining_depth
+    }
+
+    fn advance(&mut self) {
+        self.bounce += 1;
+        self.remaining_depth = self.remaining_depth.saturating_sub(1);
+    }
+
+    fn set_remaining_depth(&mut self, depth: u32) {
+        self.remaining_depth = depth;
+    }
 }
 
 impl Default for TracingState {
@@ -164,6 +189,8 @@ impl Default for TracingState {
             throughput: Color3::ONE,
             prev_bsdf_pdf: 0.0,
             prev_was_delta: true,
+            bounce: 0,
+            remaining_depth: 0,
         }
     }
 }
@@ -198,7 +225,6 @@ impl Integrator for PathTracingIntegrator {
         world: &impl Intersectable,
         lights: &[LightPrimitive],
         state: &mut Self::PathState,
-        bounce: u32,
         stream: &mut S,
         rng: &mut R,
     ) -> BounceResult<Self::PathState> {
@@ -221,7 +247,7 @@ impl Integrator for PathTracingIntegrator {
         let wo = -ray.direction.normalize();
         // NEE uses wo-aware emission (e.g., Beer's law for coated)
         let emission = material.emitted(wo, &si);
-        let mut contribution = if bounce == 0 || state.prev_was_delta {
+        let mut contribution = if state.bounce() == 0 || state.prev_was_delta {
             state.throughput * emission
         } else {
             // Compute the light's solid-angle PDF for the continuation direction.
@@ -325,7 +351,7 @@ impl Integrator for PathTracingIntegrator {
 
         // Russian Roulette: survival probability proportional to current
         // path throughput. The 0.05 floor bounds variance from low-throughput paths.
-        if bounce >= 5 {
+        if state.bounce() >= 5 {
             let survival = max_attenuation.clamp(0.05, 1.0);
             if rr > survival {
                 return BounceResult {
@@ -376,8 +402,8 @@ impl Integrator for PathTracingIntegrator {
                     // Build the delta child's ray and state. The child is a fresh
                     // delta path whose throughput is the PRE-bias throughput scaled
                     // by delta_f_cos (current code computes the child contribution
-                    // before the bias multiply). The child's path is traced by the
-                    // renderer (recursively in li(), queued in the wavefront batch).
+                    // before the bias multiply). The child's path is traced inline
+                    // by the driver (trace_path) with its own remaining_depth.
                     let delta_ray = Ray::new_with_differentials(
                         si.point(),
                         delta_wi,
@@ -390,10 +416,18 @@ impl Integrator for PathTracingIntegrator {
                             si.hit().curvature,
                         ),
                     );
+
+                    let child_remaining_depth = state
+                        .remaining_depth()
+                        .saturating_sub(1)
+                        .min(SPLIT_MAX_DEPTH);
+
                     let child_state = TracingState {
                         throughput: state.throughput * delta_f_cos,
                         prev_bsdf_pdf: 0.0,
                         prev_was_delta: true,
+                        bounce: 0,
+                        remaining_depth: child_remaining_depth,
                     };
                     delta_child = Some((delta_ray, child_state));
 

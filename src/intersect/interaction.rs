@@ -244,6 +244,7 @@ impl<'si> SurfaceInteraction<'si> {
 }
 
 /// Represents a ray-object intersection hit along with a reference to the intersected material.
+#[derive(Copy, Clone)]
 pub struct MaterialHit<'a> {
     /// Geometric hit information, including position, normal, and UV coordinates.
     pub hit: Hit,

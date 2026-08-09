@@ -26,6 +26,19 @@ pub struct BounceResult<S> {
     pub delta_child: Option<(Ray, S)>, // integrator builds the child state
 }
 
+/// Per-path bookkeeping shared by all integrators. Owned by the path state so
+/// the renderer never interprets path semantics — it only asks "done?".
+pub trait PathState: Clone + Send + Sync + Default {
+    /// Current bounce index within this path segment (0 for the first bounce).
+    fn bounce(&self) -> u32;
+    /// Bounces remaining in this segment. The path terminates when this hits 0.
+    fn remaining_depth(&self) -> u32;
+    /// Advance one bounce: bounce += 1, remaining_depth -= 1.
+    fn advance(&mut self);
+    /// Set the remaining bounce budget (used by init_state).
+    fn set_remaining_depth(&mut self, depth: u32);
+}
+
 /// A trait for integrators that compute radiance along rays in a scene.
 ///
 /// Integrators are responsible for tracing rays through the scene, handling light interactions with
@@ -35,19 +48,22 @@ pub trait Integrator: Send + Sync {
     /// Per-path state. Owned, no borrows — the GAT is deferred until a real
     /// borrowing state exists (one implementor in-crate, so the upgrade is
     /// a contained breaking change).
-    type PathState: Clone + Send + Sync + Default;
+    type PathState: PathState;
 
     /// Returns the maximum depth (number of bounces) for ray tracing.
     fn max_depth(&self) -> u32;
 
     /// Returns the background radiance for rays that miss all geometry.
     fn init_state(&self) -> Self::PathState {
-        Self::PathState::default()
+        let mut state = Self::PathState::default();
+        state.set_remaining_depth(self.max_depth());
+        state
     }
 
     /// One bounce of path tracing — the universal stage primitive.
     /// Does NOT do: primary intersection (renderer does), background (renderer
     /// calls eval_background on miss).
+    #[allow(clippy::too_many_arguments)]
     fn process_bounce<S: SampleStream, R: SamplerRng>(
         &self,
         ray: &Ray,
@@ -55,7 +71,6 @@ pub trait Integrator: Send + Sync {
         world: &impl Intersectable,
         lights: &[LightPrimitive],
         state: &mut Self::PathState,
-        bounce: u32,
         stream: &mut S,
         rng: &mut R,
     ) -> BounceResult<Self::PathState>;
@@ -64,10 +79,62 @@ pub trait Integrator: Send + Sync {
     /// previous BSDF PDF.
     fn eval_background(&self, direction: Direction3, state: &Self::PathState) -> Color3;
 
-    /// Reference full-path driver: intersect → process_bounce → eval_background,
-    /// with delta-child recursion. Default method — implementors only provide
-    /// the per-bounce primitives. The wavefront renderer re-implements this
-    /// loop as per-stage kernels instead of calling it.
+    /// Path driver: intersect → process_bounce → eval_background with
+    /// delta-child recursion. Naive per-pixel path loop shared by the default `li()` and the
+    /// wavefront renderer's inline delta-child tracing.
+    fn trace_path<S: SampleStream, R: SamplerRng>(
+        &self,
+        initial_ray: &mut Ray,
+        world: &impl Intersectable,
+        lights: &[LightPrimitive],
+        stream: &mut S,
+        rng: &mut R,
+        state: &mut Self::PathState,
+    ) -> Color3 {
+        let mut ray = *initial_ray;
+        let mut accumulated_radiance = Color3::ZERO;
+        while state.remaining_depth() > 0 {
+            if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f32::INFINITY)) {
+                let result = self.process_bounce(&ray, &mat_hit, world, lights, state, stream, rng);
+
+                accumulated_radiance += result.contribution;
+
+                // Trace the split's delta child (mirror direction) with its own
+                // fresh state. Its remaining_depth was already capped by the
+                // Split arm, so no extra depth bookkeeping here.
+                if let Some((mut child_ray, mut child_state)) = result.delta_child {
+                    accumulated_radiance += self.trace_path(
+                        &mut child_ray,
+                        world,
+                        lights,
+                        stream,
+                        rng,
+                        &mut child_state,
+                    );
+                }
+
+                match result.next_ray {
+                    Some(next) => {
+                        state.advance();
+                        ray = next;
+                    }
+                    None => return accumulated_radiance,
+                }
+            } else {
+                // Ray missed the world geometry — accumulate background and terminate.
+                return accumulated_radiance
+                    + self.eval_background(ray.direction.normalize(), state);
+            }
+        }
+
+        // Max bounce count reached — terminate the path. This can still contribute
+        // to the final image if the last bounce was a non-delta and the accumulated
+        // attenuation is non-zero.
+        accumulated_radiance
+    }
+
+    /// Reference full-path driver: intersect → process_bounce → eval_background, with delta-child
+    /// recursion. Default method — implementors only provide the per-bounce primitives.
     fn li<S: SampleStream, R: SamplerRng>(
         &self,
         initial_ray: &mut Ray,
@@ -79,74 +146,15 @@ pub trait Integrator: Send + Sync {
     where
         Self: Sized,
     {
-        trace_path(
-            self,
+        self.trace_path(
             initial_ray,
             world,
             lights,
             stream,
             rng,
-            self.init_state(),
-            self.max_depth(),
+            &mut self.init_state(),
         )
     }
-}
-
-/// The naive per-pixel path loop, shared by the default `li()` and the
-/// delta-child recursion. This is the old `li_inner`, extracted as a
-/// module-level generic function so the default `li()` can drive any
-/// integrator.
-fn trace_path<I: Integrator, S: SampleStream, R: SamplerRng>(
-    integrator: &I,
-    initial_ray: &mut Ray,
-    world: &impl Intersectable,
-    lights: &[LightPrimitive],
-    stream: &mut S,
-    rng: &mut R,
-    mut state: I::PathState,
-    remaining_depth: u32,
-) -> Color3 {
-    let mut accumulated = Color3::ZERO;
-    let mut ray = *initial_ray;
-    for bounce in 0..remaining_depth {
-        if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f32::INFINITY)) {
-            let result = integrator.process_bounce(
-                &ray, &mat_hit, world, lights, &mut state, bounce, stream, rng,
-            );
-            accumulated += result.contribution;
-
-            // Trace the split's delta child (mirror direction) with its own
-            // fresh state, capped by SPLIT_MAX_DEPTH.
-            if let Some((mut child_ray, child_state)) = result.delta_child {
-                let depth = remaining_depth
-                    .saturating_sub(bounce + 1)
-                    .min(SPLIT_MAX_DEPTH);
-                accumulated += trace_path(
-                    integrator,
-                    &mut child_ray,
-                    world,
-                    lights,
-                    stream,
-                    rng,
-                    child_state,
-                    depth,
-                );
-            }
-
-            match result.next_ray {
-                Some(next) => ray = next,
-                None => return accumulated,
-            }
-        } else {
-            // Ray missed the world geometry — accumulate background and terminate.
-            return accumulated + integrator.eval_background(ray.direction.normalize(), &state);
-        }
-    }
-
-    // Max bounce count reached — terminate the path. This can still contribute
-    // to the final image if the last bounce was a non-delta and the accumulated
-    // attenuation is non-zero.
-    accumulated
 }
 
 #[cfg(test)]

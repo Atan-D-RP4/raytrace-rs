@@ -373,7 +373,7 @@ impl SampleStream for SampleStreamWriter {
 
 /// Hash-based independent random number generator.
 /// Each call produces an independent value via SplitMix64.
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub struct HashRng {
     seed: u64,
     counter: u32,
