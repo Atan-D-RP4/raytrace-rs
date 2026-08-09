@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
 use crate::intersect::Intersectable;
-use crate::light::environment::EnvironmentMap;
+use crate::intersect::interaction::MaterialHit;
+use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3};
 use crate::primitives::LightPrimitive;
 use crate::ray::Ray;
@@ -10,37 +9,144 @@ use crate::sampler::{SampleStream, SamplerRng};
 pub mod path_tracer;
 pub use path_tracer::PathTracingIntegrator;
 
+/// Maximum depth for the split delta path (mirror direction from Mix one-delta).
+/// Prevents exponential cascade when `max_depth` is large (e.g. 50) and the
+/// mirror direction repeatedly hits delta-Mix surfaces. Matches
+/// `MAX_INTERNAL_BOUNCES` in Coated material.
+const SPLIT_MAX_DEPTH: u32 = 5;
+
+// Result of a single bounce of path tracing, returned by `process_bounce`.
+#[derive(Clone, Copy)]
+pub struct BounceResult<S> {
+    /// Direct contribution: emission + NEE, already MIS-weighted.
+    pub contribution: Color3,
+    /// Continuation ray, or None if the path terminates.
+    pub next_ray: Option<Ray>,
+    /// Delta child ray from Split, or None.
+    pub delta_child: Option<(Ray, S)>, // integrator builds the child state
+}
+
 /// A trait for integrators that compute radiance along rays in a scene.
 ///
 /// Integrators are responsible for tracing rays through the scene, handling light interactions with
 /// surfaces and materials, and returning the resulting color. They may also provide background
 /// radiance for rays that miss all geometry.
 pub trait Integrator: Send + Sync {
-    /// Default background radiance for a ray that missed all geometry.
-    fn background(&self, direction: Direction3) -> Color3 {
-        match self.env_map() {
-            Some(env) => env.le(direction),
-            None => self.background_color(),
-        }
+    /// Per-path state. Owned, no borrows — the GAT is deferred until a real
+    /// borrowing state exists (one implementor in-crate, so the upgrade is
+    /// a contained breaking change).
+    type PathState: Clone + Send + Sync + Default;
+
+    /// Returns the maximum depth (number of bounces) for ray tracing.
+    fn max_depth(&self) -> u32;
+
+    /// Returns the background radiance for rays that miss all geometry.
+    fn init_state(&self) -> Self::PathState {
+        Self::PathState::default()
     }
 
-    /// Returns the environment map used for background lighting, if any.
-    fn env_map(&self) -> Option<&Arc<EnvironmentMap>>;
+    /// One bounce of path tracing — the universal stage primitive.
+    /// Does NOT do: primary intersection (renderer does), background (renderer
+    /// calls eval_background on miss).
+    fn process_bounce<S: SampleStream, R: SamplerRng>(
+        &self,
+        ray: &Ray,
+        hit: &MaterialHit<'_>,
+        world: &impl Intersectable,
+        lights: &[LightPrimitive],
+        state: &mut Self::PathState,
+        bounce: u32,
+        stream: &mut S,
+        rng: &mut R,
+    ) -> BounceResult<Self::PathState>;
 
-    /// Returns the default background color for rays that miss all geometry, used when no
-    /// environment map is provided.
-    fn background_color(&self) -> Color3;
+    /// Background radiance for a miss ray, MIS-weighted against the path's
+    /// previous BSDF PDF.
+    fn eval_background(&self, direction: Direction3, state: &Self::PathState) -> Color3;
 
-    // Computes the radiance along a ray by tracing it through the scene, accounting for light
-    // interactions with surfaces and materials.
+    /// Reference full-path driver: intersect → process_bounce → eval_background,
+    /// with delta-child recursion. Default method — implementors only provide
+    /// the per-bounce primitives. The wavefront renderer re-implements this
+    /// loop as per-stage kernels instead of calling it.
     fn li<S: SampleStream, R: SamplerRng>(
         &self,
         initial_ray: &mut Ray,
-        world: &dyn Intersectable,
+        world: &impl Intersectable,
         lights: &[LightPrimitive],
         stream: &mut S,
         rng: &mut R,
-    ) -> Color3;
+    ) -> Color3
+    where
+        Self: Sized,
+    {
+        trace_path(
+            self,
+            initial_ray,
+            world,
+            lights,
+            stream,
+            rng,
+            self.init_state(),
+            self.max_depth(),
+        )
+    }
+}
+
+/// The naive per-pixel path loop, shared by the default `li()` and the
+/// delta-child recursion. This is the old `li_inner`, extracted as a
+/// module-level generic function so the default `li()` can drive any
+/// integrator.
+fn trace_path<I: Integrator, S: SampleStream, R: SamplerRng>(
+    integrator: &I,
+    initial_ray: &mut Ray,
+    world: &impl Intersectable,
+    lights: &[LightPrimitive],
+    stream: &mut S,
+    rng: &mut R,
+    mut state: I::PathState,
+    remaining_depth: u32,
+) -> Color3 {
+    let mut accumulated = Color3::ZERO;
+    let mut ray = *initial_ray;
+    for bounce in 0..remaining_depth {
+        if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f32::INFINITY)) {
+            let result = integrator.process_bounce(
+                &ray, &mat_hit, world, lights, &mut state, bounce, stream, rng,
+            );
+            accumulated += result.contribution;
+
+            // Trace the split's delta child (mirror direction) with its own
+            // fresh state, capped by SPLIT_MAX_DEPTH.
+            if let Some((mut child_ray, child_state)) = result.delta_child {
+                let depth = remaining_depth
+                    .saturating_sub(bounce + 1)
+                    .min(SPLIT_MAX_DEPTH);
+                accumulated += trace_path(
+                    integrator,
+                    &mut child_ray,
+                    world,
+                    lights,
+                    stream,
+                    rng,
+                    child_state,
+                    depth,
+                );
+            }
+
+            match result.next_ray {
+                Some(next) => ray = next,
+                None => return accumulated,
+            }
+        } else {
+            // Ray missed the world geometry — accumulate background and terminate.
+            return accumulated + integrator.eval_background(ray.direction.normalize(), &state);
+        }
+    }
+
+    // Max bounce count reached — terminate the path. This can still contribute
+    // to the final image if the last bounce was a non-delta and the accumulated
+    // attenuation is non-zero.
+    accumulated
 }
 
 #[cfg(test)]

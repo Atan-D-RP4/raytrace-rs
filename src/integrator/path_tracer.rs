@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::integrator::Integrator;
 use crate::intersect::Intersectable;
-use crate::intersect::interaction::SurfaceInteraction;
+use crate::intersect::interaction::{MaterialHit, SurfaceInteraction};
 use crate::light::Sampleable;
 use crate::light::environment::EnvironmentMap;
 use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
@@ -23,11 +23,7 @@ use crate::sampling::pdf::{EmitterPDF, EnvPdf, MisHeuristic, PDF, PdfKind};
 
 use crate::math::vec3::{Color3, Direction3};
 
-/// Maximum depth for the split delta path (mirror direction from Mix one-delta).
-/// Prevents exponential cascade when `max_depth` is large (e.g. 50) and the
-/// mirror direction repeatedly hits delta-Mix surfaces.  Matches
-/// `MAX_INTERNAL_BOUNCES` in Coated material.
-const SPLIT_MAX_DEPTH: u32 = 5;
+use super::BounceResult;
 
 /// Per-bounce throughput clamp to prevent fireflies from high-variance paths.
 /// MIS-weighted contributions (e.g. from coated material NonDelta fallback) can
@@ -141,6 +137,34 @@ fn bsdf_mixture_pdf(
     let n = 1 + n_mat; // env + material strategies
     (env_value + mat_sum) / n as f32
 }
+/// Per-path state for the integrator. This is a small struct that is copied around and mutated in
+/// place during path tracing. It contains information about the accumulated throughput, the
+/// previous BSDF PDF, and whether the previous scatter was delta (specular). This state is used to
+/// compute the contribution of each bounce and to determine when to terminate the path.
+#[derive(Clone, Copy)]
+pub struct TracingState {
+    /// Accumulated throughput (product of f_cos/pdf). Mutated in place by
+    /// process_bounce: RR division, bias multiply, throughput clamp.
+    pub throughput: Color3,
+    /// BSDF mixture PDF of the previous bounce's continuation direction —
+    /// feeds emission MIS and background MIS.
+    pub prev_bsdf_pdf: f32,
+    /// Whether the previous scatter was delta (specular).
+    pub prev_was_delta: bool,
+}
+
+impl Default for TracingState {
+    /// Fresh path: unit throughput, delta-like flag (no MIS on bounce 0).
+    /// NOTE: a derived `Default` would zero the throughput and clear the
+    /// delta flag, silently blacking out every path — this must stay manual.
+    fn default() -> Self {
+        Self {
+            throughput: Color3::ONE,
+            prev_bsdf_pdf: 0.0,
+            prev_was_delta: true,
+        }
+    }
+}
 
 pub struct PathTracingIntegrator {
     max_depth: u32,
@@ -159,301 +183,280 @@ impl PathTracingIntegrator {
 }
 
 impl Integrator for PathTracingIntegrator {
-    fn env_map(&self) -> Option<&Arc<EnvironmentMap>> {
-        self.env_map.as_ref()
+    type PathState = TracingState;
+
+    fn max_depth(&self) -> u32 {
+        self.max_depth
     }
 
-    fn background_color(&self) -> Color3 {
-        self.background
-    }
-
-    fn li<S: SampleStream, R: SamplerRng>(
+    fn process_bounce<S: SampleStream, R: SamplerRng>(
         &self,
-        initial_ray: &mut Ray,
-        world: &dyn Intersectable,
+        ray: &Ray,
+        hit: &MaterialHit<'_>,
+        world: &impl Intersectable,
         lights: &[LightPrimitive],
+        state: &mut Self::PathState,
+        bounce: u32,
         stream: &mut S,
         rng: &mut R,
-    ) -> Color3 {
-        self.li_inner::<S, R>(initial_ray, world, lights, stream, rng, self.max_depth)
-    }
-}
+    ) -> BounceResult<Self::PathState> {
+        let si = SurfaceInteraction::from_material_hit(hit, ray);
+        let material = si.material();
+        let normal = si.shading_normal();
+        let hit_time = si.time();
+        let hit_point = si.point();
 
-impl PathTracingIntegrator {
-    fn li_inner<S: SampleStream, R: SamplerRng>(
-        &self,
-        initial_ray: &mut Ray,
-        world: &dyn Intersectable,
-        lights: &[LightPrimitive],
-        stream: &mut S,
-        rng: &mut R,
-        remaining_depth: u32,
-    ) -> Color3 {
-        let mut accumulated_attenuation = Color3::ONE;
-        let mut accumulated_color = Color3::ZERO;
-        let mut ray = *initial_ray;
-        let mut prev_bsdf_pdf: f32 = 0.0;
-        let mut prev_was_delta: bool = true;
+        let light_pdf = if lights.is_empty() {
+            0.0
+        } else {
+            EmitterPDF::new(lights, si.point(), ray.time).value(ray.direction.normalize())
+        };
 
-        for bounce in 0..remaining_depth {
-            if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f32::INFINITY)) {
-                let si = SurfaceInteraction::from_material_hit(&mat_hit, &ray);
-                let material = si.material();
-                let normal = si.shading_normal();
-                let hit_time = si.time();
-                let hit_point = si.point();
+        // Accumulate emission with MIS weight to avoid double-counting with NEE.
+        // At bounce 0 or after a delta bounce, no previous scatter exists that could
+        // overlap with NEE, so emission is added at full weight (PBRT convention).
+        // Outgoing direction (away from the surface) is the negative of the ray direction.
+        let wo = -ray.direction.normalize();
+        // NEE uses wo-aware emission (e.g., Beer's law for coated)
+        let emission = material.emitted(wo, &si);
+        let mut contribution = if bounce == 0 || state.prev_was_delta {
+            state.throughput * emission
+        } else {
+            // Compute the light's solid-angle PDF for the continuation direction.
+            let w_emit = MisHeuristic::Power.weight::<2>(0, &[state.prev_bsdf_pdf, light_pdf]);
+            w_emit * state.throughput * emission
+        };
 
-                let light_pdf = if lights.is_empty() {
-                    0.0
-                } else {
-                    EmitterPDF::new(lights, si.point(), ray.time).value(ray.direction.normalize())
+        // If the maximum attenuation is very small, terminate the path early to
+        // avoid unnecessary computation.
+        let max_attenuation = state
+            .throughput
+            .x()
+            .max(state.throughput.y())
+            .max(state.throughput.z());
+        if max_attenuation < 1e-6 {
+            return BounceResult {
+                contribution,
+                next_ray: None,
+                delta_child: None,
+            };
+        }
+
+        let is_volume = normal.length_squared() < 1e-10;
+
+        // Shadow ray based Next Event Estimation (NEE) for direct lighting.
+        // Skip for delta materials (mirrors, glass) — BSDF is zero for any
+        // direction that doesn't match the single specular direction.
+        if !lights.is_empty() && !material.is_delta() {
+            // Pick a random light source to sample from the list
+            let light_idx = (rng.next() * lights.len() as f32) as usize;
+            let light = &lights[light_idx % lights.len()];
+
+            // Sample a point on the light source — returns direction, normal, distance, and area PDF
+            let (u, v) = stream.next_2d();
+            let sample = light.sample_light(si.point(), u, v, ray.time);
+            let light_unit = sample.direction.normalize();
+            let light_emission = sample.emission;
+
+            // Shadow ray: test visibility/occlusion between the surface point and the light source
+            let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time);
+            let far = (sample.distance - 0.001).max(0.001);
+            let shadow_ray_interval = Interval::from(0.001, far);
+            let occluded = world.occluded(&shadow_ray, shadow_ray_interval);
+            if !occluded {
+                // Unoccluded — compute direct lighting contribution.
+                // Area-sampling form: L ≈ f_r · L_e · |cos θ_s| · |cos θ_l| · V / (p_A · d²)
+
+                // MIS weight: compare the light sampler's PDF against the BSDF mixture PDF
+                // at the NEE direction. This weights NEE proportionally to how much better
+                // it is than the continuation ray for this particular direction.
+                // Re-evaluate light PDF at the NEE direction (not the incoming ray's
+                // direction): the MIS weight compares how well the light-sampling
+                // strategy and the BSDF continuation strategy explain this sampled
+                // NEE direction.
+                let light_pdf_at_nee =
+                    EmitterPDF::new(lights, si.point(), ray.time).value(light_unit);
+                let bsdf_pdf_at_nee = bsdf_mixture_pdf(
+                    wo,
+                    light_unit,
+                    &si,
+                    material,
+                    self.env_map.as_ref(),
+                    is_volume,
+                );
+                let w_nee =
+                    MisHeuristic::Power.weight::<2>(0, &[light_pdf_at_nee, bsdf_pdf_at_nee]);
+
+                let f = material.eval(wo, light_unit, &si);
+                let cos_light = sample.normal.dot((-light_unit).into_inner()).abs();
+
+                // N factor: uniform selection over N lights, estimator = N * contribution.
+                // material.eval() already includes the surface cosine factor (|cos θ_s|)
+                // as required by the rendering equation — no additional cos_surface here.
+                let n_lights = lights.len() as f32;
+                let direct = w_nee * n_lights * state.throughput * light_emission * f * cos_light
+                    / (sample.pdf * sample.distance * sample.distance);
+                contribution += direct;
+            }
+        }
+
+        // Sample a random number for Russian Roulette
+        let rr = rng.next();
+
+        // Russian Roulette: survival probability proportional to current
+        // path throughput. The 0.05 floor bounds variance from low-throughput paths.
+        if bounce >= 5 {
+            let survival = max_attenuation.clamp(0.05, 1.0);
+            if rr > survival {
+                return BounceResult {
+                    contribution,
+                    next_ray: None,
+                    delta_child: None,
                 };
+            }
+            state.throughput /= survival;
+        }
 
-                // Accumulate emission with MIS weight to avoid double-counting with NEE.
-                // At bounce 0 or after a delta bounce, no previous scatter exists that could
-                // overlap with NEE, so emission is added at full weight (PBRT convention).
-                // Outgoing direction (away from the surface) is the negative of the ray direction.
-                let wo = -ray.direction.normalize();
-                // NEE uses wo-aware emission (e.g., Beer's law for coated)
-                let emission = material.emitted(wo, &si);
-                if bounce == 0 || prev_was_delta {
-                    accumulated_color += accumulated_attenuation * emission;
-                } else {
-                    // Compute the light's solid-angle PDF for the continuation direction.
-                    let light_pdf_emit = light_pdf;
-                    let w_emit =
-                        MisHeuristic::Power.weight::<2>(0, &[prev_bsdf_pdf, light_pdf_emit]);
-                    accumulated_color += w_emit * accumulated_attenuation * emission;
+        // Scope-limited next_dim to release session borrow before Split recursion.
+        let scatter_result = {
+            let mut next_mat_dim = || -> f32 { rng.next() };
+            material.scatter(wo, &si, &mut next_mat_dim)
+        };
+
+        let mut delta_child = None;
+        let mut next_ray = None;
+
+        if let Some(scatter) = scatter_result {
+            let mut new_prev_was_delta = false;
+            let mut new_prev_bsdf_pdf = 0.0;
+
+            let (direction, bias, eta) = match scatter {
+                BsdfScatter::Delta { wi, f_cos, eta } => {
+                    new_prev_was_delta = true;
+                    (wi, f_cos, eta)
                 }
-
-                // Sample the material to get the next ray and attenuation
-                let max_attenuation = accumulated_attenuation
-                    .x()
-                    .max(accumulated_attenuation.y())
-                    .max(accumulated_attenuation.z());
-
-                // If the maximum attenuation is very small, terminate the path early to avoid unnecessary computation
-                if max_attenuation < 1e-6 {
-                    return accumulated_color;
+                BsdfScatter::NonDelta { pdf_kinds } => {
+                    let (d, c, p) = self.mis_sample_continuation::<S, R>(
+                        pdf_kinds,
+                        wo,
+                        &si,
+                        material,
+                        normal,
+                        (stream, rng),
+                    );
+                    new_prev_bsdf_pdf = p;
+                    (d, c, None)
                 }
-
-                let is_volume = normal.length_squared() < 1e-10;
-
-                // Shadow ray based Next Event Estimation (NEE) for direct lighting.
-                // Skip for delta materials (mirrors, glass) — BSDF is zero for any
-                // direction that doesn't match the single specular direction.
-                if !lights.is_empty() && !material.is_delta() {
-                    // Pick a random light source to sample from the list
-                    let light_idx = (rng.next() * lights.len() as f32) as usize;
-                    let light = &lights[light_idx % lights.len()];
-
-                    // Sample a point on the light source — returns direction, normal, distance, and area PDF
-                    let (u, v) = stream.next_2d();
-                    let sample = light.sample_light(si.point(), u, v, ray.time);
-                    let light_unit = sample.direction.normalize();
-                    let light_emission = sample.emission;
-
-                    // Shadow ray: test visibility/occlusion between the surface point and the light source
-                    let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time);
-                    let far = (sample.distance - 0.001).max(0.001);
-                    let shadow_ray_interval = Interval::from(0.001, far);
-                    let occluded = world.occluded(&shadow_ray, shadow_ray_interval);
-                    if !occluded {
-                        // Unoccluded — compute direct lighting contribution.
-                        // Area-sampling form: L ≈ f_r · L_e · |cos θ_s| · |cos θ_l| · V / (p_A · d²)
-
-                        // MIS weight: compare the light sampler's PDF against the BSDF mixture PDF
-                        // at the NEE direction. This weights NEE proportionally to how much better
-                        // it is than the continuation ray for this particular direction.
-                        // Re-evaluate light PDF at the NEE direction (not the incoming ray's
-                        // direction): the MIS weight compares how well the light-sampling
-                        // strategy and the BSDF continuation strategy explain this sampled
-                        // NEE direction.
-                        let light_pdf_at_nee =
-                            EmitterPDF::new(lights, si.point(), ray.time).value(light_unit);
-                        let bsdf_pdf_at_nee = bsdf_mixture_pdf(
-                            wo,
-                            light_unit,
-                            &si,
-                            material,
-                            self.env_map.as_ref(),
-                            is_volume,
-                        );
-                        let w_nee = MisHeuristic::Power
-                            .weight::<2>(0, &[light_pdf_at_nee, bsdf_pdf_at_nee]);
-
-                        let f = material.eval(wo, light_unit, &si);
-                        let cos_light = sample.normal.dot((-light_unit).into_inner()).abs();
-
-                        // N factor: uniform selection over N lights, estimator = N * contribution.
-                        // material.eval() already includes the surface cosine factor (|cos θ_s|)
-                        // as required by the rendering equation — no additional cos_surface here.
-                        let n_lights = lights.len() as f32;
-                        let direct = w_nee
-                            * n_lights
-                            * accumulated_attenuation
-                            * light_emission
-                            * f
-                            * cos_light
-                            / (sample.pdf * sample.distance * sample.distance);
-                        accumulated_color += direct;
-                    }
-                }
-
-                // Sample a random number for Russian Roulette
-                let rr = rng.next();
-
-                // Russian Roulette: survival probability proportional to current
-                // path throughput.  The 0.05 floor bounds variance from low-throughput paths.
-                if bounce >= 5 {
-                    let survival = max_attenuation.clamp(0.05, 1.0);
-                    if rr > survival {
-                        return accumulated_color;
-                    }
-                    accumulated_attenuation /= survival;
-                }
-
-                // Scope-limited next_dim to release session borrow before Split recursion.
-                let scatter_result = {
-                    let mut next_mat_dim = || -> f32 { rng.next() };
-                    material.scatter(wo, &si, &mut next_mat_dim)
-                };
-
-                if let Some(scatter) = scatter_result {
-                    let mut new_prev_was_delta = false;
-                    let mut new_prev_bsdf_pdf = 0.0;
-
-                    let (direction, bias, eta) = match scatter {
-                        BsdfScatter::Delta { wi, f_cos, eta } => {
-                            new_prev_was_delta = true;
-                            (wi, f_cos, eta)
-                        }
-                        BsdfScatter::NonDelta { pdf_kinds } => {
-                            let (d, c, p) = self.mis_sample_continuation::<S, R>(
-                                pdf_kinds,
-                                wo,
-                                &si,
-                                material,
-                                normal,
-                                (stream, rng),
-                            );
-                            new_prev_bsdf_pdf = p;
-                            (d, c, None)
-                        }
-                        BsdfScatter::Split {
-                            delta_wi,
-                            delta_f_cos,
-                            delta_eta,
-                            non_delta_pdf_kinds,
-                        } => {
-                            // Trace the delta child's deterministic path (mirror direction).
-                            let delta_ray = Ray::new_with_differentials(
-                                si.point(),
-                                delta_wi,
-                                ray.time,
-                                ray.propagate_differentials(
-                                    normal,
-                                    hit_time,
-                                    delta_eta,
-                                    hit_point,
-                                    si.hit().curvature,
-                                ),
-                            );
-                            let mut delta_ray_mut = delta_ray;
-                            let delta_li = self.li_inner::<S, R>(
-                                &mut delta_ray_mut,
-                                world,
-                                lights,
-                                stream,
-                                rng,
-                                remaining_depth
-                                    .saturating_sub(bounce + 1)
-                                    .min(SPLIT_MAX_DEPTH),
-                            );
-                            accumulated_color += accumulated_attenuation * delta_f_cos * delta_li;
-
-                            // Continue with the non-delta child's MIS continuation.
-                            let (d, c, p) = self.mis_sample_continuation::<S, R>(
-                                non_delta_pdf_kinds,
-                                wo,
-                                &si,
-                                material,
-                                normal,
-                                (stream, rng),
-                            );
-                            new_prev_bsdf_pdf = p;
-                            (d, c, None)
-                        }
-                    };
-
-                    prev_was_delta = new_prev_was_delta;
-                    prev_bsdf_pdf = new_prev_bsdf_pdf;
-                    accumulated_attenuation *= bias;
-                    // Clamp per-bounce throughput to prevent fireflies from
-                    // high-variance paths (e.g. coated material NonDelta fallback
-                    // where the global-frame PDF and internal-frame eval mismatch
-                    // produces large MIS-weighted contributions that would
-                    // otherwise amplify all subsequent bounces).
-                    let max_att = accumulated_attenuation
-                        .x()
-                        .max(accumulated_attenuation.y())
-                        .max(accumulated_attenuation.z());
-                    if max_att > PATH_THROUGHPUT_LIMIT {
-                        accumulated_attenuation *= PATH_THROUGHPUT_LIMIT / max_att;
-                    }
-
-                    // Update the ray for the next bounce, preserving and regenerating
-                    // ray differentials so texture filtering survives indirect bounces.
-                    let new_ray = Ray::new_with_differentials(
+                BsdfScatter::Split {
+                    delta_wi,
+                    delta_f_cos,
+                    delta_eta,
+                    non_delta_pdf_kinds,
+                } => {
+                    // Build the delta child's ray and state. The child is a fresh
+                    // delta path whose throughput is the PRE-bias throughput scaled
+                    // by delta_f_cos (current code computes the child contribution
+                    // before the bias multiply). The child's path is traced by the
+                    // renderer (recursively in li(), queued in the wavefront batch).
+                    let delta_ray = Ray::new_with_differentials(
                         si.point(),
-                        direction,
+                        delta_wi,
                         ray.time,
                         ray.propagate_differentials(
                             normal,
                             hit_time,
-                            eta,
+                            delta_eta,
                             hit_point,
                             si.hit().curvature,
                         ),
                     );
-                    ray = new_ray;
-                } else {
-                    // Emissive materials return None — no scattering. Emission already added
-                    // to accumulated_color via emitted() above.
-                    return accumulated_color;
+                    let child_state = TracingState {
+                        throughput: state.throughput * delta_f_cos,
+                        prev_bsdf_pdf: 0.0,
+                        prev_was_delta: true,
+                    };
+                    delta_child = Some((delta_ray, child_state));
+
+                    // Continue with the non-delta child's MIS continuation.
+                    let (d, c, p) = self.mis_sample_continuation::<S, R>(
+                        non_delta_pdf_kinds,
+                        wo,
+                        &si,
+                        material,
+                        normal,
+                        (stream, rng),
+                    );
+                    new_prev_bsdf_pdf = p;
+                    (d, c, None)
                 }
-            } else {
-                let direction = ray.direction.normalize();
-                let background_color = if let Some(env_map) = &self.env_map {
-                    env_map.le(direction)
-                } else {
-                    self.background
-                };
-                // Ray missed the world geometry — accumulate background and terminate.
-                // When an environment map is present, indirect bounces need MIS weighting:
-                // the bounce direction was sampled by the BSDF (not the env map), so the
-                // env map contribution is weighted by how likely the BSDF would have chosen
-                // that direction vs the env map's own distribution. Without this, a narrow
-                // BSDF lobe pointing at a bright environment pixel produces fireflies.
-                if bounce == 0 || prev_was_delta {
-                    // First bounce or delta path: the direction was determined by the camera
-                    // or a deterministic scatter — no MIS weight needed.
-                    return accumulated_color + accumulated_attenuation * background_color;
-                }
-                let env_pdf = match &self.env_map {
-                    Some(env_map) => env_map.to_solid_angle_pdf(direction),
-                    None => 1.0 / (4.0 * PI),
-                };
-                let w_miss = MisHeuristic::Power.weight::<2>(0, &[prev_bsdf_pdf, env_pdf]);
-                return accumulated_color + w_miss * accumulated_attenuation * background_color;
+            };
+
+            state.prev_was_delta = new_prev_was_delta;
+            state.prev_bsdf_pdf = new_prev_bsdf_pdf;
+            state.throughput *= bias;
+            // Clamp per-bounce throughput to prevent fireflies from
+            // high-variance paths (e.g. coated material NonDelta fallback
+            // where the global-frame PDF and internal-frame eval mismatch
+            // produces large MIS-weighted contributions that would
+            // otherwise amplify all subsequent bounces).
+            let max_att = state
+                .throughput
+                .x()
+                .max(state.throughput.y())
+                .max(state.throughput.z());
+            if max_att > PATH_THROUGHPUT_LIMIT {
+                state.throughput *= PATH_THROUGHPUT_LIMIT / max_att;
             }
+
+            // Update the ray for the next bounce, preserving and regenerating
+            // ray differentials so texture filtering survives indirect bounces.
+            let new_ray = Ray::new_with_differentials(
+                si.point(),
+                direction,
+                ray.time,
+                ray.propagate_differentials(normal, hit_time, eta, hit_point, si.hit().curvature),
+            );
+            next_ray = Some(new_ray);
         }
 
-        // Max bounce count reached — terminate the path. This can still contribute to the final
-        // image if the last bounce was a non-delta and the accumulated attenuation is non-zero.
-        accumulated_color
+        BounceResult {
+            contribution,
+            next_ray,
+            delta_child,
+        }
     }
 
+    fn eval_background(&self, direction: Direction3, state: &Self::PathState) -> Color3 {
+        let background_color = if let Some(env_map) = &self.env_map {
+            env_map.le(direction)
+        } else {
+            self.background
+        };
+
+        // Ray missed the world geometry — accumulate background and terminate. When an
+        // environment map is present, indirect bounces need MIS weighting: the bounce
+        // direction was sampled by the BSDF (not the env map), so the env map contribution
+        // is weighted by how likely the BSDF would have chosen that direction vs the env
+        // map's own distribution. Without this, a narrow BSDF lobe pointing at a bright
+        // environment pixel produces fireflies.
+        if state.prev_was_delta {
+            // First bounce or delta path: the direction was determined by the camera
+            // or a deterministic scatter — no MIS weight needed.
+            return state.throughput * background_color;
+        }
+
+        // MIS weight for background contribution based on previous BSDF PDF
+        let env_pdf = match &self.env_map {
+            Some(env_map) => env_map.to_solid_angle_pdf(direction),
+            None => 1.0 / (4.0 * PI),
+        };
+        let w_miss = MisHeuristic::Power.weight::<2>(0, &[state.prev_bsdf_pdf, env_pdf]);
+
+        w_miss * state.throughput * background_color
+    }
+}
+
+impl PathTracingIntegrator {
     /// One-sample MIS with power heuristic (β=2).
     ///
     /// Selects one strategy uniformly, generates a direction from it,
