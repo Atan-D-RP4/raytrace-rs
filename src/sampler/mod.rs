@@ -134,13 +134,13 @@ pub(crate) trait QmcSampler: Send + Sync {
 
 /// Stateful stream of correlated 2D sample points.
 /// Each call advances by one 2D point, without waste.
-pub trait SampleStream: Send + Sync {
+pub trait SampleStream: Send + Sync + Copy {
     /// Returns the next 2D sample point as (u, v) in [0, 1)^2.
     fn next_2d(&mut self) -> (f32, f32);
 }
 
 /// Stateful source of independent random numbers in [0, 1).
-pub trait SamplerRng: Send + Sync {
+pub trait SamplerRng: Send + Sync + Copy {
     fn next(&mut self) -> f32;
 }
 
@@ -201,7 +201,7 @@ impl QmcSampler for SobolQmcSampler {
 }
 
 /// Hash-based random sampler — SplitMix of (n, d, seed).
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct NaiveRandomSampler {
     seed: u64,
 }
@@ -253,7 +253,7 @@ impl SamplerRng for NaiveRandomSampler {
 }
 
 /// Stratified (jittered) grid for dims 0-1, SplitMix fallback for rest.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct StratifiedRandomSampler {
     seed: u64,
     sqrt_spp: u32,

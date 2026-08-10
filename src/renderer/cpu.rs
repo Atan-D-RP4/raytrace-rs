@@ -13,7 +13,7 @@ use crate::sampler::{
     pixel_seed,
 };
 
-pub struct CpuRenderer<I>
+pub struct CpuRenderer<I, const BATCH: usize>
 where
     I: Integrator,
 {
@@ -34,7 +34,7 @@ where
     integrator: I,
 }
 
-impl<I> CpuRenderer<I>
+impl<I, const BATCH: usize> CpuRenderer<I, BATCH>
 where
     I: Integrator,
 {
@@ -61,9 +61,8 @@ where
     }
 }
 
-impl<W, I, C, F> Renderer<W, C, F> for CpuRenderer<I>
+impl<I, C, F, const BATCH: usize> Renderer<C, F> for CpuRenderer<I, BATCH>
 where
-    W: Intersectable,
     I: Integrator,
     C: Camera,
     F: Film,
@@ -72,7 +71,7 @@ where
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &[LightPrimitive]),
+        scene: (&impl Intersectable, &[LightPrimitive]),
         framebuffer: Option<SharedFramebuffer>,
     ) {
         let (width, height) = camera.image_resolution();
@@ -204,70 +203,65 @@ where
                 }
             }
 
-            tile_pool
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(_tile_idx, tile)| {
-                    let [x_start, x_end, y_start, y_end] = tile.bounds;
+            tile_pool.par_iter_mut().for_each(|tile| {
+                let [x_start, x_end, y_start, y_end] = tile.bounds;
 
-                    // Single-tile renders run the closure inline on the caller
-                    // thread (not a rayon worker), so fall back to sampler 0.
-                    let thread_idx = rayon::current_thread_index().unwrap_or(0);
-                    let mut guard = samplers[thread_idx].lock().unwrap();
-                    let (ref mut stream, ref mut rng) = *guard;
+                // Single-tile renders run the closure inline on the caller
+                // thread (not a rayon worker), so fall back to sampler 0.
+                let thread_idx = rayon::current_thread_index().unwrap_or(0);
+                let mut guard = samplers[thread_idx].lock().unwrap();
+                let (ref mut stream, ref mut rng) = *guard;
 
-                    for (y, x) in
-                        (y_start..y_end).flat_map(|y| (x_start..x_end).map(move |x| (y, x)))
+                for (y, x) in (y_start..y_end).flat_map(|y| (x_start..x_end).map(move |x| (y, x))) {
+                    if converged[y as usize * width as usize + x as usize] {
+                        continue; // Skip pixels that have already converged
+                    }
+
+                    // Reset per-pixel Sobol state from pixel coordinates.
                     {
-                        if converged[y as usize * width as usize + x as usize] {
-                            continue; // Skip pixels that have already converged
-                        }
+                        let morton_idx = morton_encode(x, y);
 
-                        // Reset per-pixel Sobol state from pixel coordinates.
-                        {
-                            let morton_idx = morton_encode(x, y);
+                        // Owen-scramble the Morton code (base-4) to shuffle
+                        // which pixel gets which block of samples.
+                        let scrambled_pixel = owen_scramble_base_4(morton_idx, dither_seed);
+                        // Each pixel gets a contiguous block of `spp` Sobol samples.
+                        let pixel_base =
+                            (scrambled_pixel as u64 * self.samples_per_pixel as u64) as u32;
 
-                            // Owen-scramble the Morton code (base-4) to shuffle
-                            // which pixel gets which block of samples.
-                            let scrambled_pixel = owen_scramble_base_4(morton_idx, dither_seed);
-                            // Each pixel gets a contiguous block of `spp` Sobol samples.
-                            let pixel_base =
-                                (scrambled_pixel as u64 * self.samples_per_pixel as u64) as u32;
+                        // Owen-scramble the sample index within the pixel (base-2)
+                        // This supports progressive rendering (non-power-of-two sample counts)
+                        let seed = pixel_seed(x as i32, y as i32);
+                        let scrambled_sample = owen_scramble_base_2(sample_idx, seed);
 
-                            // Owen-scramble the sample index within the pixel (base-2)
-                            // This supports progressive rendering (non-power-of-two sample counts)
-                            let seed = pixel_seed(x as i32, y as i32);
-                            let scrambled_sample = owen_scramble_base_2(sample_idx, seed);
+                        // Compute the actual Sobol index for this pixel-sample.
+                        // wrapping_add: pixel_base is already truncated to u32
+                        // and scrambled_sample is a full 32-bit hash, so the
+                        // sum can overflow — release wraps, debug must too.
+                        let actual_idx = pixel_base.wrapping_add(scrambled_sample);
 
-                            // Compute the actual Sobol index for this pixel-sample.
-                            // wrapping_add: pixel_base is already truncated to u32
-                            // and scrambled_sample is a full 32-bit hash, so the
-                            // sum can overflow — release wraps, debug must too.
-                            let actual_idx = pixel_base.wrapping_add(scrambled_sample);
+                        // Reset the stream & rng for this pixel-sample.
+                        *stream = SampleStreamWriter::for_pixel(x as i32, y as i32, actual_idx);
+                        *rng = HashRng::for_pixel(x as i32, y as i32, actual_idx);
+                    }
 
-                            // Reset the stream & rng for this pixel-sample.
-                            *stream = SampleStreamWriter::for_pixel(x as i32, y as i32, actual_idx);
-                            *rng = HashRng::for_pixel(x as i32, y as i32, actual_idx);
-                        }
+                    // Generate a camera sample from the stream & rng.
+                    let camera_sampler = get_camera_sample((x, y), stream, rng);
 
-                        // Generate a camera sample from the stream & rng.
-                        let camera_sampler = get_camera_sample((x, y), stream, rng);
-
-                        let cam_ray = camera
-                            .generate_ray_differential(&camera_sampler)
-                            .or_else(|| camera.generate_ray(&camera_sampler));
-                        if let Some(mut cam_ray) = cam_ray {
-                            let radiance =
-                                self.integrator
-                                    .li(&mut cam_ray.ray, world, lights, stream, rng);
-                            let sample = radiance * cam_ray.weight;
-                            // Guard against NaN/Inf poisoning the accumulation buffer.
-                            if sample.into_inner().is_finite() {
-                                tile.add_sample(x, y, sample);
-                            }
+                    let cam_ray = camera
+                        .generate_ray_differential(&camera_sampler)
+                        .or_else(|| camera.generate_ray(&camera_sampler));
+                    if let Some(mut cam_ray) = cam_ray {
+                        let radiance =
+                            self.integrator
+                                .li(&mut cam_ray.ray, world, lights, stream, rng);
+                        let sample = radiance * cam_ray.weight;
+                        // Guard against NaN/Inf poisoning the accumulation buffer.
+                        if sample.into_inner().is_finite() {
+                            tile.add_sample(x, y, sample);
                         }
                     }
-                });
+                }
+            });
 
             // Merge only dirty tiles — skip fully-converged tiles (no new samples).
             for tile in &tile_pool {

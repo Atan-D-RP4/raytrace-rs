@@ -4,6 +4,7 @@ use crate::intersect::Intersectable;
 use crate::primitives::LightPrimitive;
 
 pub mod cpu;
+pub mod wavefront;
 
 pub use cpu::CpuRenderer;
 
@@ -12,9 +13,8 @@ pub use cpu::CpuRenderer;
 /// The renderer is responsible for generating pixel data from the scene geometry and materials,
 /// using the camera's projection and the film's output format. It can optionally support
 /// progressive rendering by publishing intermediate frames to a shared framebuffer.
-pub trait Renderer<W, C, F>: Send + Sync
+pub trait Renderer<C, F>: Send + Sync
 where
-    W: Intersectable,
     C: Camera,
     F: Film,
 {
@@ -27,7 +27,7 @@ where
         &self,
         camera: &C,
         film: &mut F,
-        scene: (&W, &[LightPrimitive]),
+        scene: (&impl Intersectable, &[LightPrimitive]),
         framebuffer: Option<SharedFramebuffer>,
     );
 

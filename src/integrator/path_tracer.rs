@@ -10,11 +10,11 @@ use std::f32::consts::PI;
 use std::sync::Arc;
 
 use crate::integrator::Integrator;
-use crate::intersect::interaction::{MaterialHit, SurfaceInteraction};
 use crate::intersect::Intersectable;
-use crate::light::environment::EnvironmentMap;
+use crate::intersect::interaction::{MaterialHit, SurfaceInteraction};
 use crate::light::Sampleable;
-use crate::material::{BsdfScatter, Material, MAX_BSDF_STRATS};
+use crate::light::environment::EnvironmentMap;
+use crate::material::{BsdfScatter, MAX_BSDF_STRATS, Material};
 use crate::math::interval::Interval;
 use crate::primitives::LightPrimitive;
 use crate::ray::Ray;
