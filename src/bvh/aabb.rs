@@ -22,11 +22,13 @@ impl<const W: usize> AabbPacked<W> {
     /// A small delta to pad the bounding box when its size is too small.
     const DELTA: f32 = 0.0001;
 
+    /// Create a new AABB from the given min and max arrays.
     #[inline]
     pub const fn new(min: [[f32; W]; 3], max: [[f32; W]; 3]) -> Self {
         Self { min, max }
     }
 
+    /// Create an AABB from three arrays of intervals, one for each axis.
     #[inline]
     pub fn from_intervals(x: &[Interval; W], y: &[Interval; W], z: &[Interval; W]) -> Self {
         let mut min = [[0.0; W]; 3];
@@ -45,6 +47,7 @@ impl<const W: usize> AabbPacked<W> {
         Self { min, max }
     }
 
+    /// Create an AABB that tightly bounds the given array of points.
     #[inline]
     pub fn from_points(points: &[Point3; W]) -> Self {
         let mut min = [[0.0; W]; 3];
@@ -64,6 +67,7 @@ impl<const W: usize> AabbPacked<W> {
         Self { min, max }
     }
 
+    /// Merge two AABBs, padding the result to ensure a minimum size.
     #[inline]
     pub fn merge(&self, other: &Self) -> Self {
         let mut merged = self.merge_unpadded(other);
@@ -71,6 +75,8 @@ impl<const W: usize> AabbPacked<W> {
         merged
     }
 
+    /// Merge two AABBs without padding the result. This is useful for intermediate calculations
+    /// where padding is not desired.
     #[inline]
     pub fn merge_unpadded(&self, other: &Self) -> Self {
         let mut new = Self::empty();
@@ -103,16 +109,20 @@ impl<const W: usize> AabbPacked<W> {
         (min, max)
     }
 
+    /// Returns the min and max arrays for a specific axis (0 = x, 1 = y, 2 = z).
     #[inline]
     pub fn axis(&self, axis: usize) -> (&[f32; W], &[f32; W]) {
         (&self.min[axis], &self.max[axis])
     }
 
+    /// Returns mutable references to the min and max arrays for a specific axis (0 = x, 1 = y, 2 =
+    /// z).
     #[inline]
     pub fn axis_mut(&mut self, axis: usize) -> (&mut [f32; W], &mut [f32; W]) {
         (&mut self.min[axis], &mut self.max[axis])
     }
 
+    /// Returns the index of the axis with the longest extent (0 = x, 1 = y, 2 = z).
     #[inline]
     pub fn longest_axis(&self) -> usize {
         let mut longest = 0;
@@ -129,6 +139,7 @@ impl<const W: usize> AabbPacked<W> {
         longest
     }
 
+    /// Returns the surface area of each AABB in the packed structure.
     #[inline]
     pub fn surface_area(&self) -> [f32; W] {
         let mut areas = [0.0; W];
@@ -143,6 +154,7 @@ impl<const W: usize> AabbPacked<W> {
         areas
     }
 
+    /// Returns the centroid of each AABB in the packed structure.
     #[inline]
     pub fn centroid(&self) -> [[f32; W]; 3] {
         let mut centroids = [[0.0; W]; 3];
@@ -159,6 +171,7 @@ impl<const W: usize> AabbPacked<W> {
         centroids
     }
 
+    /// Translates all AABBs in the packed structure by the given offset vector.
     #[inline]
     pub fn translate(mut self, offset: Vec3) -> Self {
         for axis in 0..3 {
@@ -170,6 +183,11 @@ impl<const W: usize> AabbPacked<W> {
         self
     }
 
+    /// Branchless slab test against all W children for a batch of rays.
+    ///
+    /// `ray_origins` and `ray_directions` are arrays of length W, where each element is a 3D vector
+    /// representing the origin and direction of a ray. `ray_t` is an array of length W, where each
+    /// element is a 2D vector representing the minimum and maximum t values for the ray segment.
     #[inline]
     pub fn hit(
         &self,

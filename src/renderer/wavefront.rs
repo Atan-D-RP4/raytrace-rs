@@ -1,7 +1,7 @@
 use crate::film::FilmTile;
 use crate::integrator::{BounceResult, Integrator, PathState};
-use crate::intersect::Intersectable;
 use crate::intersect::interaction::MaterialHit;
+use crate::intersect::Intersectable;
 use crate::math::interval::Interval;
 use crate::math::vec3::Color3;
 use crate::primitives::LightPrimitive;
@@ -97,11 +97,11 @@ impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
     pub fn compact(&mut self) {
         let mut remap = vec![usize::MAX; self.rays.len()];
         let mut write = 0;
-        for i in 0..self.rays.len() {
+        for (i, remapped) in remap.iter_mut().enumerate() {
             if self.done[i] && self.pending[i] == 0 {
                 continue; // finished — radiance already flowed up
             }
-            remap[i] = write;
+            *remapped = write;
             if write != i {
                 self.rays[write] = self.rays[i];
                 self.states[write] = self.states[i].clone();
@@ -200,16 +200,16 @@ impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
     /// continuations, queues delta children with parent links, and flows finished
     /// paths' radiances up the chain (deferred film adds).
     pub fn resolve(&mut self, bounces: &[BounceResult<I::PathState>], tile: &mut FilmTile) {
-        for i in 0..bounces.len() {
+        for (i, bounce) in bounces.iter().enumerate() {
             if self.rays[i].is_none() {
                 continue; // waiting slot — only its children touch it
             }
-            self.accumulator[i] += bounces[i].contribution;
+            self.accumulator[i] += bounce.contribution;
 
             // Delta child: queue it with a parent link and a stream/rng snapshot.
             // It is shaded in the NEXT iteration — after the parent's later
             // bounces — which is exactly the queued accumulation order.
-            if let Some((child_ray, child_state)) = &bounces[i].delta_child {
+            if let Some((child_ray, child_state)) = &bounce.delta_child {
                 self.rays.push(Some(*child_ray));
                 self.states.push(child_state.clone());
                 self.streams.push(self.streams[i]);
@@ -223,7 +223,7 @@ impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
                 self.pending[i] += 1;
             }
 
-            match &bounces[i].next_ray {
+            match &bounce.next_ray {
                 Some(next) => {
                     self.states[i].advance();
                     if self.states[i].remaining_depth() == 0 {
