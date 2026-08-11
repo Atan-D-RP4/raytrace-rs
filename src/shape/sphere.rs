@@ -112,10 +112,10 @@ impl UVDifferentiable for SphereShape {
 impl Shape3D for SphereShape {
     fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
         // Quadratic form with h = dot(d, oc). Near root first, far root fallback.
-        let current_center = self.center.at(ray.time);
-        let oc = current_center - ray.origin;
-        let a = ray.direction.length_squared();
-        let h = ray.direction.dot(oc.into_inner());
+        let current_center = self.center.at(ray.time());
+        let oc = current_center - ray.origin();
+        let a = ray.direction().length_squared();
+        let h = ray.direction().dot(oc.into_inner());
         let c = oc.length_squared() - (self.radius * self.radius);
         let discriminant = h * h - a * c;
 
@@ -156,7 +156,7 @@ impl Shape3D for SphereShape {
     fn bounding_box(&self) -> Aabb {
         let rvec = Point3::splat(self.radius);
         let local = Aabb::from_corners(-rvec, rvec);
-        self.center.sweep_aabb(&local)
+        self.center.sweep_aabb(&local, 0.0, 1.0)
     }
 }
 

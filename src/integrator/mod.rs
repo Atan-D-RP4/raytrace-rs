@@ -123,7 +123,7 @@ pub trait Integrator: Send + Sync {
             } else {
                 // Ray missed the world geometry — accumulate background and terminate.
                 return accumulated_radiance
-                    + self.eval_background(ray.direction.normalize(), state);
+                    + self.eval_background(ray.direction().normalize(), state);
             }
         }
 

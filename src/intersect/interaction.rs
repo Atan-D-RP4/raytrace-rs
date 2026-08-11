@@ -139,15 +139,15 @@ impl<'si> SurfaceInteraction<'si> {
             let t_hit = mat_hit.hit.time;
             let p = ray.at(t_hit);
             let dpdx = ray.differential_footprint(
-                rd.rx_origin,
-                rd.rx_direction,
+                rd.rx_origin(),
+                rd.rx_direction(),
                 p,
                 geometric_normal,
                 t_hit,
             );
             let dpdy = ray.differential_footprint(
-                rd.ry_origin,
-                rd.ry_direction,
+                rd.ry_origin(),
+                rd.ry_direction(),
                 p,
                 geometric_normal,
                 t_hit,
@@ -171,7 +171,7 @@ impl<'si> SurfaceInteraction<'si> {
 
     /// Sets the front_face and shading_normal based on the ray direction and geometric normal.
     pub fn set_face_normal(&mut self, ray: &Ray) {
-        self.front_face = ray.direction.dot(self.hit.geometric_normal.into_inner()) < 0.0;
+        self.front_face = ray.direction().dot(self.hit.geometric_normal.into_inner()) < 0.0;
         self.shading_normal = if self.front_face {
             self.hit.geometric_normal
         } else {

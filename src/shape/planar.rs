@@ -239,13 +239,13 @@ impl PlanarShape {
     /// Returns the intersection of the ray with the plane of the patch, if there is any, alongside
     /// the (a, b) coordinates in parametric space.
     fn hit_plane(&self, ray: &Ray, ray_t: Interval) -> Option<PlanarHit> {
-        let denom = self.normal.dot(ray.direction.into_inner());
+        let denom = self.normal.dot(ray.direction().into_inner());
 
         if denom.abs() < 1e-8 {
             return None;
         }
 
-        let t = (self.d - self.normal.dot(ray.origin.into_inner())) / denom;
+        let t = (self.d - self.normal.dot(ray.origin().into_inner())) / denom;
         if !ray_t.contains(t) {
             return None;
         }

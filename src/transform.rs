@@ -6,7 +6,7 @@ use crate::intersect::{Bounded, Intersectable};
 use crate::light::{LightSample, Sampleable};
 use crate::math::interval::Interval;
 use crate::math::vec3::{Direction3, Point3};
-use crate::ray::Ray;
+use crate::ray::{Ray, RayDifferentials};
 
 /// A spatial transform that can be applied to intersectable objects.
 /// Implementations may be static (one matrix) or animated (interpolated over time).
@@ -123,41 +123,40 @@ impl Transform for StaticTransform {
         // World → object: apply inverse
         let origin = Point3(
             self.inverse
-                .transform_point3a(ray.origin.into_inner().into())
+                .transform_point3a(ray.origin().into_inner().into())
                 .into(),
         );
         let direction = Direction3(
             self.inverse
-                .transform_vector3a(ray.direction.into_inner().into())
+                .transform_vector3a(ray.direction().into_inner().into())
                 .into(),
         );
-        let diffs = if let Some(mut differentials) = ray.differentials {
-            differentials.rx_origin = Point3(
-                self.inverse
-                    .transform_point3a(differentials.rx_origin.into_inner().into())
-                    .into(),
-            );
-            differentials.rx_direction = Direction3(
-                self.inverse
-                    .transform_vector3a(differentials.rx_direction.into_inner().into())
-                    .into(),
-            );
-            differentials.ry_origin = Point3(
-                self.inverse
-                    .transform_point3a(differentials.ry_origin.into_inner().into())
-                    .into(),
-            );
-            differentials.ry_direction = Direction3(
-                self.inverse
-                    .transform_vector3a(differentials.ry_direction.into_inner().into())
-                    .into(),
-            );
-            Some(differentials)
-        } else {
-            None
-        };
+        let diffs = ray.differentials.map(|differentials| {
+            RayDifferentials::new(
+                Point3(
+                    self.inverse
+                        .transform_point3a(differentials.rx_origin().into_inner().into())
+                        .into(),
+                ),
+                Point3(
+                    self.inverse
+                        .transform_point3a(differentials.ry_origin().into_inner().into())
+                        .into(),
+                ),
+                Direction3(
+                    self.inverse
+                        .transform_vector3a(differentials.rx_direction().into_inner().into())
+                        .into(),
+                ),
+                Direction3(
+                    self.inverse
+                        .transform_vector3a(differentials.ry_direction().into_inner().into())
+                        .into(),
+                ),
+            )
+        });
 
-        Ray::new_with_differentials(origin, direction, ray.time, diffs)
+        Ray::new_with_differentials(origin, direction, ray.time(), diffs)
     }
 
     fn hit(&self, hit: &mut Hit) {
@@ -317,34 +316,36 @@ impl Transform for AnimatedTransform {
     /// Transform a ray from world space to object space using the inverse of the transform at
     /// `ray.time`.
     fn ray(&self, ray: &Ray) -> Ray {
-        let inv = self.eval(ray.time).inverse();
-        let origin = Point3(inv.transform_point3a(ray.origin.into_inner().into()).into());
-        let direction = Direction3(
-            inv.transform_vector3a(ray.direction.into_inner().into())
+        let inv = self.eval(ray.time()).inverse();
+        let origin = Point3(
+            inv.transform_point3a(ray.origin().into_inner().into())
                 .into(),
         );
-        let time = ray.time;
-        let differentials = if let Some(mut diffs) = ray.differentials {
-            diffs.rx_origin = Point3(
-                inv.transform_point3a(diffs.rx_origin.into_inner().into())
-                    .into(),
-            );
-            diffs.rx_direction = Direction3(
-                inv.transform_vector3a(diffs.rx_direction.into_inner().into())
-                    .into(),
-            );
-            diffs.ry_origin = Point3(
-                inv.transform_point3a(diffs.ry_origin.into_inner().into())
-                    .into(),
-            );
-            diffs.ry_direction = Direction3(
-                inv.transform_vector3a(diffs.ry_direction.into_inner().into())
-                    .into(),
-            );
-            Some(diffs)
-        } else {
-            None
-        };
+        let direction = Direction3(
+            inv.transform_vector3a(ray.direction().into_inner().into())
+                .into(),
+        );
+        let time = ray.time();
+        let differentials = ray.differentials.map(|diffs| {
+            RayDifferentials::new(
+                Point3(
+                    inv.transform_point3a(diffs.rx_origin().into_inner().into())
+                        .into(),
+                ),
+                Point3(
+                    inv.transform_point3a(diffs.ry_origin().into_inner().into())
+                        .into(),
+                ),
+                Direction3(
+                    inv.transform_vector3a(diffs.rx_direction().into_inner().into())
+                        .into(),
+                ),
+                Direction3(
+                    inv.transform_vector3a(diffs.ry_direction().into_inner().into())
+                        .into(),
+                ),
+            )
+        });
         Ray::new_with_differentials(origin, direction, time, differentials)
     }
 

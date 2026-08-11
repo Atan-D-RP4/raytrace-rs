@@ -57,12 +57,12 @@ fn slab_aabb_test(min: [f32; 3], max: [f32; 3], ray: &Ray, tmin: f32, tmax: f32)
     let mut lo = tmin;
     let mut hi = tmax;
 
-    let ox = ray.origin.x();
-    let oy = ray.origin.y();
-    let oz = ray.origin.z();
-    let idx = ray.inverse_direction.x();
-    let idy = ray.inverse_direction.y();
-    let idz = ray.inverse_direction.z();
+    let ox = ray.origin().x();
+    let oy = ray.origin().y();
+    let oz = ray.origin().z();
+    let idx = ray.inverse_direction().x();
+    let idy = ray.inverse_direction().y();
+    let idz = ray.inverse_direction().z();
 
     // X slab
     let t0 = (min[0] - ox) * idx;
@@ -646,9 +646,9 @@ where
         sp += 1;
 
         let tmin = ray_t.min;
-        let dx = ray.direction.x();
-        let dy = ray.direction.y();
-        let dz = ray.direction.z();
+        let dx = ray.direction().x();
+        let dy = ray.direction().y();
+        let dz = ray.direction().z();
 
         while sp > 0 {
             sp -= 1;
@@ -760,9 +760,9 @@ where
 
         let tmin = ray_t.min;
         let tmax = ray_t.max;
-        let dx = ray.direction.x();
-        let dy = ray.direction.y();
-        let dz = ray.direction.z();
+        let dx = ray.direction().x();
+        let dy = ray.direction().y();
+        let dz = ray.direction().z();
 
         while sp > 0 {
             sp -= 1;

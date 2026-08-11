@@ -237,14 +237,14 @@ impl Integrator for PathTracingIntegrator {
         let light_pdf = if lights.is_empty() {
             0.0
         } else {
-            EmitterPDF::new(lights, si.point(), ray.time).value(ray.direction.normalize())
+            EmitterPDF::new(lights, si.point(), ray.time()).value(ray.direction().normalize())
         };
 
         // Accumulate emission with MIS weight to avoid double-counting with NEE.
         // At bounce 0 or after a delta bounce, no previous scatter exists that could
         // overlap with NEE, so emission is added at full weight (PBRT convention).
         // Outgoing direction (away from the surface) is the negative of the ray direction.
-        let wo = -ray.direction.normalize();
+        let wo = -ray.direction().normalize();
         // NEE uses wo-aware emission (e.g., Beer's law for coated)
         let emission = material.emitted(wo, &si);
         let mut contribution = if state.bounce() == 0 || state.prev_was_delta {
@@ -282,7 +282,7 @@ impl Integrator for PathTracingIntegrator {
 
             // Sample a point on the light source — returns direction, normal, distance, and area PDF
             let (u, v) = stream.next_2d();
-            let sample = light.sample_light(si.point(), u, v, ray.time);
+            let sample = light.sample_light(si.point(), u, v, ray.time());
             let light_unit = sample.direction.normalize();
             let light_emission = sample.emission;
 
@@ -292,7 +292,7 @@ impl Integrator for PathTracingIntegrator {
             // conversion (0 · ∞²).
             if sample.distance.is_finite() {
                 // Shadow ray: test visibility/occlusion between the surface point and the light source
-                let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time);
+                let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time());
                 let far = (sample.distance - 0.001).max(0.001);
                 let shadow_ray_interval = Interval::from(0.001, far);
                 let occluded = world.occluded(&shadow_ray, shadow_ray_interval);
@@ -308,7 +308,7 @@ impl Integrator for PathTracingIntegrator {
                     // strategy and the BSDF continuation strategy explain this sampled
                     // NEE direction.
                     let light_pdf_at_nee =
-                        EmitterPDF::new(lights, si.point(), ray.time).value(light_unit);
+                        EmitterPDF::new(lights, si.point(), ray.time()).value(light_unit);
                     let bsdf_pdf_at_nee = bsdf_mixture_pdf(
                         wo,
                         light_unit,
@@ -407,7 +407,7 @@ impl Integrator for PathTracingIntegrator {
                     let delta_ray = Ray::new_with_differentials(
                         si.point(),
                         delta_wi,
-                        ray.time,
+                        ray.time(),
                         ray.propagate_differentials(
                             normal,
                             hit_time,
@@ -467,7 +467,7 @@ impl Integrator for PathTracingIntegrator {
             let new_ray = Ray::new_with_differentials(
                 si.point(),
                 direction,
-                ray.time,
+                ray.time(),
                 ray.propagate_differentials(normal, hit_time, eta, hit_point, si.hit().curvature),
             );
             next_ray = Some(new_ray);

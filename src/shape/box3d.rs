@@ -76,9 +76,9 @@ impl BoxShape {
     /// three axis intervals. The axis that produced `t_enter` tells us which face
     /// was hit.
     fn intersect_faces(&self, ray: &Ray, ray_t: Interval) -> Option<(usize, f32, f32, f32)> {
-        let inv_d = ray.inverse_direction.into_inner();
+        let inv_d = ray.inverse_direction().into_inner();
 
-        let origin = ray.origin.into_inner();
+        let origin = ray.origin().into_inner();
 
         // Slab intersection for each axis.
         let t1 = (self.min.into_inner() - origin) * inv_d;
@@ -105,7 +105,7 @@ impl BoxShape {
         }
 
         // Compute the hit point in world space.
-        let hit_point = origin + ray.direction.into_inner() * t;
+        let hit_point = origin + ray.direction().into_inner() * t;
 
         // Determine which face was hit by tracking which axis produced t_enter
         // in the max() chain. Direct f32 comparison is correct here because

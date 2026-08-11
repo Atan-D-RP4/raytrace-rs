@@ -145,18 +145,18 @@ impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for Constant
         let t_min = t_min.max(0.);
 
         // Compute the distance the ray travels inside the boundary.
-        let ray_length = ray.direction.length();
+        let ray_length = ray.direction().length();
         let dist_inside_boundary = (t_max - t_min) * ray_length;
 
         // Deterministic QMC sample for volume scattering distance.
         // Derive a unique seed from the ray's origin and direction so the same ray always gets the
         // same scattering distance (reproducible), while different rays vary.
-        let o = (ray.origin.x().to_bits() as u64)
+        let o = (ray.origin().x().to_bits() as u64)
             .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
-            .wrapping_add(ray.origin.y().to_bits() as u64);
-        let d = (ray.direction.x().to_bits() as u64)
+            .wrapping_add(ray.origin().y().to_bits() as u64);
+        let d = (ray.direction().x().to_bits() as u64)
             .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
-            .wrapping_add(ray.direction.y().to_bits() as u64);
+            .wrapping_add(ray.direction().y().to_bits() as u64);
         let seed = sampler::splitmix64(o.wrapping_add(d)) as u32;
         let qmc_sample = sampler::hash_sample(seed, VOLUME_DIM, self.vol_seed);
 

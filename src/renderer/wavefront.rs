@@ -185,7 +185,7 @@ impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
                     }
                     None => BounceResult {
                         contribution: integrator.eval_background(
-                            self.rays[i].as_ref().unwrap().direction.normalize(),
+                            self.rays[i].as_ref().unwrap().direction().normalize(),
                             &self.states[i],
                         ),
                         next_ray: None,

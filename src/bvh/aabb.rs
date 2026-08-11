@@ -244,12 +244,12 @@ impl<const W: usize> AabbPacked<W> {
         Simd<f32, W>: SimdPartialOrd + SimdFloat,
         <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
     {
-        let ox = Simd::<f32, W>::splat(ray.origin.x());
-        let oy = Simd::<f32, W>::splat(ray.origin.y());
-        let oz = Simd::<f32, W>::splat(ray.origin.z());
-        let idx = Simd::<f32, W>::splat(ray.inverse_direction.x());
-        let idy = Simd::<f32, W>::splat(ray.inverse_direction.y());
-        let idz = Simd::<f32, W>::splat(ray.inverse_direction.z());
+        let ox = Simd::<f32, W>::splat(ray.origin().x());
+        let oy = Simd::<f32, W>::splat(ray.origin().y());
+        let oz = Simd::<f32, W>::splat(ray.origin().z());
+        let idx = Simd::<f32, W>::splat(ray.inverse_direction().x());
+        let idy = Simd::<f32, W>::splat(ray.inverse_direction().y());
+        let idz = Simd::<f32, W>::splat(ray.inverse_direction().z());
 
         let mut lo = Simd::<f32, W>::splat(tmin);
         let mut hi = Simd::<f32, W>::splat(tmax);
@@ -316,12 +316,12 @@ impl<const W: usize> AabbPacked<W> {
     /// [ray_t.min, ray_t.max] intersects slot 0's AABB.
     pub fn hit_single(&self, ray: &Ray, ray_t: &Interval) -> bool {
         // Inline slab test for slot 0.
-        let ox = ray.origin.x();
-        let oy = ray.origin.y();
-        let oz = ray.origin.z();
-        let idx = ray.inverse_direction.x();
-        let idy = ray.inverse_direction.y();
-        let idz = ray.inverse_direction.z();
+        let ox = ray.origin().x();
+        let oy = ray.origin().y();
+        let oz = ray.origin().z();
+        let idx = ray.inverse_direction().x();
+        let idy = ray.inverse_direction().y();
+        let idz = ray.inverse_direction().z();
         let tmin = ray_t.min;
         let tmax = ray_t.max;
 

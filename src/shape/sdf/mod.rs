@@ -195,7 +195,7 @@ impl<F: SdfFn> SdfShape<F> {
     /// these hits would be rejected.
     fn march(&self, ray: &Ray, ray_t: Interval) -> Option<(f32, Point3)> {
         // SDF distances are physical; scale steps by 1/|dir| (ray-parameter space).
-        let dir_len = ray.direction.length();
+        let dir_len = ray.direction().length();
         if dir_len <= 0.0 {
             return None;
         }
@@ -290,7 +290,7 @@ impl<F: SdfFn> Shape3D for SdfShape<F> {
             // the set where the Dual gradient follows the inside branch and points inward.
             // Orient the normal to face against the incoming ray (standard ray tracing convention:
             // normal · ray_direction < 0).
-            normal *= -normal.dot(ray.direction.into_inner()).signum();
+            normal *= -normal.dot(ray.direction().into_inner()).signum();
 
             // Nudge the hit point slightly outward along the normal. Bisection converges to a point
             // that may be slightly inside the set (negative SDF). Without this, downstream rays
