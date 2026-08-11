@@ -220,7 +220,7 @@ impl<const W: usize> AabbPacked<W> {
     }
 
     #[inline]
-    fn pad_to_minimums(&mut self) {
+    pub(crate) fn pad_to_minimums(&mut self) {
         for axis in 0..3 {
             for i in 0..W {
                 let size = self.max[axis][i] - self.min[axis][i];

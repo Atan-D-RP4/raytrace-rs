@@ -404,10 +404,12 @@ impl<const N: usize> RayPacked<N> {
 
         // Flat surface (k == 0): no curvature terms — just refract the
         // offset directions, or zero correction for reflection.
-        let flat = match eta {
-            Some(eta) => (rx_direction.refract(n, eta), ry_direction.refract(n, eta)),
-            None => (Vec3::ZERO, Vec3::ZERO),
-        };
+        if k == 0.0 {
+            return match eta {
+                Some(eta) => (rx_direction.refract(n, eta), ry_direction.refract(n, eta)),
+                None => (Vec3::ZERO, Vec3::ZERO),
+            };
+        }
 
         // dn/dx = (dpdx − (dpdx·n)n) · curvature  (tangent-plane projection × curvature)
         let dpdx_tan = dpdx - dpdx.dot(n) * n;
@@ -472,11 +474,7 @@ impl<const N: usize> RayPacked<N> {
             }
         };
 
-        if k == 0.0 {
-            flat
-        } else {
-            general
-        }
+        general
     }
 
     // ── Packed reference methods (all lanes; SIMD kernels replace these) ────
@@ -761,7 +759,11 @@ impl<const N: usize> ParametricCurvePacked<N> {
                 max[axis][i] = (bbox.max[axis][i] + o0).max(bbox.max[axis][i] + o1);
             }
         }
-        AabbPacked::new(min, max)
+        // Pad degenerate axes to the minimum size, matching the old
+        // `merge`-based sweep (the BVH relies on non-degenerate boxes).
+        let mut out = AabbPacked::new(min, max);
+        out.pad_to_minimums();
+        out
     }
 }
 
