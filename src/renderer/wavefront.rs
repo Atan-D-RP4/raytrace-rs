@@ -1,7 +1,7 @@
 use crate::film::FilmTile;
 use crate::integrator::{BounceResult, Integrator, PathState};
-use crate::intersect::interaction::MaterialHit;
 use crate::intersect::Intersectable;
+use crate::intersect::interaction::MaterialHit;
 use crate::math::interval::Interval;
 use crate::math::vec3::Color3;
 use crate::primitives::LightPrimitive;

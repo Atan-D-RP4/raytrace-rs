@@ -131,8 +131,8 @@ impl PerspectiveCamera {
         // Compute pixel deltas by scaling viewport basis vectors by the number of pixels, which
         // represent the world-space vector from pixel to pixel.
         let viewport_u = viewport_width * u; // Vector across viewport horizontal edge
+        // Negated because the v vector points up but the image coordinates increase downwards.
         let viewport_v = viewport_height * -v; // Vector across viewport vertical edge
-                                               // Negated because the v vector points up but the image coordinates increase downwards.
 
         self.pixel_delta_u = viewport_u / self.image_width as f32;
         self.pixel_delta_v = viewport_v / self.image_height as f32;

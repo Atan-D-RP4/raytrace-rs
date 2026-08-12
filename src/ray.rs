@@ -417,7 +417,7 @@ impl<const N: usize> RayPacked<N> {
         let dpdy_tan = dpdy - dpdy.dot(n) * n;
         let dn_dy = dpdy_tan * k;
 
-        let general = match eta {
+        match eta {
             Some(eta) => {
                 // --- Refraction correction (Igehy 1999 eqs. 16–19 / pbrt-v4) ---
                 let wo = -wi;
@@ -472,9 +472,7 @@ impl<const N: usize> RayPacked<N> {
                 let dy_correction = -2.0 * wi.dot(dn_dy) * n - 2.0 * wi_dot_n * dn_dy;
                 (dx_correction, dy_correction)
             }
-        };
-
-        general
+        }
     }
 
     // ── Packed reference methods (all lanes; SIMD kernels replace these) ────

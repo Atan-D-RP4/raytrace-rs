@@ -419,7 +419,7 @@ fn build_render_context(
 ) -> (
     PerspectiveCamera,
     RgbFilm,
-    CpuRenderer<PathTracingIntegrator, 1>,
+    CpuRenderer<PathTracingIntegrator>,
 ) {
     // Allow env-var overrides for fast iteration during debugging.
     let mut config = *scene.config();

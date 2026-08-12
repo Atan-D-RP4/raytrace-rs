@@ -13,7 +13,7 @@ use crate::sampler::{
     pixel_seed,
 };
 
-pub struct CpuRenderer<I, const BATCH: usize>
+pub struct CpuRenderer<I>
 where
     I: Integrator,
 {
@@ -30,11 +30,14 @@ where
     /// Minimum number of samples to take before considering adaptive sampling.
     /// Ensures we have enough data to make a reliable variance estimate.
     min_samples_before_adapt: u32,
+    /// The size of each tile in pixels. Tiles are used to divide the image into smaller regions for
+    /// parallel rendering. The tile size should be chosen to balance workload and cache efficiency.
+    tile_size: u32,
     /// The integrator used to compute radiance along rays.
     integrator: I,
 }
 
-impl<I, const BATCH: usize> CpuRenderer<I, BATCH>
+impl<I> CpuRenderer<I>
 where
     I: Integrator,
 {
@@ -44,6 +47,7 @@ where
             threshold_abs: 1e-4,
             threshold_rel: 0.02,
             min_samples_before_adapt: 64,
+            tile_size: 32,
             integrator,
         }
     }
@@ -59,9 +63,120 @@ where
     pub fn set_min_samples_before_adapt(&mut self, min_samples: u32) {
         self.min_samples_before_adapt = min_samples;
     }
+
+    pub fn set_tile_size(&mut self, tile_size: u32) {
+        self.tile_size = tile_size;
+    }
+
+    /// Initializes a pool of film tiles for rendering. Each tile covers a portion of the image, and
+    /// the pool is used to distribute work across threads. The tiles are sized to fit within the
+    /// image dimensions, and any remaining pixels are handled by smaller tiles.
+    pub fn tile_pool_init(&self, width: u32, height: u32) -> Vec<FilmTile> {
+        let tile_size = self.tile_size;
+
+        let tiles_x = width.div_ceil(tile_size);
+        let tiles_y = height.div_ceil(tile_size);
+
+        (0..tiles_y * tiles_x)
+            .map(|tile_idx| {
+                let tx = tile_idx % tiles_x;
+                let ty = tile_idx / tiles_x;
+                let x_start = tx * tile_size;
+                let y_start = ty * tile_size;
+                let x_end = (x_start + tile_size).min(width);
+                let y_end = (y_start + tile_size).min(height);
+                FilmTile::new(
+                    [
+                        x_start.saturating_sub(FILTER_RADIUS),
+                        (x_end + FILTER_RADIUS).min(width),
+                        y_start.saturating_sub(FILTER_RADIUS),
+                        (y_end + FILTER_RADIUS).min(height),
+                    ],
+                    [x_start, x_end, y_start, y_end],
+                )
+            })
+            .collect()
+    }
 }
 
-impl<I, C, F, const BATCH: usize> Renderer<C, F> for CpuRenderer<I, BATCH>
+impl<I> CpuRenderer<I>
+where
+    I: Integrator,
+{
+    /// Render a single tile of the image. This function is called in parallel for each tile.
+    fn render_tile<C: Camera>(
+        &self,
+        camera: &C,
+        world: &impl Intersectable,
+        lights: &[LightPrimitive],
+        converged: &[bool],
+        pixel_bases: &[u32],
+        tile: &mut FilmTile,
+        sample_idx: u32,
+    ) {
+        let [x_start, x_end, y_start, y_end] = tile.bounds;
+
+        let (width, _) = camera.image_resolution();
+        let width = width as usize;
+
+        // Does any pixel in this tile still need samples? Uses the tile's original
+        // (unexpanded) pixel bounds: the expanded `bounds` overlap neighboring
+        // tiles by FILTER_RADIUS and cannot be inverted at image edges (clamping).
+        let [px_start, px_end, py_start, py_end] = tile.pixel_bounds;
+        tile.dirty = (py_start..py_end)
+            .any(|y| (px_start..px_end).any(|x| !converged[y as usize * width + x as usize]));
+        if !tile.dirty {
+            return; // Fully converged — no samples needed this pass.
+        }
+
+        // Zero-fill the staging buffers for reuse (this tile was merged last pass).
+        tile.pixels.fill(Color3::ZERO);
+        tile.sample_count.fill(0);
+
+        for (y, x) in (y_start..y_end).flat_map(|y| (x_start..x_end).map(move |x| (y, x))) {
+            let pixel_idx = y as usize * width + x as usize;
+            if converged[pixel_idx] {
+                continue; // Skip pixels that have already converged
+            }
+
+            let x32 = x as i32;
+            let y32 = y as i32;
+
+            // Owen-scramble the sample index within the pixel (base-2).
+            // This supports progressive rendering (non-power-of-two sample counts).
+            let scrambled_sample = owen_scramble_base_2(sample_idx, pixel_seed(x32, y32));
+
+            // pixel_bases[pixel_idx] is the scrambled-Morton block start (see render()).
+            // wrapping_add: block start is truncated to u32 and scrambled_sample is a
+            // full 32-bit hash, so the sum can overflow — release wraps, debug must too.
+            let actual_idx = pixel_bases[pixel_idx].wrapping_add(scrambled_sample);
+
+            // Fresh stream & rng for this pixel-sample. Construction
+            // is cheap (Copy value types) — no pooling needed.
+            let mut stream = SampleStreamWriter::for_pixel(x32, y32, actual_idx);
+            let mut rng = HashRng::for_pixel(x32, y32, actual_idx);
+
+            // Generate a camera sample from the stream & rng.
+            let camera_sampler = get_camera_sample((x, y), &mut stream, &mut rng);
+
+            let cam_ray = camera
+                .generate_ray_differential(&camera_sampler)
+                .or_else(|| camera.generate_ray(&camera_sampler));
+            if let Some(mut cam_ray) = cam_ray {
+                let radiance =
+                    self.integrator
+                        .li(&mut cam_ray.ray, world, lights, &mut stream, &mut rng);
+                let sample = radiance * cam_ray.weight;
+                // Guard against NaN/Inf poisoning the accumulation buffer.
+                if sample.into_inner().is_finite() {
+                    tile.add_sample(x, y, sample);
+                }
+            }
+        }
+    }
+}
+
+impl<I, C, F> Renderer<C, F> for CpuRenderer<I>
 where
     I: Integrator,
     C: Camera,
@@ -91,30 +206,7 @@ where
 
         let render_start = std::time::Instant::now();
 
-        let tile_size = 64u32; // Define a tile size for rendering
-
-        // Determine the number of tiles in x and y directions
-        let tiles_x = width.div_ceil(tile_size);
-        let tiles_y = height.div_ceil(tile_size);
-
-        // Pre-allocate all tiles once, reuse across passes to avoid constant
-        // heap allocation churn.
-        let mut tile_pool: Vec<FilmTile> = (0..tiles_y * tiles_x)
-            .map(|tile_idx| {
-                let tx = tile_idx % tiles_x;
-                let ty = tile_idx / tiles_x;
-                let x_start = tx * tile_size;
-                let y_start = ty * tile_size;
-                let x_end = (x_start + tile_size).min(width);
-                let y_end = (y_start + tile_size).min(height);
-                FilmTile::new([
-                    x_start.saturating_sub(FILTER_RADIUS),
-                    (x_end + FILTER_RADIUS).min(width),
-                    y_start.saturating_sub(FILTER_RADIUS),
-                    (y_end + FILTER_RADIUS).min(height),
-                ])
-            })
-            .collect();
+        let mut tile_pool = self.tile_pool_init(width, height);
 
         // Pre-allocate the convergence mask once, then refill in place each pass
         // to avoid repeated heap allocation of the full-resolution bool buffer.
@@ -124,20 +216,18 @@ where
         let mut pass_times = [0.0f32; 8];
         let mut pass_count: usize = 0;
 
-        // Per-thread sampler pairs — allocate once per thread, reuse across sample
-        // passes.  The initial values are overwritten per-pixel so the seed
-        // doesn't matter.
-        let num_threads = rayon::current_num_threads();
-        let samplers: Vec<std::sync::Mutex<(SampleStreamWriter, HashRng)>> = (0..num_threads)
-            .map(|_| {
-                std::sync::Mutex::new((
-                    SampleStreamWriter::new(crate::sampler::SobolQmcSampler::with_seed(0), 0),
-                    HashRng::new(0),
-                ))
-            })
-            .collect();
-
-        let dither_seed = 0x12345678u64; // Arbitrary seed for dithering
+        // Precompute each pixel's base Sobol index once — pass-invariant.
+        let mut pixel_bases: Vec<u32> = Vec::with_capacity((width * height) as usize);
+        for py in 0..height {
+            for px in 0..width {
+                // The Morton code orders pixels along a space-filling curve; Owen-scrambling it (base-4) is
+                // a *fixed* permutation that shuffles which pixel draws from which contiguous block of
+                // `spp` Sobol samples, decorrelating spatially adjacent pixels.
+                // The constant is baked in: it's a deterministic permutation, not a tunable seed.
+                let scrambled_pixel = owen_scramble_base_4(morton_encode(px, py), 0x12345678);
+                pixel_bases.push((scrambled_pixel as u64 * self.samples_per_pixel as u64) as u32);
+            }
+        }
 
         for sample_idx in 0..self.samples_per_pixel {
             let pass_start = std::time::Instant::now();
@@ -180,112 +270,42 @@ where
                 converged.fill(false);
             }
 
-            // Zero-fill pooled tiles before reuse — skip tiles where all pixels are
-            // already converged (avoids 15.7MB of useless memsets per pass).
-            for tile in &mut tile_pool {
-                let [x_start, _, y_start, _] = tile.bounds;
-                let (orig_x_start, orig_y_start) = (
-                    x_start.saturating_add(FILTER_RADIUS),
-                    y_start.saturating_add(FILTER_RADIUS),
-                );
-                let (orig_x_end, orig_y_end) = (
-                    (orig_x_start + tile_size).min(width),
-                    (orig_y_start + tile_size).min(height),
-                );
-
-                tile.dirty = (orig_y_start..orig_y_end)
-                    .zip(orig_x_start..orig_x_end)
-                    .any(|(y, x)| !converged[y as usize * width as usize + x as usize]);
-
-                if tile.dirty {
-                    tile.pixels.fill(Color3::ZERO);
-                    tile.sample_count.fill(0);
-                }
-            }
-
+            // Render each tile in parallel. render_tile determines tile dirty-ness
+            // from the tile's original pixel bounds, zero-fills its staging buffers,
+            // and early-returns for fully-converged tiles (no memset, no samples).
             tile_pool.par_iter_mut().for_each(|tile| {
-                let [x_start, x_end, y_start, y_end] = tile.bounds;
-
-                // Single-tile renders run the closure inline on the caller
-                // thread (not a rayon worker), so fall back to sampler 0.
-                let thread_idx = rayon::current_thread_index().unwrap_or(0);
-                let mut guard = samplers[thread_idx].lock().unwrap();
-                let (ref mut stream, ref mut rng) = *guard;
-
-                for (y, x) in (y_start..y_end).flat_map(|y| (x_start..x_end).map(move |x| (y, x))) {
-                    if converged[y as usize * width as usize + x as usize] {
-                        continue; // Skip pixels that have already converged
-                    }
-
-                    // Reset per-pixel Sobol state from pixel coordinates.
-                    {
-                        let morton_idx = morton_encode(x, y);
-
-                        // Owen-scramble the Morton code (base-4) to shuffle
-                        // which pixel gets which block of samples.
-                        let scrambled_pixel = owen_scramble_base_4(morton_idx, dither_seed);
-                        // Each pixel gets a contiguous block of `spp` Sobol samples.
-                        let pixel_base =
-                            (scrambled_pixel as u64 * self.samples_per_pixel as u64) as u32;
-
-                        // Owen-scramble the sample index within the pixel (base-2)
-                        // This supports progressive rendering (non-power-of-two sample counts)
-                        let seed = pixel_seed(x as i32, y as i32);
-                        let scrambled_sample = owen_scramble_base_2(sample_idx, seed);
-
-                        // Compute the actual Sobol index for this pixel-sample.
-                        // wrapping_add: pixel_base is already truncated to u32
-                        // and scrambled_sample is a full 32-bit hash, so the
-                        // sum can overflow — release wraps, debug must too.
-                        let actual_idx = pixel_base.wrapping_add(scrambled_sample);
-
-                        // Reset the stream & rng for this pixel-sample.
-                        *stream = SampleStreamWriter::for_pixel(x as i32, y as i32, actual_idx);
-                        *rng = HashRng::for_pixel(x as i32, y as i32, actual_idx);
-                    }
-
-                    // Generate a camera sample from the stream & rng.
-                    let camera_sampler = get_camera_sample((x, y), stream, rng);
-
-                    let cam_ray = camera
-                        .generate_ray_differential(&camera_sampler)
-                        .or_else(|| camera.generate_ray(&camera_sampler));
-                    if let Some(mut cam_ray) = cam_ray {
-                        let radiance =
-                            self.integrator
-                                .li(&mut cam_ray.ray, world, lights, stream, rng);
-                        let sample = radiance * cam_ray.weight;
-                        // Guard against NaN/Inf poisoning the accumulation buffer.
-                        if sample.into_inner().is_finite() {
-                            tile.add_sample(x, y, sample);
-                        }
-                    }
-                }
+                self.render_tile(
+                    camera,
+                    world,
+                    lights,
+                    &converged,
+                    &pixel_bases,
+                    tile,
+                    sample_idx,
+                );
             });
 
             // Merge only dirty tiles — skip fully-converged tiles (no new samples).
-            for tile in &tile_pool {
-                if tile.dirty {
-                    film.merge_tile(tile);
-                }
-            }
+            tile_pool
+                .iter()
+                .filter(|tile| tile.dirty)
+                .for_each(|tile| film.merge_tile(tile));
 
             // Progressive rendering: adaptive cadence to reduce lock contention.
             // Fast early feedback (every pass), then increasingly sparse.
-            let should_publish = if framebuffer.is_some() {
-                let pass_num = sample_idx + 1;
-                let cadence = if pass_num <= 16 {
-                    1
-                } else if pass_num <= 64 {
-                    4
-                } else {
-                    8
+            if let Some(ref framebuffer) = framebuffer {
+                let should_publish = {
+                    let pass_num = sample_idx + 1;
+                    let cadence = match pass_num {
+                        1..=16 => 1,
+                        17..=64 => 4,
+                        _ => 8,
+                    };
+                    pass_num % cadence == 0 || pass_num == self.samples_per_pixel
                 };
-                pass_num % cadence == 0 || pass_num == self.samples_per_pixel
-            } else {
-                false
-            };
-            if should_publish && let Some(ref framebuffer) = framebuffer {
+                if !should_publish {
+                    continue;
+                }
                 let rgb = film.progressive();
                 if let Ok(mut fb) = framebuffer.write() {
                     fb.image
@@ -326,5 +346,63 @@ where
             ),
             "camera render finished"
         );
+    }
+}
+
+pub struct WavefrontRenderer<I, const B: usize>
+where
+    I: Integrator,
+{
+    /// Number of samples to take per pixel. Higher values yield better quality but take longer.
+    samples_per_pixel: u32,
+    /// Absolute variance floor. Pixels with variance below this threshold are
+    /// considered converged regardless of their brightness. Prevents wasting
+    /// samples on near-black pixels that are genuinely dark.
+    threshold_abs: f32,
+    /// Relative variance threshold: variance / luminance². Pixels whose relative
+    /// noise drops below this ratio are considered converged. Typical values:
+    /// 0.01 (stddev = 10% of mean) to 0.05 (stddev = 22%).
+    threshold_rel: f32,
+    /// Minimum number of samples to take before considering adaptive sampling.
+    /// Ensures we have enough data to make a reliable variance estimate.
+    min_samples_before_adapt: u32,
+    /// The integrator used to compute radiance along rays.
+    integrator: I,
+}
+
+impl<I, const B: usize> WavefrontRenderer<I, B>
+where
+    I: Integrator,
+{
+    pub fn new(
+        samples_per_pixel: u32,
+        threshold_abs: f32,
+        threshold_rel: f32,
+        min_samples_before_adapt: u32,
+        integrator: I,
+    ) -> Self {
+        Self {
+            samples_per_pixel,
+            threshold_abs,
+            threshold_rel,
+            min_samples_before_adapt,
+            integrator,
+        }
+    }
+}
+
+impl<I, C, F, const B: usize> Renderer<C, F> for WavefrontRenderer<I, B>
+where
+    I: Integrator,
+    C: Camera,
+    F: Film,
+{
+    fn render(
+        &self,
+        _camera: &C,
+        _film: &mut F,
+        _scene: (&impl Intersectable, &[LightPrimitive]),
+        _framebuffer: Option<SharedFramebuffer>,
+    ) {
     }
 }
