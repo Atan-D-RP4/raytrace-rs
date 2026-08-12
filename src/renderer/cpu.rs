@@ -9,8 +9,7 @@ use crate::math::vec3::Color3;
 use crate::primitives::LightPrimitive;
 use crate::renderer::Renderer;
 use crate::sampler::{
-    HashRng, SampleStreamWriter, morton_encode, owen_scramble_base_2, owen_scramble_base_4,
-    pixel_seed,
+    HashRng, SampleStreamWriter, morton_encode, owen_scramble_base_4, pixel_sample_state,
 };
 
 pub struct CpuRenderer<I>
@@ -139,22 +138,10 @@ where
                 continue; // Skip pixels that have already converged
             }
 
-            let x32 = x as i32;
-            let y32 = y as i32;
-
-            // Owen-scramble the sample index within the pixel (base-2).
-            // This supports progressive rendering (non-power-of-two sample counts).
-            let scrambled_sample = owen_scramble_base_2(sample_idx, pixel_seed(x32, y32));
-
-            // pixel_bases[pixel_idx] is the scrambled-Morton block start (see render()).
-            // wrapping_add: block start is truncated to u32 and scrambled_sample is a
-            // full 32-bit hash, so the sum can overflow — release wraps, debug must too.
-            let actual_idx = pixel_bases[pixel_idx].wrapping_add(scrambled_sample);
-
             // Fresh stream & rng for this pixel-sample. Construction
             // is cheap (Copy value types) — no pooling needed.
-            let mut stream = SampleStreamWriter::for_pixel(x32, y32, actual_idx);
-            let mut rng = HashRng::for_pixel(x32, y32, actual_idx);
+            let (mut stream, mut rng): (SampleStreamWriter, HashRng) =
+                pixel_sample_state(pixel_bases, pixel_idx, sample_idx, x as i32, y as i32);
 
             // Generate a camera sample from the stream & rng.
             let camera_sampler = get_camera_sample((x, y), &mut stream, &mut rng);

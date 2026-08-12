@@ -12,7 +12,7 @@ A physically based CPU path tracer in Rust, compared against production renderer
 **[Google Filament](https://github.com/google/filament)** (C++/GLSL, ~250K LOC),
 **[renderling](https://github.com/schell/renderling)** (Rust/wgpu, ~30K LOC)
 
-> **Last updated:** 2026-07-14 — fresh audit.
+> **Last updated:** 2026-08-12 — sampler factory cleanup.
 > 54 source files, 25 public modules, 21 traits, ~18 enums, ~50 structs.
 > 8 core dependencies (image, rand, rayon, winit, softbuffer, tracing, smol, async-tungstenite).
 
@@ -24,13 +24,13 @@ A physically based CPU path tracer in Rust, compared against production renderer
 |--------|-------|
 | Source files | 54 `.rs` |
 | Public modules | 25 |
-| Public traits | 21 (`Intersectable`, `Bounded`, `Sampleable`, `Sampler`, `SamplingSession`, `SampleStream`, `SamplerRng`, `SampleStreamFactory`, `RngFactory`, `Camera`, `Film`, `Integrator`, `Renderer`, `PDF`, `Shape3D`, `Region2D`, `Bsdf`[private], `Texture`, `UVDifferentiable`, `Transform`, `GpuSerializable`) |
+| Public traits | 19 (`Intersectable`, `Bounded`, `Sampleable`, `Sampler`, `SamplingSession`, `SampleStream`, `SamplerRng`, `Camera`, `Film`, `Integrator`, `Renderer`, `PDF`, `Shape3D`, `Region2D`, `Bsdf`[private], `Texture`, `UVDifferentiable`, `Transform`, `GpuSerializable`) |
 | Material types | 8 (6 BSDF + 2 composition: Mix, Coated) |
 | Texture types | 5 (SolidColor, Checker, Noise, Image, MappedTexture) |
 | Shape types | 2 (Sphere + ShapeObject generic; 9 planar region types via PlanarPatch) |
 | Integrators | 1 (PathTracingIntegrator) |
 | Renderers | 1 (CpuRenderer — rayon tiled, adaptive) |
-| Samplers | 3 (Sobol, NaiveRandom, Stratified) + Factory pattern |
+| Samplers | 3 (Sobol, NaiveRandom, Stratified) with direct per-pixel constructors |
 | Scene functions | 10 built-in |
 | Unsafe blocks | 2 (GPU serialization only) |
 | `unwrap()`/`expect()` | 13 (init code, sampler locks, hardcoded paths) |

@@ -37,6 +37,15 @@ pub fn pixel_seed(pixel_x: i32, pixel_y: i32) -> u64 {
         .wrapping_add(pixel_y as u64 ^ PIXEL_COORD_SALT)
 }
 
+/// Seed hash combining pixel coordinates with a sample index — the shared
+/// convention behind every `SampleStream::for_pixel` / `SamplerRng::for_pixel`
+/// implementation, keeping streams and RNGs aligned on one sample-index space.
+/// `wrapping_mul`/`wrapping_add` avoids overflow panics in debug builds.
+#[inline]
+pub(crate) fn seeded_sample_idx(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> u64 {
+    pixel_seed(pixel_x, pixel_y).wrapping_add((sample_idx as u64).wrapping_mul(GOLDEN_RATIO_HASH))
+}
+
 /// SplitMix64 — fast deterministic hash (Vigna 2015).
 pub(crate) fn splitmix64(mut x: u64) -> u64 {
     x = (x ^ (x >> 30)).wrapping_mul(SPLITMIX_MULT_1);
@@ -137,11 +146,19 @@ pub(crate) trait QmcSampler: Send + Sync {
 pub trait SampleStream: Send + Sync + Copy {
     /// Returns the next 2D sample point as (u, v) in [0, 1)^2.
     fn next_2d(&mut self) -> (f32, f32);
+
+    /// Deterministic per-pixel constructor, seeded from pixel coordinates and
+    /// the sample index. All implementations share the same hash convention so
+    /// any stream and RNG pair stays aligned on a common sample-index space.
+    fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self;
 }
 
 /// Stateful source of independent random numbers in [0, 1).
 pub trait SamplerRng: Send + Sync + Copy {
     fn next(&mut self) -> f32;
+
+    /// Deterministic per-pixel constructor — see [`SampleStream::for_pixel`].
+    fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self;
 }
 
 /// Sobol' quasi-random sampler — stateless, uses direct Gray-code
@@ -161,10 +178,9 @@ impl SobolQmcSampler {
 
     /// Deterministic seed from pixel coordinates.
     pub fn for_pixel(pixel_x: i32, pixel_y: i32) -> Self {
-        let seed = splitmix64(pixel_x as u64 ^ GOLDEN_RATIO_HASH)
-            .wrapping_mul(SPLITMIX_MULT_1)
-            .wrapping_add(pixel_y as u64 ^ PIXEL_COORD_SALT);
-        Self { seed }
+        Self {
+            seed: pixel_seed(pixel_x, pixel_y),
+        }
     }
 }
 
@@ -239,6 +255,12 @@ impl SampleStream for NaiveRandomSampler {
         let v = self.next();
         (u, v)
     }
+
+    fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
+        Self {
+            seed: seeded_sample_idx(pixel_x, pixel_y, sample_idx),
+        }
+    }
 }
 
 impl SamplerRng for NaiveRandomSampler {
@@ -249,6 +271,12 @@ impl SamplerRng for NaiveRandomSampler {
         let v = hash_sample(n, d, self.seed);
         self.seed = self.seed.wrapping_add(1);
         v
+    }
+
+    fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
+        Self {
+            seed: seeded_sample_idx(pixel_x, pixel_y, sample_idx),
+        }
     }
 }
 
@@ -291,6 +319,10 @@ impl SampleStream for StratifiedRandomSampler {
         self.seed = self.seed.wrapping_add(1);
         (self.sample(n, 0), self.sample(n, 1))
     }
+
+    fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
+        Self::new(2, seeded_sample_idx(pixel_x, pixel_y, sample_idx))
+    }
 }
 
 impl SamplerRng for StratifiedRandomSampler {
@@ -300,39 +332,9 @@ impl SamplerRng for StratifiedRandomSampler {
         self.seed = self.seed.wrapping_add(1);
         self.sample(n, 0)
     }
-}
 
-/// Factory for creating per-pixel `SampleStream` instances.
-pub trait SampleStreamFactory: Send + Sync {
-    type SampleStream: SampleStream;
-    fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> Self::SampleStream;
-}
-
-/// Factory for creating per-pixel `SamplerRng` instances.
-pub trait RngFactory: Send + Sync {
-    type Rng: SamplerRng;
-    fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> Self::Rng;
-}
-
-/// Factory for `SampleStreamWriter` — per-pixel Sobol stream.
-#[derive(Clone, Copy, Default)]
-pub struct SobolStreamFactory;
-
-impl SampleStreamFactory for SobolStreamFactory {
-    type SampleStream = SampleStreamWriter;
-    fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> SampleStreamWriter {
-        SampleStreamWriter::for_pixel(x, y, sample_idx)
-    }
-}
-
-/// Factory for `HashRng` — per-pixel hash RNG.
-#[derive(Clone, Copy, Default)]
-pub struct HashRngFactory;
-
-impl RngFactory for HashRngFactory {
-    type Rng = HashRng;
-    fn for_pixel(&self, x: i32, y: i32, sample_idx: u32) -> HashRng {
-        HashRng::for_pixel(x, y, sample_idx)
+    fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
+        Self::new(2, seeded_sample_idx(pixel_x, pixel_y, sample_idx))
     }
 }
 
@@ -354,10 +356,6 @@ impl SampleStreamWriter {
             next_pair: 0,
         }
     }
-
-    pub fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
-        Self::new(SobolQmcSampler::for_pixel(pixel_x, pixel_y), sample_idx)
-    }
 }
 
 impl SampleStream for SampleStreamWriter {
@@ -368,6 +366,10 @@ impl SampleStream for SampleStreamWriter {
         let v = self.sampler.sample(self.sample_idx, d + 1);
         self.next_pair += 1;
         (u, v)
+    }
+
+    fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
+        Self::new(SobolQmcSampler::for_pixel(pixel_x, pixel_y), sample_idx)
     }
 }
 
@@ -383,13 +385,6 @@ impl HashRng {
     pub fn new(seed: u64) -> Self {
         Self { seed, counter: 0 }
     }
-
-    pub fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
-        // wrapping_mul/wrapping_add avoids arithmetic overflow panics in debug builds.
-        let seed = pixel_seed(pixel_x, pixel_y)
-            .wrapping_add((sample_idx as u64).wrapping_mul(GOLDEN_RATIO_HASH));
-        Self { seed, counter: 0 }
-    }
 }
 
 impl SamplerRng for HashRng {
@@ -399,6 +394,42 @@ impl SamplerRng for HashRng {
         self.counter += 1;
         v
     }
+
+    fn for_pixel(pixel_x: i32, pixel_y: i32, sample_idx: u32) -> Self {
+        Self {
+            seed: seeded_sample_idx(pixel_x, pixel_y, sample_idx),
+            counter: 0,
+        }
+    }
+}
+
+/// Builds the per-pixel stream & RNG pair for one sample of one pixel.
+/// Generic over any `SampleStream` / `SamplerRng` pair.
+///
+/// `actual_idx` combines two scrambles:
+/// - `pixel_bases[pixel_idx]` is the scrambled-Morton Sobol block start for the
+///   pixel (see `pixel_bases` construction in the renderer) — it decorrelates
+///   spatially adjacent pixels by giving each a far-apart contiguous block of
+///   `spp` Sobol samples.
+/// - `owen_scramble_base_2(sample_idx, pixel_seed(x, y))` scrambles the sample
+///   index within the pixel, supporting progressive rendering (non-power-of-two
+///   sample counts).
+///
+/// `wrapping_add`: the block start is truncated to u32 and the scrambled sample
+/// is a full 32-bit hash, so the sum can overflow — release wraps, debug must too.
+pub fn pixel_sample_state<S: SampleStream, R: SamplerRng>(
+    pixel_bases: &[u32],
+    pixel_idx: usize,
+    sample_idx: u32,
+    x: i32,
+    y: i32,
+) -> (S, R) {
+    let scrambled_sample = owen_scramble_base_2(sample_idx, pixel_seed(x, y));
+    let actual_idx = pixel_bases[pixel_idx].wrapping_add(scrambled_sample);
+    (
+        S::for_pixel(x, y, actual_idx),
+        R::for_pixel(x, y, actual_idx),
+    )
 }
 
 #[cfg(test)]
