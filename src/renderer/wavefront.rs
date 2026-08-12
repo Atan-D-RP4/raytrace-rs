@@ -1,4 +1,5 @@
-use crate::film::FilmTile;
+use crate::camera::{Camera, get_camera_sample};
+use crate::film::{Film, FilmTile, SharedFramebuffer};
 use crate::integrator::{BounceResult, Integrator, PathState};
 use crate::intersect::Intersectable;
 use crate::intersect::interaction::MaterialHit;
@@ -6,85 +7,126 @@ use crate::math::interval::Interval;
 use crate::math::vec3::Color3;
 use crate::primitives::LightPrimitive;
 use crate::ray::Ray;
-use crate::sampler::{SampleStream, SamplerRng};
+use crate::renderer::{Renderer, TiledRenderer};
+use crate::sampler::{HashRng, SampleStream, SampleStreamWriter, SamplerRng, pixel_sample_state};
 
-/// The wavefront batch: parallel per-slot buffers. Grows as delta children are queued. No lifetime
-/// — hits are per-stage locals, not stored.
-pub struct WavefrontBatch<I: Integrator, S: SampleStream, R: SamplerRng> {
-    /// The rays and states are used to track the current state of each path being traced.
-    rays: Vec<Option<Ray>>,
-    states: Vec<I::PathState>,
+/// Stable identity for a path record in a batch's path arena.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PathId(usize);
 
-    /// The sample streams and RNGs are used to generate new rays and sample the scene.
-    streams: Vec<S>,
-    rngs: Vec<R>,
-
-    /// Accumulated radiance for each path. Flows up the parent chain when a path is done.
-    accumulator: Vec<Color3>,
-    /// Camera-ray weight applied to the total radiance at the film add. `None` for delta children
-    /// (their radiance flows to the parent), and for rays that have not yet been traced.
-    weights: Vec<Option<Color3>>,
-    /// Film coordinates for each ray, used to accumulate contributions to the correct pixel. `None`
-    /// for delta children and untraced rays.
-    pixels: Vec<Option<(u32, u32)>>,
-
-    /// Index of the slot this path's radiance flows into (None = initial path).
-    parents: Vec<Option<usize>>,
-    /// Outstanding delta children that are yet to be traced.
-    pending: Vec<u32>,
-    /// Tracks which rays have completed their path tracing (either by reaching max depth or by not
-    /// generating a new ray).
-    done: Vec<bool>,
+/// Persistent metadata for one path tree node.
+///
+/// Path records survive while a parent waits for queued delta children. They
+/// are deliberately separate from the dense active-ray work list so waiting
+/// paths never appear as fake stage slots.
+pub(crate) struct PathRecord<S, R, State> {
+    pub state: State,
+    pub stream: S,
+    pub rng: R,
+    pub accumulator: Color3,
+    pub parent: Option<PathId>,
+    pub pending_children: u32,
+    pub pixel: Option<(u32, u32)>,
+    pub camera_weight: Option<Color3>,
+    finished: bool,
 }
 
-impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
-    pub fn new(
-        rays: Vec<Option<Ray>>,
-        states: Vec<I::PathState>,
-        streams: Vec<S>,
-        rngs: Vec<R>,
-        weights: Vec<Option<Color3>>,
-        pixels: Vec<Option<(u32, u32)>>,
-    ) -> Self {
-        let len = rays.len();
-        assert_eq!(len, states.len());
-        assert_eq!(len, streams.len());
-        assert_eq!(len, rngs.len());
-        assert_eq!(len, weights.len());
-        assert_eq!(len, pixels.len());
-        Self {
-            rays,
-            states,
-            streams,
-            rngs,
-            accumulator: vec![Color3::ZERO; len],
-            weights,
-            pixels,
-            parents: vec![None; len],
-            pending: vec![0; len],
-            done: vec![false; len],
+/// One dense active work item entering the next wavefront stage.
+#[derive(Clone, Copy)]
+pub(crate) struct ActiveRay {
+    pub path: PathId,
+    pub ray: Ray,
+}
+
+/// The complete visibility result for one active ray.
+pub(crate) enum Visibility<'a> {
+    Hit(MaterialHit<'a>),
+    Miss,
+}
+
+/// Capability contract for a staged wavefront buffer.
+///
+/// Each stage consumes/produces dense work. Inactive paths are represented only
+/// by their absence from `ActiveRay`; waiting parents remain in the path arena.
+pub(crate) trait WavefrontStages<I: Integrator, S: SampleStream, R: SamplerRng> {
+    fn trace_rays<'a, W: Intersectable>(&self, world: &'a W) -> Vec<Visibility<'a>>;
+
+    fn shade_hits(
+        &mut self,
+        integrator: &I,
+        visibility: &[Visibility<'_>],
+        world: &impl Intersectable,
+        lights: &[LightPrimitive],
+    ) -> Vec<BounceResult<I::PathState>>;
+
+    /// Resolve the current wave and emit only the dense continuation work for
+    /// the next wave. Terminated paths flow their radiance through the arena.
+    fn resolve(
+        &mut self,
+        bounces: &[BounceResult<I::PathState>],
+        tile: &mut FilmTile,
+    ) -> Vec<ActiveRay>;
+
+    fn run(
+        &mut self,
+        integrator: &I,
+        world: &impl Intersectable,
+        lights: &[LightPrimitive],
+        tile: &mut FilmTile,
+    ) {
+        loop {
+            let visibility = self.trace_rays(world);
+            let bounces = self.shade_hits(integrator, &visibility, world, lights);
+            let next_active = self.resolve(&bounces, tile);
+            self.set_active_rays(next_active);
+            if self.active_is_empty() {
+                break;
+            }
         }
     }
 
-    /// Flow a finished path's radiance up the parent chain. Cascades when a
-    /// parent was already done and this was its last child.
-    pub fn flow_up(&mut self, mut idx: usize, tile: &mut FilmTile) {
+    fn set_active_rays(&mut self, active: Vec<ActiveRay>);
+    fn active_is_empty(&self) -> bool;
+}
+
+/// Runtime-sized wavefront storage whose stage inputs and outputs are dense.
+pub(crate) struct WavefrontBatch<I: Integrator, S: SampleStream, R: SamplerRng> {
+    /// Persistent path metadata, including parents waiting on delta children.
+    paths: Vec<PathRecord<S, R, I::PathState>>,
+    /// Dense active work list. Every entry has a valid ray and path identity.
+    active_rays: Vec<ActiveRay>,
+}
+
+impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
+    pub(crate) fn new(
+        active_rays: Vec<ActiveRay>,
+        paths: Vec<PathRecord<S, R, I::PathState>>,
+    ) -> Self {
+        assert!(
+            active_rays.iter().all(|active| active.path.0 < paths.len()),
+            "active ray references an unknown path record"
+        );
+        Self { paths, active_rays }
+    }
+
+    fn flow_up(&mut self, mut path_id: PathId, tile: &mut FilmTile) {
         loop {
-            let radiance = self.accumulator[idx];
-            match self.parents[idx] {
+            let radiance = self.paths[path_id.0].accumulator;
+            match self.paths[path_id.0].parent {
                 Some(parent) => {
-                    self.accumulator[parent] += radiance;
-                    self.pending[parent] -= 1;
-                    if self.done[parent] && self.pending[parent] == 0 {
-                        idx = parent; // cascade
+                    self.paths[parent.0].accumulator += radiance;
+                    self.paths[parent.0].pending_children -= 1;
+                    if self.paths[parent.0].finished && self.paths[parent.0].pending_children == 0 {
+                        path_id = parent;
                     } else {
                         return;
                     }
                 }
                 None => {
-                    let sample = radiance * self.weights[idx].unwrap();
+                    let record = &self.paths[path_id.0];
+                    let sample = record.accumulator * record.camera_weight.unwrap();
                     if sample.into_inner().is_finite() {
-                        let (x, y) = self.pixels[idx].unwrap();
+                        let (x, y) = record.pixel.unwrap();
                         tile.add_sample(x, y, sample);
                     }
                     return;
@@ -93,101 +135,113 @@ impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
         }
     }
 
-    /// Remove finished slots (done && pending == 0) and remap parent links.
-    pub fn compact(&mut self) {
-        let mut remap = vec![usize::MAX; self.rays.len()];
-        let mut write = 0;
-        for (i, remapped) in remap.iter_mut().enumerate() {
-            if self.done[i] && self.pending[i] == 0 {
-                continue; // finished — radiance already flowed up
+    fn resolve_bounces(
+        &mut self,
+        bounces: &[BounceResult<I::PathState>],
+        tile: &mut FilmTile,
+    ) -> Vec<ActiveRay> {
+        let active_rays = std::mem::take(&mut self.active_rays);
+        let mut next_active = Vec::with_capacity(active_rays.len());
+
+        for (active, bounce) in active_rays.iter().zip(bounces) {
+            let path_id = active.path;
+            self.paths[path_id.0].accumulator += bounce.contribution;
+
+            if let Some((child_ray, child_state)) = &bounce.delta_child {
+                let parent = &self.paths[path_id.0];
+                let child_id = PathId(self.paths.len());
+                self.paths.push(PathRecord {
+                    state: child_state.clone(),
+                    stream: parent.stream,
+                    rng: parent.rng,
+                    accumulator: Color3::ZERO,
+                    parent: Some(path_id),
+                    pending_children: 0,
+                    pixel: None,
+                    camera_weight: None,
+                    finished: false,
+                });
+                self.paths[path_id.0].pending_children += 1;
+                next_active.push(ActiveRay {
+                    path: child_id,
+                    ray: *child_ray,
+                });
             }
-            *remapped = write;
-            if write != i {
-                self.rays[write] = self.rays[i];
-                self.states[write] = self.states[i].clone();
-                self.streams[write] = self.streams[i];
-                self.rngs[write] = self.rngs[i];
-                self.accumulator[write] = self.accumulator[i];
-                self.weights[write] = self.weights[i];
-                self.pixels[write] = self.pixels[i];
-                self.pending[write] = self.pending[i];
-                self.done[write] = self.done[i];
+
+            match bounce.next_ray {
+                Some(next_ray) => {
+                    let record = &mut self.paths[path_id.0];
+                    record.state.advance();
+                    if record.state.remaining_depth() > 0 {
+                        next_active.push(ActiveRay {
+                            path: path_id,
+                            ray: next_ray,
+                        });
+                    } else {
+                        record.finished = true;
+                    }
+                }
+                None => {
+                    self.paths[path_id.0].finished = true;
+                }
             }
-            write += 1;
+
+            if self.paths[path_id.0].finished && self.paths[path_id.0].pending_children == 0 {
+                self.flow_up(path_id, tile);
+            }
         }
-        self.rays.truncate(write);
-        self.states.truncate(write);
-        self.streams.truncate(write);
-        self.rngs.truncate(write);
-        self.accumulator.truncate(write);
-        self.weights.truncate(write);
-        self.pixels.truncate(write);
-        self.pending.truncate(write);
-        self.done.truncate(write);
-        for i in 0..write {
-            if let Some(p) = self.parents[i] {
-                self.parents[i] = Some(remap[p]); // parents are never removed — remap is valid
-            }
-        }
-        self.parents.truncate(write);
+
+        next_active
+    }
+}
+
+impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontStages<I, S, R>
+    for WavefrontBatch<I, S, R>
+{
+    fn trace_rays<'a, W: Intersectable>(&self, world: &'a W) -> Vec<Visibility<'a>> {
+        self.active_rays
+            .iter()
+            .map(|active| {
+                match world.intersect(&active.ray, Interval::from(0.001, f32::INFINITY)) {
+                    Some(hit) => Visibility::Hit(hit),
+                    None => Visibility::Miss,
+                }
+            })
+            .collect()
     }
 
-    /// Stage 1: rays -> hits. One BVH traversal per active ray.
-    pub fn trace_rays<'a, W: Intersectable>(&self, world: &'a W) -> Vec<Option<MaterialHit<'a>>> {
-        let rays = &self.rays;
-        let mut hits = Vec::with_capacity(rays.len());
-        for ray in rays {
-            hits.push(match ray {
-                Some(r) => world.intersect(r, Interval::from(0.001, f32::INFINITY)),
-                None => None,
-            });
-        }
-        hits
-    }
-
-    /// Stage 2: hits -> bounces. Pure per-slot shading. Waiting slots and the
-    /// max_depth == 0 edge produce zero-continuation bounces.
-    pub fn shade_hits(
+    fn shade_hits(
         &mut self,
         integrator: &I,
-        hits: &[Option<MaterialHit<'_>>],
+        visibility: &[Visibility<'_>],
         world: &impl Intersectable,
         lights: &[LightPrimitive],
     ) -> Vec<BounceResult<I::PathState>> {
-        (0..self.rays.len())
-            .map(|i| {
-                if self.rays[i].is_none() {
-                    return BounceResult {
+        assert_eq!(visibility.len(), self.active_rays.len());
+        self.active_rays
+            .iter()
+            .zip(visibility)
+            .map(|(active, visibility)| {
+                let path = &mut self.paths[active.path.0];
+                match visibility {
+                    Visibility::Hit(hit) if path.state.remaining_depth() > 0 => integrator
+                        .process_bounce(
+                            &active.ray,
+                            hit,
+                            world,
+                            lights,
+                            &mut path.state,
+                            &mut path.stream,
+                            &mut path.rng,
+                        ),
+                    Visibility::Hit(_) => BounceResult {
                         contribution: Color3::ZERO,
                         next_ray: None,
                         delta_child: None,
-                    };
-                }
-                match &hits[i] {
-                    Some(hit) => {
-                        if self.states[i].remaining_depth() == 0 {
-                            BounceResult {
-                                contribution: Color3::ZERO,
-                                next_ray: None,
-                                delta_child: None,
-                            }
-                        } else {
-                            integrator.process_bounce(
-                                self.rays[i].as_ref().unwrap(),
-                                hit,
-                                world,
-                                lights,
-                                &mut self.states[i],
-                                &mut self.streams[i],
-                                &mut self.rngs[i],
-                            )
-                        }
-                    }
-                    None => BounceResult {
-                        contribution: integrator.eval_background(
-                            self.rays[i].as_ref().unwrap().direction().normalize(),
-                            &self.states[i],
-                        ),
+                    },
+                    Visibility::Miss => BounceResult {
+                        contribution: integrator
+                            .eval_background(active.ray.direction().normalize(), &path.state),
                         next_ray: None,
                         delta_child: None,
                     },
@@ -196,74 +250,235 @@ impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
             .collect()
     }
 
-    /// Stage 3: bounces -> radiances. Accumulates contributions, routes
-    /// continuations, queues delta children with parent links, and flows finished
-    /// paths' radiances up the chain (deferred film adds).
-    pub fn resolve(&mut self, bounces: &[BounceResult<I::PathState>], tile: &mut FilmTile) {
-        for (i, bounce) in bounces.iter().enumerate() {
-            if self.rays[i].is_none() {
-                continue; // waiting slot — only its children touch it
-            }
-            self.accumulator[i] += bounce.contribution;
+    fn resolve(
+        &mut self,
+        bounces: &[BounceResult<I::PathState>],
+        tile: &mut FilmTile,
+    ) -> Vec<ActiveRay> {
+        assert_eq!(bounces.len(), self.active_rays.len());
+        self.resolve_bounces(bounces, tile)
+    }
 
-            // Delta child: queue it with a parent link and a stream/rng snapshot.
-            // It is shaded in the NEXT iteration — after the parent's later
-            // bounces — which is exactly the queued accumulation order.
-            if let Some((child_ray, child_state)) = &bounce.delta_child {
-                self.rays.push(Some(*child_ray));
-                self.states.push(child_state.clone());
-                self.streams.push(self.streams[i]);
-                self.rngs.push(self.rngs[i]);
-                self.accumulator.push(Color3::ZERO);
-                self.weights.push(None);
-                self.pixels.push(None);
-                self.parents.push(Some(i));
-                self.pending.push(0);
-                self.done.push(false);
-                self.pending[i] += 1;
-            }
+    fn set_active_rays(&mut self, active: Vec<ActiveRay>) {
+        self.active_rays = active;
+    }
 
-            match &bounce.next_ray {
-                Some(next) => {
-                    self.states[i].advance();
-                    if self.states[i].remaining_depth() == 0 {
-                        self.done[i] = true;
-                        self.rays[i] = None;
-                    } else {
-                        self.rays[i] = Some(*next);
-                    }
-                }
-                None => {
-                    self.done[i] = true;
-                    self.rays[i] = None;
-                }
-            }
+    fn active_is_empty(&self) -> bool {
+        self.active_rays.is_empty()
+    }
+}
 
-            if self.done[i] && self.pending[i] == 0 {
-                self.flow_up(i, tile);
-            }
+/// A const-generic renderer whose B=1 specialization is the scalar CPU path.
+pub struct WavefrontRenderer<I, const B: usize>
+where
+    I: Integrator,
+{
+    pub(crate) samples_per_pixel: u32,
+    pub(crate) threshold_abs: f32,
+    pub(crate) threshold_rel: f32,
+    pub(crate) min_samples_before_adapt: u32,
+    pub(crate) tile_size: u32,
+    pub(crate) integrator: I,
+}
+
+impl<I, const B: usize> WavefrontRenderer<I, B>
+where
+    I: Integrator,
+{
+    pub fn new(samples_per_pixel: u32, integrator: I) -> Self {
+        assert!(B > 0, "wavefront batch size must be greater than zero");
+        Self {
+            samples_per_pixel,
+            threshold_abs: 1e-4,
+            threshold_rel: 0.02,
+            min_samples_before_adapt: 64,
+            tile_size: 32,
+            integrator,
         }
     }
 
-    fn process_bounces(&mut self, bounces: &[BounceResult<I::PathState>], tile: &mut FilmTile) {
-        self.resolve(bounces, tile);
-        self.compact();
+    pub fn set_threshold_abs(&mut self, threshold: f32) {
+        self.threshold_abs = threshold;
     }
 
-    pub fn process(
-        &mut self,
-        integrator: &I,
-        world: &impl Intersectable,
+    pub fn set_threshold_rel(&mut self, threshold: f32) {
+        self.threshold_rel = threshold;
+    }
+
+    pub fn set_min_samples_before_adapt(&mut self, min_samples: u32) {
+        self.min_samples_before_adapt = min_samples;
+    }
+
+    pub fn set_tile_size(&mut self, tile_size: u32) {
+        assert!(tile_size > 0, "tile size must be greater than zero");
+        self.tile_size = tile_size;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_wavefront_tile<C, W>(
+        &self,
+        camera: &C,
+        world: &W,
+        lights: &[LightPrimitive],
+        converged: &[bool],
+        pixel_bases: &[u32],
+        tile: &mut FilmTile,
+        sample_idx: u32,
+    ) where
+        C: Camera,
+        W: Intersectable,
+    {
+        let [x_start, x_end, y_start, y_end] = tile.bounds;
+        let (width, _) = camera.image_resolution();
+        if !self.prepare_tile(tile, converged, width) {
+            return;
+        }
+
+        let mut active_rays = Vec::with_capacity(B);
+        let mut paths = Vec::with_capacity(B);
+
+        for (y, x) in (y_start..y_end).flat_map(|y| (x_start..x_end).map(move |x| (y, x))) {
+            let pixel_idx = y as usize * width as usize + x as usize;
+            if converged[pixel_idx] {
+                continue;
+            }
+
+            let (mut stream, mut rng): (SampleStreamWriter, HashRng) =
+                pixel_sample_state(pixel_bases, pixel_idx, sample_idx, x as i32, y as i32);
+            let camera_sampler = get_camera_sample((x, y), &mut stream, &mut rng);
+            let cam_ray = camera
+                .generate_ray_differential(&camera_sampler)
+                .or_else(|| camera.generate_ray(&camera_sampler));
+
+            if let Some(cam_ray) = cam_ray {
+                let path_id = PathId(paths.len());
+                paths.push(PathRecord {
+                    state: self.integrator.init_state(),
+                    stream,
+                    rng,
+                    accumulator: Color3::ZERO,
+                    parent: None,
+                    pending_children: 0,
+                    pixel: Some((x, y)),
+                    camera_weight: Some(cam_ray.weight),
+                    finished: false,
+                });
+                active_rays.push(ActiveRay {
+                    path: path_id,
+                    ray: cam_ray.ray,
+                });
+            }
+
+            if active_rays.len() == B {
+                self.process_batch(world, lights, tile, &mut active_rays, &mut paths);
+            }
+        }
+
+        if !active_rays.is_empty() {
+            self.process_batch(world, lights, tile, &mut active_rays, &mut paths);
+        }
+    }
+
+    fn process_batch<W>(
+        &self,
+        world: &W,
         lights: &[LightPrimitive],
         tile: &mut FilmTile,
-    ) {
-        loop {
-            let hits = self.trace_rays(world);
-            let bounces = self.shade_hits(integrator, &hits, world, lights);
-            self.process_bounces(&bounces, tile);
-            if self.rays.is_empty() {
-                break;
-            }
+        active_rays: &mut Vec<ActiveRay>,
+        paths: &mut Vec<PathRecord<SampleStreamWriter, HashRng, I::PathState>>,
+    ) where
+        W: Intersectable,
+    {
+        let batch = WavefrontBatch::new(
+            std::mem::replace(active_rays, Vec::with_capacity(B)),
+            std::mem::replace(paths, Vec::with_capacity(B)),
+        );
+        let mut batch = batch;
+        WavefrontStages::run(&mut batch, &self.integrator, world, lights, tile);
+    }
+}
+
+impl<I, const B: usize> TiledRenderer for WavefrontRenderer<I, B>
+where
+    I: Integrator,
+{
+    type Integrator = I;
+
+    fn integrator(&self) -> &Self::Integrator {
+        &self.integrator
+    }
+
+    fn samples_per_pixel(&self) -> u32 {
+        self.samples_per_pixel
+    }
+
+    fn threshold_abs(&self) -> f32 {
+        self.threshold_abs
+    }
+
+    fn threshold_rel(&self) -> f32 {
+        self.threshold_rel
+    }
+
+    fn min_samples_before_adapt(&self) -> u32 {
+        self.min_samples_before_adapt
+    }
+
+    fn tile_size(&self) -> u32 {
+        self.tile_size
+    }
+
+    fn render_tile<C, W>(
+        &self,
+        camera: &C,
+        world: &W,
+        lights: &[LightPrimitive],
+        converged: &[bool],
+        pixel_bases: &[u32],
+        tile: &mut FilmTile,
+        sample_idx: u32,
+    ) where
+        C: Camera,
+        W: Intersectable,
+    {
+        if B == 1 {
+            self.render_scalar_tile(
+                camera,
+                world,
+                lights,
+                converged,
+                pixel_bases,
+                tile,
+                sample_idx,
+            );
+        } else {
+            self.render_wavefront_tile(
+                camera,
+                world,
+                lights,
+                converged,
+                pixel_bases,
+                tile,
+                sample_idx,
+            );
         }
+    }
+}
+
+impl<I, C, F, const B: usize> Renderer<C, F> for WavefrontRenderer<I, B>
+where
+    I: Integrator,
+    C: Camera,
+    F: Film,
+{
+    fn render(
+        &self,
+        camera: &C,
+        film: &mut F,
+        scene: (&impl Intersectable, &[LightPrimitive]),
+        framebuffer: Option<SharedFramebuffer>,
+    ) {
+        let (world, lights) = scene;
+        self.render_tiled(camera, film, world, lights, framebuffer);
     }
 }
