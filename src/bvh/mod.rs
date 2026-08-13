@@ -48,6 +48,15 @@ use builder::TreeBuilder;
 
 /// Maximum traversal stack depth. 64 handles BVHs with up to 2^64 primitives.
 const MAX_STACK: usize = 64;
+/// The number of bins to use for binned SAH BVH construction. More bins gives a more accurate SAH
+/// estimate, but increases the build cost.
+const BVH_BIN_SIZE: usize = 64;
+/// The threshold number of objects in a BVH node above which we will build child nodes in parallel
+/// using rayon.
+const BVH_PARALLEL_THRESHOLD: usize = 64;
+/// The threshold number of objects in a BVH node below which we will create a leaf node instead
+/// of splitting further. This is a tradeoff between tree depth and leaf size.
+const BVH_LEAF_THRESHOLD: usize = 4;
 
 /// Inline slab AABB test. Returns true if the ray segment [tmin, tmax] intersects the AABB.
 ///

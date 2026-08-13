@@ -3,20 +3,11 @@ use std::cmp::Ordering;
 use tracing::trace;
 
 use crate::bvh::aabb::Aabb;
+use crate::bvh::{BVH_BIN_SIZE, BVH_LEAF_THRESHOLD, BVH_PARALLEL_THRESHOLD};
 use crate::intersect::interaction::MaterialHit;
 use crate::intersect::{Bounded, Intersectable};
 use crate::math::interval::Interval;
 use crate::ray::Ray;
-
-/// The number of bins to use for binned SAH BVH construction. More bins gives a more accurate SAH
-/// estimate, but increases the build cost.
-const BVH_BIN_SIZE: usize = 32;
-/// The threshold number of objects in a BVH node above which we will build child nodes in parallel
-/// using rayon.
-const BVH_PARALLEL_THRESHOLD: usize = 64;
-/// The threshold number of objects in a BVH node below which we will create a leaf node instead
-/// of splitting further. This is a tradeoff between tree depth and leaf size.
-const BVH_LEAF_THRESHOLD: usize = 4;
 
 /// A binary BVH node for accelerating ray-scene intersection queries.
 ///
