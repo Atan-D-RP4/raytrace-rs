@@ -8,7 +8,7 @@ use crate::intersect::{Bounded, Intersectable};
 use crate::material::{IsotropicMaterial, Material};
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3};
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 use crate::sampler;
 use crate::texture::Texture;
 
@@ -118,68 +118,86 @@ impl<T: Intersectable> ConstantMedium<T> {
 }
 
 impl<T: Intersectable + Bounded, const SURFACE: bool> Intersectable for ConstantMedium<T, SURFACE> {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
-        // Always find the nearest boundary crossing (could be in front or behind ray)
-        let rec1 = self.boundary.intersect(ray, Interval::UNIVERSE)?;
+    fn intersect_scalar<'a>(
+        &'a self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>> {
+        self.intersect(ray, ray_t)[0]
+    }
 
-        // Outside the boundary → entry surface hit
-        if rec1.hit.time >= ray_t.min && SURFACE {
-            return self.boundary.intersect(ray, ray_t);
-        }
+    fn intersect<'a, const N: usize>(
+        &'a self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<MaterialHit<'a>>; N] {
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        core::array::from_fn(|i| {
+            let ray = &lanes[i];
+            let ray_t = ray_t.lane(i);
 
-        // Inside the boundary → sample volume scattering distance and check if it occurs before exiting.
-        let rec2 = self
-            .boundary
-            .intersect(ray, Interval::from(rec1.hit.time + 0.0001, f32::INFINITY))?;
+            // Always find the nearest boundary crossing (could be in front or behind ray)
+            let rec1 = self.boundary.intersect(ray, Interval::UNIVERSE)[0]?;
 
-        // Compute the valid interval of ray parameter inside the boundary.
-        let t_min = rec1.hit.time.max(ray_t.min);
-        let t_max = rec2.hit.time.min(ray_t.max);
+            // Outside the boundary → entry surface hit
+            if rec1.hit.time >= ray_t.min_value() && SURFACE {
+                return self.boundary.intersect(ray, ray_t)[0];
+            }
 
-        // If the interval is invalid, no hit occurs.
-        if t_min >= t_max {
-            return None;
-        }
+            // Inside the boundary → sample volume scattering distance and check if it occurs before exiting.
+            let rec2 = self
+                .boundary
+                .intersect(ray, Interval::from(rec1.hit.time + 0.0001, f32::INFINITY))[0]?;
 
-        // If the ray starts inside the boundary, we need to clamp t_min to 0 to get the correct distance inside.
-        let t_min = t_min.max(0.);
+            // Compute the valid interval of ray parameter inside the boundary.
+            let t_min = rec1.hit.time.max(ray_t.min_value());
+            let t_max = rec2.hit.time.min(ray_t.max_value());
 
-        // Compute the distance the ray travels inside the boundary.
-        let ray_length = ray.direction().length();
-        let dist_inside_boundary = (t_max - t_min) * ray_length;
+            // If the interval is invalid, no hit occurs.
+            if t_min >= t_max {
+                return None;
+            }
 
-        // Deterministic QMC sample for volume scattering distance.
-        // Derive a unique seed from the ray's origin and direction so the same ray always gets the
-        // same scattering distance (reproducible), while different rays vary.
-        let o = (ray.origin().x().to_bits() as u64)
-            .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
-            .wrapping_add(ray.origin().y().to_bits() as u64);
-        let d = (ray.direction().x().to_bits() as u64)
-            .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
-            .wrapping_add(ray.direction().y().to_bits() as u64);
-        let seed = sampler::splitmix64(o.wrapping_add(d)) as u32;
-        let qmc_sample = sampler::hash_sample(seed, VOLUME_DIM, self.vol_seed);
+            // If the ray starts inside the boundary, we need to clamp t_min to 0 to get the correct distance inside.
+            let t_min = t_min.max(0.);
 
-        // Sample a scattering distance based on the medium's density using inverse transform sampling.
-        let hit_dist = self.neg_inv_density * qmc_sample.max(1e-12).ln();
+            // Compute the distance the ray travels inside the boundary.
+            let ray_length = ray.direction().length();
+            let dist_inside_boundary = (t_max - t_min) * ray_length;
 
-        // If the sampled scattering distance exceeds the distance inside the boundary, no hit occurs.
-        if hit_dist > dist_inside_boundary {
-            return None;
-        }
+            // Deterministic QMC sample for volume scattering distance.
+            // Derive a unique seed from the ray's origin and direction so the same ray always gets the
+            // same scattering distance (reproducible), while different rays vary.
+            let o = (ray.origin().x().to_bits() as u64)
+                .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
+                .wrapping_add(ray.origin().y().to_bits() as u64);
+            let d = (ray.direction().x().to_bits() as u64)
+                .wrapping_mul(sampler::GOLDEN_RATIO_HASH)
+                .wrapping_add(ray.direction().y().to_bits() as u64);
+            let seed = sampler::splitmix64(o.wrapping_add(d)) as u32;
+            let qmc_sample = sampler::hash_sample(seed, VOLUME_DIM, self.vol_seed);
 
-        // Otherwise, we have a valid scattering event at distance hit_dist along the ray inside the medium.
-        let new_time = t_min + hit_dist / ray_length;
-        let point = ray.at(new_time);
+            // Sample a scattering distance based on the medium's density using inverse transform sampling.
+            let hit_dist = self.neg_inv_density * qmc_sample.max(1e-12).ln();
 
-        // Volume boundaries have no intrinsic surface orientation.  Using
-        // Vec3::ZERO signals to the integrator that this is a volume hit, so
-        // it should use a full-sphere sampling PDF (UniformSpherePDF) instead
-        // of a hemisphere-based one.  set_face_normal() will compute
-        // front_face=false and shading_normal=Vec3::ZERO for this case.
-        Some(MaterialHit {
-            hit: Hit::new(new_time, point, point, Direction3::ZERO, None, None),
-            material: &self.phase_fn,
+            // If the sampled scattering distance exceeds the distance inside the boundary, no hit occurs.
+            if hit_dist > dist_inside_boundary {
+                return None;
+            }
+
+            // Otherwise, we have a valid scattering event at distance hit_dist along the ray inside the medium.
+            let new_time = t_min + hit_dist / ray_length;
+            let point = ray.at(new_time);
+
+            // Volume boundaries have no intrinsic surface orientation.  Using
+            // Vec3::ZERO signals to the integrator that this is a volume hit, so
+            // it should use a full-sphere sampling PDF (UniformSpherePDF) instead
+            // of a hemisphere-based one.  set_face_normal() will compute
+            // front_face=false and shading_normal=Vec3::ZERO for this case.
+            Some(MaterialHit {
+                hit: Hit::new(new_time, point, point, Direction3::ZERO, None, None),
+                material: &self.phase_fn,
+            })
         })
     }
 }
@@ -231,11 +249,11 @@ mod tests {
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         assert!(
-            hit.is_some(),
+            hit[0].is_some(),
             "dense medium should scatter before far boundary"
         );
 
-        if let Some(ref h) = hit {
+        if let Some(ref h) = hit[0] {
             let p = h.hit.point;
             assert!(
                 p.into_inner().length() < 1.0,
@@ -254,7 +272,7 @@ mod tests {
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
         assert!(
-            hit.is_none(),
+            hit[0].is_none(),
             "very sparse medium should let ray pass through"
         );
     }
@@ -268,7 +286,7 @@ mod tests {
         let ray = Ray::new_with_time(Point3::new(0., 0., 5.), Direction3::NEG_Z, 0.0);
         let hit = vol.intersect(&ray, Interval::from(0.001, f32::INFINITY));
 
-        if let Some(h) = hit {
+        if let Some(h) = hit[0] {
             assert!(
                 h.hit.geometric_normal().length_squared() < 1e-6,
                 "volume hit geometric_normal should be zero, got {:?}",

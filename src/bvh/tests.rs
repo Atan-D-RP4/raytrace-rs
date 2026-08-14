@@ -1,6 +1,5 @@
-use std::sync::Arc;
-
 use glam::Vec3;
+use std::sync::Arc;
 
 use crate::bvh::TreeBuilder;
 use crate::bvh::{Bvh, BvhNode};
@@ -9,7 +8,7 @@ use crate::material::{DiffuseReflector, Material};
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::primitives::Primitive;
-use crate::ray::Ray;
+use crate::ray::{Ray, RayPacked};
 use crate::shape::sphere;
 
 /// Number of bytes per flat BVH node. Currently 40B (fields + 3-byte pad for `#[repr(C)]`
@@ -28,19 +27,17 @@ fn flat_bvh_empty() {
     let bvh: TreeBuilder<Primitive> = TreeBuilder::Empty;
     let flat = Bvh::<2, _>::from(bvh);
     let ray = Ray::new_with_time(Point3::ZERO, Direction3::NEG_Z, 0.0);
-    assert!(
-        flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
-            .is_none()
-    );
+    assert!(flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0].is_none());
 }
 
 #[test]
 fn flat_bvh_single_sphere() {
-    let sphere: Arc<dyn Intersectable> = Arc::new(sphere(
+    let sphere: Primitive = sphere(
         Point3::new(0., 0., -2.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(0.8, 0.2, 0.2))),
-    ));
+    )
+    .into();
     let bbox = sphere.bounding_box();
     let bvh = TreeBuilder::Leaf {
         object: sphere.clone(),
@@ -52,31 +49,27 @@ fn flat_bvh_single_sphere() {
 
     // Ray toward the sphere.
     let ray = Ray::new_with_time(Point3::ZERO, Direction3::NEG_Z, 0.0);
-    assert!(
-        flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
-            .is_some()
-    );
+    assert!(flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0].is_some());
 
     // Ray missing the sphere.
     let ray = Ray::new_with_time(Point3::ZERO, Direction3::new(10., 0., -1.), 0.0);
-    assert!(
-        flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
-            .is_none()
-    );
+    assert!(flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0].is_none());
 }
 
 #[test]
 fn flat_bvh_two_spheres() {
-    let s1: Arc<dyn Intersectable> = Arc::new(sphere(
+    let s1: Primitive = sphere(
         Point3::new(-1., 0., -2.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(1.0, 0.0, 0.0))),
-    ));
-    let s2: Arc<dyn Intersectable> = Arc::new(sphere(
+    )
+    .into();
+    let s2: Primitive = sphere(
         Point3::new(1., 0., -2.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(0.0, 1.0, 0.0))),
-    ));
+    )
+    .into();
 
     let bbox1 = s1.bounding_box();
     let bbox2 = s2.bounding_box();
@@ -100,24 +93,71 @@ fn flat_bvh_two_spheres() {
 
     // Hit left sphere (at -1, 0, -2).
     let ray = Ray::new_with_time(Point3::ZERO, Direction3::new(-1., 0., -2.).normalize(), 0.0);
-    assert!(
-        flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
-            .is_some()
-    );
+    assert!(flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0].is_some());
 
     // Hit right sphere (at 1, 0, -2).
     let ray = Ray::new_with_time(Point3::ZERO, Direction3::new(1., 0., -2.).normalize(), 0.0);
-    assert!(
-        flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
-            .is_some()
-    );
+    assert!(flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0].is_some());
 
     // Hit neither.
     let ray = Ray::new_with_time(Point3::ZERO, Direction3::new(0., 10., -1.), 0.0);
-    assert!(
-        flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))
-            .is_none()
-    );
+    assert!(flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0].is_none());
+}
+
+#[test]
+fn packet_intersection_matches_scalar_lanes() {
+    let make_sphere = |center, color| -> Primitive {
+        sphere(center, 0.5, Material::from(DiffuseReflector::new(color))).into()
+    };
+    let mut objects: Vec<Primitive> = vec![
+        make_sphere(Point3::new(-2., 0., -3.), Color3::new(1., 0., 0.)),
+        make_sphere(Point3::new(0., 0., -3.), Color3::new(0., 1., 0.)),
+        make_sphere(Point3::new(2., 0., -3.), Color3::new(0., 0., 1.)),
+    ];
+    let builder = TreeBuilder::new(&mut objects);
+    let binary = Bvh::<2, _>::from(builder);
+    let wide: Bvh<4, Primitive> = Bvh::<2, Primitive>::from(TreeBuilder::new(&mut objects)).widen();
+    let rays: [RayPacked<1>; 4] = [
+        Ray::new_with_time(Point3::ZERO, Direction3::new(-2., 0., -3.).normalize(), 0.0),
+        Ray::new_with_time(Point3::ZERO, Direction3::new(0., 0., -3.).normalize(), 0.0),
+        Ray::new_with_time(Point3::ZERO, Direction3::new(2., 0., -3.).normalize(), 0.0),
+        Ray::new_with_time(Point3::ZERO, Direction3::new(0., 10., 0.).normalize(), 0.0),
+    ];
+    let packet: RayPacked<4> = rays.into();
+    let interval = Interval::from(0.001, f32::INFINITY);
+
+    for hits in [
+        binary.intersect(&packet, interval),
+        wide.intersect(&packet, interval),
+    ] {
+        for (lane, ray) in rays.iter().enumerate() {
+            let scalar = binary.intersect(ray, interval.lane(lane))[0];
+            assert_eq!(hits[lane].is_some(), scalar.is_some());
+            if let (Some(packet_hit), Some(scalar_hit)) = (hits[lane], scalar) {
+                assert!((packet_hit.hit.time - scalar_hit.hit.time).abs() < 1e-6);
+            }
+        }
+    }
+}
+
+#[test]
+fn custom_primitive_keeps_dynamic_scalar_dispatch() {
+    let custom: Arc<dyn Intersectable> = Arc::new(sphere(
+        Point3::new(0., 0., -2.),
+        0.5,
+        Material::from(DiffuseReflector::new(Color3::new(0.8, 0.2, 0.2))),
+    ));
+    let primitive = Primitive::Custom(custom);
+    let ray = Ray::new_with_time(Point3::ZERO, Direction3::NEG_Z, 0.0);
+    let interval = Interval::from(0.001, f32::INFINITY);
+
+    assert!(primitive.intersect(&ray, interval)[0].is_some());
+
+    let rays: [RayPacked<1>; 2] = [ray, Ray::new_with_time(Point3::ZERO, Direction3::X, 0.0)];
+    let packet: RayPacked<2> = rays.into();
+    let hits = primitive.intersect(&packet, Interval::from(0.001, f32::INFINITY));
+    assert!(hits[0].is_some());
+    assert!(hits[1].is_none());
 }
 
 /// Regression test: FlatBvh produces the same intersection results as
@@ -127,29 +167,33 @@ fn flat_bvh_matches_bvh_node_multi_object() {
     use crate::shape::quad;
 
     // Build a small scene: 3 spheres at different positions.
-    let s1: Arc<dyn Intersectable> = Arc::new(sphere(
+    let s1: Primitive = sphere(
         Point3::new(-2., 0., -3.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(1.0, 0.0, 0.0))),
-    ));
-    let s2: Arc<dyn Intersectable> = Arc::new(sphere(
+    )
+    .into();
+    let s2: Primitive = sphere(
         Point3::new(0., 0., -3.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(0.0, 1.0, 0.0))),
-    ));
-    let s3: Arc<dyn Intersectable> = Arc::new(sphere(
+    )
+    .into();
+    let s3: Primitive = sphere(
         Point3::new(2., 0., -3.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(0.0, 0.0, 1.0))),
-    ));
-    let s4: Arc<dyn Intersectable> = Arc::new(quad(
+    )
+    .into();
+    let s4: Primitive = quad(
         Point3::new(-3., -1., -5.),
         Vec3::new(6., 0., 0.),
         Vec3::new(0., 2., 0.),
         Material::from(DiffuseReflector::new(Color3::new(0.5, 0.5, 0.5))),
-    ));
+    )
+    .into();
 
-    let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];
+    let mut objects: Vec<Primitive> = vec![s1, s2, s3, s4];
     let bvh = TreeBuilder::new(&mut objects);
     let flat = Bvh::<2, _>::from(bvh.clone());
 
@@ -171,7 +215,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
 
     for &(origin, direction, should_hit) in &test_rays {
         let ray = Ray::new_with_time(Point3(origin), Direction3(direction), 0.0);
-        let bvh_result = flat.intersect(&ray, Interval::from(0.001, f32::INFINITY));
+        let bvh_result = flat.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0];
         assert_eq!(
             bvh_result.is_some(),
             should_hit,
@@ -183,7 +227,7 @@ fn flat_bvh_matches_bvh_node_multi_object() {
     let wide: Bvh<4, _> = flat.widen();
     for &(origin, direction, should_hit) in &test_rays {
         let ray = Ray::new_with_time(Point3(origin), Direction3(direction), 0.0);
-        let wide_result = wide.intersect(&ray, Interval::from(0.001, f32::INFINITY));
+        let wide_result = wide.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0];
         assert_eq!(
             wide_result.is_some(),
             should_hit,
@@ -209,29 +253,33 @@ fn flat_bvh_matches_bvh_node_multi_object() {
 fn widen_w2_is_identity() {
     use crate::shape::quad;
 
-    let s1: Arc<dyn Intersectable> = Arc::new(sphere(
+    let s1: Primitive = sphere(
         Point3::new(-2., 0., -3.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(1.0, 0.0, 0.0))),
-    ));
-    let s2: Arc<dyn Intersectable> = Arc::new(sphere(
+    )
+    .into();
+    let s2: Primitive = sphere(
         Point3::new(0., 0., -3.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(0.0, 1.0, 0.0))),
-    ));
-    let s3: Arc<dyn Intersectable> = Arc::new(sphere(
+    )
+    .into();
+    let s3: Primitive = sphere(
         Point3::new(2., 0., -3.),
         0.5,
         Material::from(DiffuseReflector::new(Color3::new(0.0, 0.0, 1.0))),
-    ));
-    let s4: Arc<dyn Intersectable> = Arc::new(quad(
+    )
+    .into();
+    let s4: Primitive = quad(
         Point3::new(-3., -1., -5.),
         Vec3::new(6., 0., 0.),
         Vec3::new(0., 2., 0.),
         Material::from(DiffuseReflector::new(Color3::new(0.5, 0.5, 0.5))),
-    ));
+    )
+    .into();
 
-    let mut objects: Vec<Arc<dyn Intersectable>> = vec![s1, s2, s3, s4];
+    let mut objects: Vec<Primitive> = vec![s1, s2, s3, s4];
     let bvh = TreeBuilder::new(&mut objects);
     let flat = Bvh::<2, _>::from(bvh);
     let binary_node_count = flat.node_count();
@@ -254,7 +302,7 @@ fn widen_w2_is_identity() {
     ];
     for &(origin, direction, should_hit) in &test_rays {
         let ray = Ray::new_with_time(Point3(origin), Direction3(direction), 0.0);
-        let wide_result = wide.intersect(&ray, Interval::from(0.001, f32::INFINITY));
+        let wide_result = wide.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0];
         assert_eq!(
             wide_result.is_some(),
             should_hit,

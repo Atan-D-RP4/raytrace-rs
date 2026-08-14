@@ -8,8 +8,8 @@ pub struct QuadRegion;
 
 impl Region2D for QuadRegion {
     fn contains(&self, a: f32, b: f32) -> bool {
-        let unit = Interval::from(0., 1.);
-        unit.contains(a) && unit.contains(b)
+        let unit = Interval::<1>::from(0., 1.);
+        unit.contains_value(a) && unit.contains_value(b)
     }
 
     fn area(&self) -> f32 {

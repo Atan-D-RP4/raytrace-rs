@@ -11,7 +11,7 @@ use crate::light::{LightSample, Sampleable};
 use crate::material::Material;
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 use crate::sampling::pdf::AreaPdf;
 use crate::shape::{BoxShape, PlanarShape, SdfExpr, SdfShape, ShapeObject, SphereShape};
 use crate::transform::{AnimatedTransform, StaticTransform, TransformObject};
@@ -28,13 +28,37 @@ pub enum Primitive {
     Animated(TransformObject<Box<Primitive>, AnimatedTransform>),  // 7
     Volume(ConstantMedium<Arc<Primitive>, true>),                  // 8
     Aggregate(Arc<Bvh<2, Box<Primitive>>>),                        // 9
-    Custom(Arc<dyn Intersectable>), // 10 — CPU-only; must be empty in shipped scenes
+    Custom(Arc<dyn Intersectable>),                                // 10 — dynamic CPU escape hatch
 }
 
 impl Intersectable for Primitive {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
+    fn intersect_scalar<'a>(
+        &'a self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>> {
         match self {
             Primitive::Empty => None,
+            Primitive::Sphere(s) => s.intersect_scalar(ray, ray_t),
+            Primitive::MovingSphere(s) => s.intersect_scalar(ray, ray_t),
+            Primitive::Planar(p) => p.intersect_scalar(ray, ray_t),
+            Primitive::Box(b) => b.intersect_scalar(ray, ray_t),
+            Primitive::Sdf(s) => s.intersect_scalar(ray, ray_t),
+            Primitive::Transformed(t) => t.intersect_scalar(ray, ray_t),
+            Primitive::Animated(a) => a.intersect_scalar(ray, ray_t),
+            Primitive::Volume(v) => v.intersect_scalar(ray, ray_t),
+            Primitive::Aggregate(bvh) => bvh.intersect_scalar(ray, ray_t),
+            Primitive::Custom(c) => c.intersect_scalar(ray, ray_t),
+        }
+    }
+
+    fn intersect<'a, const N: usize>(
+        &'a self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<MaterialHit<'a>>; N] {
+        match self {
+            Primitive::Empty => [None; N],
             Primitive::Sphere(s) => s.intersect(ray, ray_t),
             Primitive::MovingSphere(s) => s.intersect(ray, ray_t),
             Primitive::Planar(p) => p.intersect(ray, ray_t),
@@ -44,7 +68,10 @@ impl Intersectable for Primitive {
             Primitive::Animated(a) => a.intersect(ray, ray_t),
             Primitive::Volume(v) => v.intersect(ray, ray_t),
             Primitive::Aggregate(bvh) => bvh.intersect(ray, ray_t),
-            Primitive::Custom(c) => c.intersect(ray, ray_t),
+            Primitive::Custom(c) => {
+                let lanes: [RayPacked<1>; N] = (*ray).into();
+                core::array::from_fn(|i| c.intersect_scalar(&lanes[i], ray_t.lane(i)))
+            }
         }
     }
 }

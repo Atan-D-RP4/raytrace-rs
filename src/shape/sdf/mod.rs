@@ -1,12 +1,14 @@
+use std::f32::consts::GOLDEN_RATIO;
 use std::sync::Arc;
 
 use glam::{Mat3, Vec3};
 
 use crate::bvh::aabb::Aabb;
+use crate::intersect::Bounded;
 use crate::intersect::interaction::Hit;
 use crate::math::interval::Interval;
 use crate::math::vec3::{Direction3, Point3};
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 use crate::shape::Shape3D;
 use crate::shape::ShapeSurfaceSampling;
 use crate::texture::UVDifferentiable;
@@ -193,7 +195,11 @@ impl<F: SdfFn> SdfShape<F> {
     /// **Fractal DE overestimation** — camera rays from far away converge to a point where d
     /// approaches 0 from above (never crosses into negative). Without the `guard_broke_early` flag,
     /// these hits would be rejected.
-    fn march(&self, ray: &Ray, ray_t: Interval) -> Option<(f32, Point3)> {
+    fn march<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> Option<(f32, Point3)> {
         // SDF distances are physical; scale steps by 1/|dir| (ray-parameter space).
         let dir_len = ray.direction().length();
         if dir_len <= 0.0 {
@@ -201,7 +207,7 @@ impl<F: SdfFn> SdfShape<F> {
         }
         let inv_dir_len = dir_len.recip();
 
-        let mut t = ray_t.min;
+        let mut t = ray_t.min_value();
 
         // Ray was ever outside (d > 0). Surface-originating inward rays never escape the interior —
         // this flag distinguishes overshoot from inward.
@@ -213,7 +219,7 @@ impl<F: SdfFn> SdfShape<F> {
 
         // Warmup: advance past the |d| < HIT_EPSILON zone near ray_t.min
         // (bounce rays start at the surface and would self-intersect otherwise).
-        let guard_end = ray_t.min + SELF_INTERSECTION_GUARD * inv_dir_len;
+        let guard_end = ray_t.min_value() + SELF_INTERSECTION_GUARD * inv_dir_len;
         while t < guard_end {
             let p = ray.at(t);
             let d = self.sdf.eval::<f32>(p.x(), p.y(), p.z());
@@ -225,7 +231,7 @@ impl<F: SdfFn> SdfShape<F> {
                 break;
             }
             t += MIN_PHYSICAL_STEP * inv_dir_len;
-            if t > ray_t.max {
+            if t > ray_t.max_value() {
                 return None;
             }
         }
@@ -252,7 +258,7 @@ impl<F: SdfFn> SdfShape<F> {
                 continue;
             }
 
-            if t > ray_t.max {
+            if t > ray_t.max_value() {
                 return None;
             }
 
@@ -282,7 +288,11 @@ impl<F: SdfFn> SdfShape<F> {
 
 impl<F: SdfFn> Shape3D for SdfShape<F> {
     /// Intersection test: returns the first hit if any.
-    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
+    fn intersect_shape<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> Option<Hit> {
         if let Some((t, p)) = self.march(ray, ray_t) {
             // Compute the normal at the hit point
             let mut normal = self.gradient(p);
@@ -317,10 +327,12 @@ impl<F: SdfFn> Shape3D for SdfShape<F> {
     }
 
     /// Occlusion test: returns true if the ray intersects the SDF surface within the interval.
-    fn occluded_shape(&self, ray: &Ray, ray_t: Interval) -> bool {
+    fn occluded_shape<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> bool {
         self.march(ray, ray_t).is_some()
     }
+}
 
+impl<F: SdfFn> Bounded for SdfShape<F> {
     fn bounding_box(&self) -> Aabb {
         self.bbox
     }
@@ -343,7 +355,7 @@ impl<F: SdfFn> ShapeSurfaceSampling for SdfShape<F> {
         let mut rt = time;
         // Scramble constants (fractional parts of the golden ratio and its powers)
         // for pseudo-random jitter per rejection try.
-        let scramble = |x: f32| (x * 1.618_034).fract();
+        let scramble = |x: f32| (x * GOLDEN_RATIO).fract();
         for _ in 0..32 {
             let p = Point3::new(
                 bbox.min[0][0] + ru * dx,

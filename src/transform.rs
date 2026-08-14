@@ -6,7 +6,7 @@ use crate::intersect::{Bounded, Intersectable};
 use crate::light::{LightSample, Sampleable};
 use crate::math::interval::Interval;
 use crate::math::vec3::{Direction3, Point3};
-use crate::ray::{Ray, RayDifferentials};
+use crate::ray::{Ray, RayDifferentials, RayPacked};
 
 /// A spatial transform that can be applied to intersectable objects.
 /// Implementations may be static (one matrix) or animated (interpolated over time).
@@ -18,9 +18,9 @@ pub trait Transform: Send + Sync + Clone + 'static {
     /// Is this transform time-dependent?
     fn is_animated(&self) -> bool;
 
-    /// Transform a ray from world space to object space.
+    /// Transform a ray from world space to object space, transforming all N lanes.
     /// Uses the inverse of the forward transform at `ray.time`.
-    fn ray(&self, ray: &Ray) -> Ray;
+    fn ray<const N: usize>(&self, ray: &RayPacked<N>) -> RayPacked<N>;
 
     /// Transform a Hit from object space to world space (point, normals, mapping_point).
     /// Called after the inner object produces a local-space hit.
@@ -106,20 +106,9 @@ impl StaticTransform {
     pub fn compose(parent: Affine3A, child: Affine3A) -> Self {
         Self::from_affine3a(parent * child)
     }
-}
 
-impl Transform for StaticTransform {
-    #[inline]
-    fn eval(&self, _time: f32) -> Affine3A {
-        self.forward // O(1), no computation
-    }
-
-    #[inline]
-    fn is_animated(&self) -> bool {
-        false
-    }
-
-    fn ray(&self, ray: &Ray) -> Ray {
+    /// Scalar world → object ray transform (lane-0 body).
+    fn ray_scalar(&self, ray: &Ray) -> Ray {
         // World → object: apply inverse
         let origin = Point3(
             self.inverse
@@ -157,6 +146,25 @@ impl Transform for StaticTransform {
         });
 
         Ray::new_with_differentials(origin, direction, ray.time(), diffs)
+    }
+}
+
+impl Transform for StaticTransform {
+    #[inline]
+    fn eval(&self, _time: f32) -> Affine3A {
+        self.forward // O(1), no computation
+    }
+
+    #[inline]
+    fn is_animated(&self) -> bool {
+        false
+    }
+
+    fn ray<const N: usize>(&self, ray: &RayPacked<N>) -> RayPacked<N> {
+        // Scatter to scalar lanes, transform each, gather back.
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        let transformed: [RayPacked<1>; N] = lanes.map(|lane| self.ray_scalar(&lane));
+        transformed.into()
     }
 
     fn hit(&self, hit: &mut Hit) {
@@ -291,31 +299,9 @@ impl AnimatedTransform {
             end_decomposed,
         }
     }
-}
 
-impl Transform for AnimatedTransform {
-    #[inline]
-    fn is_animated(&self) -> bool {
-        true
-    }
-
-    /// Evaluate the transform at a given time in [0, 1]. Linearly interpolate between start and end.
-    fn eval(&self, time: f32) -> Affine3A {
-        // For single-sample scenes (time is always 0.0 or 1.0),
-        // just return the exact keyframe
-        if time <= 0.0 {
-            return self.start;
-        }
-        if time >= 1.0 {
-            return self.end;
-        }
-
-        self.start_decomposed.lerp(&self.end_decomposed, time)
-    }
-
-    /// Transform a ray from world space to object space using the inverse of the transform at
-    /// `ray.time`.
-    fn ray(&self, ray: &Ray) -> Ray {
+    /// Scalar world → object ray transform (lane-0 body).
+    fn ray_scalar(&self, ray: &Ray) -> Ray {
         let inv = self.eval(ray.time()).inverse();
         let origin = Point3(
             inv.transform_point3a(ray.origin().into_inner().into())
@@ -347,6 +333,36 @@ impl Transform for AnimatedTransform {
             )
         });
         Ray::new_with_differentials(origin, direction, time, differentials)
+    }
+}
+
+impl Transform for AnimatedTransform {
+    #[inline]
+    fn is_animated(&self) -> bool {
+        true
+    }
+
+    /// Evaluate the transform at a given time in [0, 1]. Linearly interpolate between start and end.
+    fn eval(&self, time: f32) -> Affine3A {
+        // For single-sample scenes (time is always 0.0 or 1.0),
+        // just return the exact keyframe
+        if time <= 0.0 {
+            return self.start;
+        }
+        if time >= 1.0 {
+            return self.end;
+        }
+
+        self.start_decomposed.lerp(&self.end_decomposed, time)
+    }
+
+    /// Transform a ray from world space to object space using the inverse of the transform at
+    /// `ray.time`.
+    fn ray<const N: usize>(&self, ray: &RayPacked<N>) -> RayPacked<N> {
+        // Scatter to scalar lanes, transform each, gather back.
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        let transformed: [RayPacked<1>; N] = lanes.map(|lane| self.ray_scalar(&lane));
+        transformed.into()
     }
 
     /// Transform a Hit from object space to world space (point, normals, mapping_point).
@@ -575,17 +591,34 @@ impl<O: Intersectable, T: Transform> Bounded for TransformObject<O, T> {
 }
 
 impl<O: Intersectable, T: Transform> Intersectable for TransformObject<O, T> {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
+    fn intersect_scalar<'a>(
+        &'a self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>> {
+        let local_ray = self.xform.ray(ray);
+        let mut hit = self.object.intersect_scalar(&local_ray, ray_t)?;
+        self.xform.hit(&mut hit.hit);
+        Some(hit)
+    }
+
+    fn intersect<'a, const N: usize>(
+        &'a self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<MaterialHit<'a>>; N] {
         // 1. Transform ray from world → object space
         let local_ray = self.xform.ray(ray);
 
         // 2. Intersect the inner object in object space
-        let mut mat_hit = self.object.intersect(&local_ray, ray_t)?;
+        let mut hits = self.object.intersect(&local_ray, ray_t);
 
-        // 3. Transform the hit from object → world space
-        self.xform.hit(&mut mat_hit.hit);
+        // 3. Transform each hit from object → world space
+        for mat_hit in hits.iter_mut().flatten() {
+            self.xform.hit(&mut mat_hit.hit);
+        }
 
-        Some(mat_hit)
+        hits
     }
 }
 

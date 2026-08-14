@@ -6,7 +6,7 @@ use crate::intersect::interaction::MaterialHit;
 use crate::math::interval::Interval;
 use crate::math::vec3::Color3;
 use crate::primitives::LightPrimitive;
-use crate::ray::Ray;
+use crate::ray::{Ray, RayPacked};
 use crate::renderer::{Renderer, TiledRenderer};
 use crate::sampler::{HashRng, SampleStream, SampleStreamWriter, SamplerRng, pixel_sample_state};
 
@@ -48,7 +48,7 @@ pub(crate) enum Visibility<'a> {
 ///
 /// Each stage consumes/produces dense work. Inactive paths are represented only
 /// by their absence from `ActiveRay`; waiting parents remain in the path arena.
-pub(crate) trait WavefrontStages<I: Integrator, S: SampleStream, R: SamplerRng> {
+pub(crate) trait WavefrontStages<I: Integrator, S: SampleStream, R: SamplerRng, const B: usize> {
     fn trace_rays<'a, W: Intersectable>(&self, world: &'a W) -> Vec<Visibility<'a>>;
 
     fn shade_hits(
@@ -90,14 +90,14 @@ pub(crate) trait WavefrontStages<I: Integrator, S: SampleStream, R: SamplerRng> 
 }
 
 /// Runtime-sized wavefront storage whose stage inputs and outputs are dense.
-pub(crate) struct WavefrontBatch<I: Integrator, S: SampleStream, R: SamplerRng> {
+pub(crate) struct WavefrontBatch<I: Integrator, S: SampleStream, R: SamplerRng, const B: usize> {
     /// Persistent path metadata, including parents waiting on delta children.
     paths: Vec<PathRecord<S, R, I::PathState>>,
     /// Dense active work list. Every entry has a valid ray and path identity.
     active_rays: Vec<ActiveRay>,
 }
 
-impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
+impl<I: Integrator, S: SampleStream, R: SamplerRng, const B: usize> WavefrontBatch<I, S, R, B> {
     pub(crate) fn new(
         active_rays: Vec<ActiveRay>,
         paths: Vec<PathRecord<S, R, I::PathState>>,
@@ -195,19 +195,31 @@ impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontBatch<I, S, R> {
     }
 }
 
-impl<I: Integrator, S: SampleStream, R: SamplerRng> WavefrontStages<I, S, R>
-    for WavefrontBatch<I, S, R>
+impl<I: Integrator, S: SampleStream, R: SamplerRng, const B: usize> WavefrontStages<I, S, R, B>
+    for WavefrontBatch<I, S, R, B>
 {
     fn trace_rays<'a, W: Intersectable>(&self, world: &'a W) -> Vec<Visibility<'a>> {
-        self.active_rays
-            .iter()
-            .map(|active| {
-                match world.intersect(&active.ray, Interval::from(0.001, f32::INFINITY)) {
+        let mut visibility = Vec::with_capacity(self.active_rays.len());
+        for chunk in self.active_rays.chunks(B) {
+            if chunk.len() == B {
+                let rays: [RayPacked<1>; B] = core::array::from_fn(|i| chunk[i].ray);
+                let packet: RayPacked<B> = rays.into();
+                let hits = world.intersect(&packet, Interval::from(0.001, f32::INFINITY));
+                visibility.extend(hits.into_iter().map(|hit| match hit {
                     Some(hit) => Visibility::Hit(hit),
                     None => Visibility::Miss,
+                }));
+            } else {
+                for active in chunk {
+                    let hit = world.intersect(&active.ray, Interval::from(0.001, f32::INFINITY))[0];
+                    visibility.push(match hit {
+                        Some(hit) => Visibility::Hit(hit),
+                        None => Visibility::Miss,
+                    });
                 }
-            })
-            .collect()
+            }
+        }
+        visibility
     }
 
     fn shade_hits(
@@ -389,7 +401,7 @@ where
     ) where
         W: Intersectable,
     {
-        let batch = WavefrontBatch::new(
+        let batch = WavefrontBatch::<I, SampleStreamWriter, HashRng, B>::new(
             std::mem::replace(active_rays, Vec::with_capacity(B)),
             std::mem::replace(paths, Vec::with_capacity(B)),
         );

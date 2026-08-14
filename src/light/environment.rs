@@ -14,7 +14,7 @@ use crate::light::{LightSample, Sampleable};
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::primitives::LightPrimitive;
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 use crate::sampling::distributions::Dist2D;
 use crate::sampling::pdf::{AreaPdf, SolidAnglePdf};
 
@@ -157,10 +157,22 @@ impl Bounded for EnvironmentLight {
 }
 
 impl Intersectable for EnvironmentLight {
-    fn intersect<'a>(&'a self, _ray: &Ray, _ray_t: Interval) -> Option<MaterialHit<'a>> {
+    fn intersect_scalar<'a>(
+        &'a self,
+        _ray: &RayPacked<1>,
+        _ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>> {
+        None
+    }
+
+    fn intersect<'a, const N: usize>(
+        &'a self,
+        _ray: &RayPacked<N>,
+        _ray_t: Interval<N>,
+    ) -> [Option<MaterialHit<'a>>; N] {
         // Environment light is at infinity, so it doesn't have a finite intersection.
         // We can return None to indicate no intersection.
-        None
+        [None; N]
     }
 }
 

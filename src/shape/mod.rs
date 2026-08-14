@@ -6,7 +6,7 @@ use crate::intersect::{Bounded, Intersectable};
 use crate::light::{LightSample, Sampleable};
 use crate::material::Material;
 use crate::math::interval::Interval;
-use crate::ray::Ray;
+use crate::ray::{Ray, RayPacked};
 use crate::sampling::pdf::AreaPdf;
 
 use crate::math::vec3::{Color3, Direction3, Point3};
@@ -73,19 +73,20 @@ pub trait Region2D: Send + Sync {
 /// emission) is in the [`ShapeSurfaceSampling`] super-trait. Shapes that cannot provide correct
 /// surface-area-uniform sampling (e.g. generic SDFs) implement [`Shape3D`] only and are excluded
 /// from area-light use at compile time.
-pub trait Shape3D: UVDifferentiable + Send + Sync {
+pub trait Shape3D: Bounded + UVDifferentiable + Send + Sync {
     /// Intersect a ray in local space. Returns a bare [`Hit`] for the caller to wrap in
-    /// [`MaterialHit`].
-    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit>;
+    /// [`MaterialHit`]. `N` is the ray-pack width; scalar shapes operate on lane 0.
+    fn intersect_shape<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> Option<Hit>;
 
     /// Returns true if the ray is occluded by the shape. Default implementation calls
     /// [`intersect_shape`] and returns true if a hit is found.
-    fn occluded_shape(&self, ray: &Ray, ray_t: Interval) -> bool {
+    fn occluded_shape<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> bool {
         self.intersect_shape(ray, ray_t).is_some()
     }
-
-    /// Conservative AABB in local space.
-    fn bounding_box(&self) -> Aabb;
 }
 
 /// Surface sampling for shapes — required for area-light support.
@@ -208,9 +209,12 @@ impl<Sh: Shape3D + Clone, M: Borrow<Material> + Send + Sync> Bounded for ShapeOb
 }
 
 impl<Sh: Shape3D + Clone, M: Borrow<Material> + Send + Sync> Intersectable for ShapeObject<Sh, M> {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
+    fn intersect_scalar<'a>(
+        &'a self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>> {
         let mut hit = self.shape.intersect_shape(ray, ray_t)?;
-        // Precompute UV derivatives for texture filtering.
         hit.uv_gradients = Some(self.shape.uv_gradient(&hit.mapping_point));
         Some(MaterialHit {
             hit,
@@ -218,8 +222,26 @@ impl<Sh: Shape3D + Clone, M: Borrow<Material> + Send + Sync> Intersectable for S
         })
     }
 
-    fn occluded(&self, ray: &Ray, ray_t: Interval) -> bool {
-        self.shape.occluded_shape(ray, ray_t)
+    fn intersect<'a, const N: usize>(
+        &'a self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<MaterialHit<'a>>; N] {
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        core::array::from_fn(|i| {
+            let mut hit = self.shape.intersect_shape(&lanes[i], ray_t.lane(i))?;
+            // Precompute UV derivatives for texture filtering.
+            hit.uv_gradients = Some(self.shape.uv_gradient(&hit.mapping_point));
+            Some(MaterialHit {
+                hit,
+                material: self.material.borrow(),
+            })
+        })
+    }
+
+    fn occluded<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> [bool; N] {
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        core::array::from_fn(|i| self.shape.occluded_shape(&lanes[i], ray_t.lane(i)))
     }
 }
 

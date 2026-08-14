@@ -36,7 +36,7 @@ use tracing::info;
 use crate::intersect::interaction::MaterialHit;
 use crate::intersect::{Bounded, Intersectable};
 use crate::math::interval::Interval;
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 
 pub mod aabb;
 pub mod builder;
@@ -61,8 +61,15 @@ const BVH_LEAF_THRESHOLD: usize = 4;
 /// Inline slab AABB test. Returns true if the ray segment [tmin, tmax] intersects the AABB.
 ///
 /// Computes for all 3 axes unconditionally to avoid branching and allow the compiler to vectorize.
+/// Operates on lane 0 of the ray.
 #[inline]
-fn slab_aabb_test(min: [f32; 3], max: [f32; 3], ray: &Ray, tmin: f32, tmax: f32) -> bool {
+fn slab_aabb_test<const N: usize>(
+    min: [f32; 3],
+    max: [f32; 3],
+    ray: &RayPacked<N>,
+    tmin: f32,
+    tmax: f32,
+) -> bool {
     let mut lo = tmin;
     let mut hi = tmax;
 
@@ -640,12 +647,160 @@ where
     <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
     P: Intersectable + Bounded + Clone,
 {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
+    fn intersect_scalar<'a>(
+        &'a self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>> {
+        self.intersect_scalar_traversal(ray, ray_t)
+    }
+
+    fn intersect<'a, const N: usize>(
+        &'a self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<MaterialHit<'a>>; N]
+    where
+        Simd<f32, N>: SimdPartialOrd + SimdFloat,
+        <Simd<f32, N> as SimdPartialEq>::Mask: Into<Mask<i32, N>>,
+    {
+        self.intersect_packet(ray, ray_t)
+    }
+
+    fn occluded<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> [bool; N] {
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        core::array::from_fn(|i| self.occluded_scalar(&lanes[i], ray_t.lane(i)))
+    }
+}
+
+impl<const W: usize, P> Bvh<W, P>
+where
+    Simd<f32, W>: SimdPartialOrd + SimdFloat,
+    <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
+    P: Intersectable + Bounded + Clone,
+{
+    fn intersect_packet<'a, const N: usize>(
+        &'a self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<MaterialHit<'a>>; N]
+    where
+        Simd<f32, N>: SimdPartialOrd + SimdFloat,
+        <Simd<f32, N> as SimdPartialEq>::Mask: Into<Mask<i32, N>>,
+    {
+        debug_assert!(N > 0 && N <= 16, "packet traversal supports 1..=16 lanes");
+        if self.nodes.is_empty() {
+            return [None; N];
+        }
+
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        let tmin = ray_t.min();
+        let mut best_t = ray_t.max();
+        let mut best_hit: [Option<MaterialHit<'a>>; N] = [None; N];
+        let all_lanes = if N == 16 { u16::MAX } else { (1u16 << N) - 1 };
+        let mut stack = [(0u32, 0u16); MAX_STACK];
+        let mut sp = 1usize;
+        stack[0] = (0, all_lanes);
+
+        while sp > 0 {
+            sp -= 1;
+            let (node_index, active) = stack[sp];
+            let node = &self.nodes[node_index as usize];
+
+            if W == 2 && node.is_leaf() {
+                let (child_min, child_max) = node.bbox.child_aabb(0);
+                let start = node.prim_start();
+                let count = node.prim_count();
+                for lane in 0..N {
+                    if active & (1u16 << lane) == 0
+                        || !slab_aabb_test(
+                            child_min,
+                            child_max,
+                            &lanes[lane],
+                            tmin[lane],
+                            best_t[lane],
+                        )
+                    {
+                        continue;
+                    }
+                    for primitive in &self.primitives[start..start + count] {
+                        if let Some(hit) = primitive
+                            .intersect(&lanes[lane], Interval::from(tmin[lane], best_t[lane]))[0]
+                            && hit.hit.time < best_t[lane]
+                        {
+                            best_t[lane] = hit.hit.time;
+                            best_hit[lane] = Some(hit);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let hits = node.bbox.hit(ray, &Interval::from_array(tmin, best_t));
+            if W >= 4 {
+                let valid = if node.child_count >= 16 {
+                    u16::MAX
+                } else {
+                    (1u16 << node.child_count) - 1
+                };
+                for child in 0..node.child_count as usize {
+                    let child_active = hits[child] & active;
+                    if child_active == 0 || valid & (1u16 << child) == 0 {
+                        continue;
+                    }
+                    if node.is_child_leaf(child) {
+                        let start = node.child_offset[child] as usize;
+                        let count = node.leaf_info[child] as usize;
+                        for lane in 0..N {
+                            if child_active & (1u16 << lane) == 0 {
+                                continue;
+                            }
+                            for primitive in &self.primitives[start..start + count] {
+                                if let Some(hit) = primitive.intersect(
+                                    &lanes[lane],
+                                    Interval::from(tmin[lane], best_t[lane]),
+                                )[0] && hit.hit.time < best_t[lane]
+                                {
+                                    best_t[lane] = hit.hit.time;
+                                    best_hit[lane] = Some(hit);
+                                }
+                            }
+                        }
+                    } else {
+                        debug_assert!(sp < MAX_STACK, "Bvh traversal stack overflow");
+                        stack[sp] = (node.child_offset[child], child_active);
+                        sp += 1;
+                    }
+                }
+            } else {
+                let hit0 = hits[0] & active;
+                let hit1 = hits[1] & active;
+                if hit1 != 0 {
+                    debug_assert!(sp < MAX_STACK, "Bvh traversal stack overflow");
+                    stack[sp] = (node.child(1), hit1);
+                    sp += 1;
+                }
+                if hit0 != 0 {
+                    debug_assert!(sp < MAX_STACK, "Bvh traversal stack overflow");
+                    stack[sp] = (node.child(0), hit0);
+                    sp += 1;
+                }
+            }
+        }
+        best_hit
+    }
+
+    #[allow(dead_code)]
+    fn intersect_scalar_traversal<'a>(
+        &'a self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>> {
         if self.nodes.is_empty() {
             return None;
         }
 
-        let mut best_t = ray_t.max;
+        let mut best_t = ray_t.max_value();
         let mut best_hit: Option<MaterialHit<'a>> = None;
 
         // Iterative stack-based traversal — no recursion, no allocation.
@@ -654,7 +809,7 @@ where
         stack[sp] = 0; // root
         sp += 1;
 
-        let tmin = ray_t.min;
+        let tmin = ray_t.min_value();
         let dx = ray.direction().x();
         let dy = ray.direction().y();
         let dz = ray.direction().z();
@@ -676,7 +831,7 @@ where
                 let count = node.prim_count();
                 for i in start..start + count {
                     if let Some(mat_hit) =
-                        self.primitives[i].intersect(ray, Interval::from(tmin, best_t))
+                        self.primitives[i].intersect(ray, Interval::from(tmin, best_t))[0]
                         && mat_hit.hit.time < best_t
                     {
                         best_t = mat_hit.hit.time;
@@ -708,7 +863,7 @@ where
                         let prim_start = node.child_offset[i];
                         let prim_count = node.leaf_info[i] as usize;
                         for p in &self.primitives[prim_start as usize..][..prim_count] {
-                            if let Some(mat_hit) = p.intersect(ray, Interval::from(tmin, best_t))
+                            if let Some(mat_hit) = p.intersect(ray, Interval::from(tmin, best_t))[0]
                                 && mat_hit.hit.time < best_t
                             {
                                 best_t = mat_hit.hit.time;
@@ -757,7 +912,7 @@ where
         best_hit
     }
 
-    fn occluded(&self, ray: &Ray, ray_t: Interval) -> bool {
+    fn occluded_scalar(&self, ray: &RayPacked<1>, ray_t: Interval<1>) -> bool {
         if self.nodes.is_empty() {
             return false;
         }
@@ -767,8 +922,8 @@ where
         stack[sp] = 0;
         sp += 1;
 
-        let tmin = ray_t.min;
-        let tmax = ray_t.max;
+        let tmin = ray_t.min_value();
+        let tmax = ray_t.max_value();
         let dx = ray.direction().x();
         let dy = ray.direction().y();
         let dz = ray.direction().z();
@@ -788,7 +943,7 @@ where
                 let count = node.prim_count();
                 if self.primitives[start..start + count]
                     .iter()
-                    .any(|p| p.occluded(ray, Interval::from(tmin, tmax)))
+                    .any(|p| p.occluded(ray, Interval::from(tmin, tmax))[0])
                 {
                     return true;
                 }
@@ -816,7 +971,7 @@ where
                         let prim_count = node.leaf_info[i] as usize;
                         if self.primitives[prim_start as usize..][..prim_count]
                             .iter()
-                            .any(|p| p.occluded(ray, Interval::from(tmin, tmax)))
+                            .any(|p| p.occluded(ray, Interval::from(tmin, tmax))[0])
                         {
                             return true;
                         }

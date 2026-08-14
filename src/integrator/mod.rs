@@ -94,7 +94,7 @@ pub trait Integrator: Send + Sync {
         let mut ray = *initial_ray;
         let mut accumulated_radiance = Color3::ZERO;
         while state.remaining_depth() > 0 {
-            if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f32::INFINITY)) {
+            if let Some(mat_hit) = world.intersect(&ray, Interval::from(0.001, f32::INFINITY))[0] {
                 let result = self.process_bounce(&ray, &mat_hit, world, lights, state, stream, rng);
 
                 accumulated_radiance += result.contribution;

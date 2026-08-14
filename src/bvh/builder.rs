@@ -7,7 +7,7 @@ use crate::bvh::{BVH_BIN_SIZE, BVH_LEAF_THRESHOLD, BVH_PARALLEL_THRESHOLD};
 use crate::intersect::interaction::MaterialHit;
 use crate::intersect::{Bounded, Intersectable};
 use crate::math::interval::Interval;
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 
 /// A binary BVH node for accelerating ray-scene intersection queries.
 ///
@@ -239,46 +239,63 @@ impl<P: Clone + Intersectable + Bounded> TreeBuilder<P> {
 }
 
 impl<P: Clone + Intersectable + Bounded> Intersectable for TreeBuilder<P> {
-    fn intersect<'a>(&'a self, ray: &Ray, ray_t: Interval) -> Option<MaterialHit<'a>> {
-        match self {
-            Self::Empty => None,
-            Self::Interior { left, right, bbox } => {
-                if !bbox.hit_single(ray, &ray_t) {
-                    return None;
-                }
-                let hit_left = left.intersect(ray, ray_t);
-                let hit_right = right.intersect(
-                    ray,
-                    Interval::from(
-                        ray_t.min,
-                        hit_left.as_ref().map_or(ray_t.max, |h| h.hit.time),
-                    ),
-                );
-                hit_right.or(hit_left)
-            }
-            Self::Leaf { object, .. } => object.intersect(ray, ray_t),
-            Self::LeafN {
-                objects,
-                count,
-                bbox,
-                ..
-            } => {
-                if !bbox.hit_single(ray, &ray_t) {
-                    return None;
-                }
-                let mut closest_hit: Option<MaterialHit> = None;
-                let mut closest_time = ray_t.max;
-                for object in objects[..*count].iter() {
-                    if let Some(hit) =
-                        object.intersect(ray, Interval::from(ray_t.min, closest_time))
-                    {
-                        closest_time = hit.hit.time;
-                        closest_hit = Some(hit);
+    fn intersect_scalar<'a>(
+        &'a self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>> {
+        self.intersect(ray, ray_t)[0]
+    }
+
+    fn intersect<'a, const N: usize>(
+        &'a self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<MaterialHit<'a>>; N] {
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        core::array::from_fn(|i| {
+            let ray = &lanes[i];
+            let ray_t = ray_t.lane(i);
+            match self {
+                Self::Empty => None,
+                Self::Interior { left, right, bbox } => {
+                    if !bbox.hit_single(ray, &ray_t) {
+                        return None;
                     }
+                    let hit_left = left.intersect(ray, ray_t)[0];
+                    let hit_right = right.intersect(
+                        ray,
+                        Interval::from(
+                            ray_t.min_value(),
+                            hit_left.as_ref().map_or(ray_t.max_value(), |h| h.hit.time),
+                        ),
+                    )[0];
+                    hit_right.or(hit_left)
                 }
-                closest_hit
+                Self::Leaf { object, .. } => object.intersect(ray, ray_t)[0],
+                Self::LeafN {
+                    objects,
+                    count,
+                    bbox,
+                    ..
+                } => {
+                    if !bbox.hit_single(ray, &ray_t) {
+                        return None;
+                    }
+                    let mut closest_hit: Option<MaterialHit> = None;
+                    let mut closest_time = ray_t.max_value();
+                    for object in objects[..*count].iter() {
+                        if let Some(hit) = object
+                            .intersect(ray, Interval::from(ray_t.min_value(), closest_time))[0]
+                        {
+                            closest_time = hit.hit.time;
+                            closest_hit = Some(hit);
+                        }
+                    }
+                    closest_hit
+                }
             }
-        }
+        })
     }
 }
 

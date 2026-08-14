@@ -6,7 +6,7 @@ use glam::Vec3;
 
 use crate::math::interval::Interval;
 use crate::math::vec3::Point3;
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 
 pub type Aabb = AabbPacked<1>;
 
@@ -28,20 +28,24 @@ impl<const W: usize> AabbPacked<W> {
         Self { min, max }
     }
 
-    /// Create an AABB from three arrays of intervals, one for each axis.
+    /// Create an AABB from three arrays of scalar intervals, one for each axis.
     #[inline]
-    pub fn from_intervals(x: &[Interval; W], y: &[Interval; W], z: &[Interval; W]) -> Self {
+    pub fn from_intervals(
+        x: &[Interval<1>; W],
+        y: &[Interval<1>; W],
+        z: &[Interval<1>; W],
+    ) -> Self {
         let mut min = [[0.0; W]; 3];
         let mut max = [[0.0; W]; 3];
 
         for i in 0..W {
-            min[0][i] = x[i].min;
-            min[1][i] = y[i].min;
-            min[2][i] = z[i].min;
+            min[0][i] = x[i].min_value();
+            min[1][i] = y[i].min_value();
+            min[2][i] = z[i].min_value();
 
-            max[0][i] = x[i].max;
-            max[1][i] = y[i].max;
-            max[2][i] = z[i].max;
+            max[0][i] = x[i].max_value();
+            max[1][i] = y[i].max_value();
+            max[2][i] = z[i].max_value();
         }
 
         Self { min, max }
@@ -183,40 +187,63 @@ impl<const W: usize> AabbPacked<W> {
         self
     }
 
-    /// Branchless slab test against all W children for a batch of rays.
+    /// Packet slab test: W children × N rays.
     ///
-    /// `ray_origins` and `ray_directions` are arrays of length W, where each element is a 3D vector
-    /// representing the origin and direction of a ray. `ray_t` is an array of length W, where each
-    /// element is a 2D vector representing the minimum and maximum t values for the ray segment.
+    /// For each child c, runs a branchless slab test across all N rays and
+    /// returns a per-ray hit mask (bit i set = ray i intersects child c).
+    /// The result is `[u16; W]`, child-major; callers treat a nonzero entry
+    /// as "some ray hit this child".
     #[inline]
-    pub fn hit(
-        &self,
-        ray_origins: &[[f32; 3]; W],
-        ray_directions: &[[f32; 3]; W],
-        ray_t: &mut [[f32; 2]; W],
-    ) -> [bool; W] {
-        let mut hits = [true; W];
+    pub fn hit<const N: usize>(&self, ray: &RayPacked<N>, ray_t: &Interval<N>) -> [u16; W]
+    where
+        Simd<f32, N>: SimdPartialOrd + SimdFloat,
+        <Simd<f32, N> as SimdPartialEq>::Mask: Into<Mask<i32, N>>,
+    {
+        let ox = Simd::from_array(ray.origin[0]);
+        let oy = Simd::from_array(ray.origin[1]);
+        let oz = Simd::from_array(ray.origin[2]);
+        let idx = Simd::from_array(ray.inverse_direction[0]);
+        let idy = Simd::from_array(ray.inverse_direction[1]);
+        let idz = Simd::from_array(ray.inverse_direction[2]);
+        let t_min = Simd::from_array(ray_t.min());
+        let t_max = Simd::from_array(ray_t.max());
 
-        for axis in 0..3 {
-            let (min_vals, max_vals) = self.axis(axis);
-            for i in 0..W {
-                let inv_d = 1.0 / ray_directions[i][axis];
-                let t0 = (min_vals[i] - ray_origins[i][axis]) * inv_d;
-                let t1 = (max_vals[i] - ray_origins[i][axis]) * inv_d;
+        let mut out = [0u16; W];
+        for (c, out_c) in out.iter_mut().enumerate() {
+            // Per-child slab test across all N rays.
+            let min_x = Simd::splat(self.min[0][c]);
+            let max_x = Simd::splat(self.max[0][c]);
+            let min_y = Simd::splat(self.min[1][c]);
+            let max_y = Simd::splat(self.max[1][c]);
+            let min_z = Simd::splat(self.min[2][c]);
+            let max_z = Simd::splat(self.max[2][c]);
 
-                let t_min = t0.min(t1);
-                let t_max = t0.max(t1);
+            let mut lo = t_min;
+            let mut hi = t_max;
 
-                ray_t[i][0] = ray_t[i][0].max(t_min);
-                ray_t[i][1] = ray_t[i][1].min(t_max);
+            // X slab.
+            let t0 = (min_x - ox) * idx;
+            let t1 = (max_x - ox) * idx;
+            lo = lo.simd_max(t0.simd_min(t1));
+            hi = hi.simd_min(t0.simd_max(t1));
 
-                if ray_t[i][1] <= ray_t[i][0] {
-                    hits[i] = false;
-                }
-            }
+            // Y slab.
+            let t0 = (min_y - oy) * idy;
+            let t1 = (max_y - oy) * idy;
+            lo = lo.simd_max(t0.simd_min(t1));
+            hi = hi.simd_min(t0.simd_max(t1));
+
+            // Z slab.
+            let t0 = (min_z - oz) * idz;
+            let t1 = (max_z - oz) * idz;
+            lo = lo.simd_max(t0.simd_min(t1));
+            hi = hi.simd_min(t0.simd_max(t1));
+
+            let mask: Mask<i32, N> = hi.simd_gt(lo).into();
+            *out_c = mask.to_bitmask() as u16;
         }
 
-        hits
+        out
     }
 
     #[inline]
@@ -237,9 +264,9 @@ impl<const W: usize> AabbPacked<W> {
     ///
     /// Returns a u16 bitmask where bit `i` is set if the ray segment
     /// `[tmin, tmax]` intersects child i's AABB. Uses explicit `std::simd`
-    /// for guaranteed packed AABB testing.
+    /// for guaranteed packed AABB testing. Operates on lane 0 of the ray.
     #[inline]
-    pub fn hit_mask(&self, ray: &Ray, tmin: f32, tmax: f32) -> u16
+    pub fn hit_mask<const N: usize>(&self, ray: &RayPacked<N>, tmin: f32, tmax: f32) -> u16
     where
         Simd<f32, W>: SimdPartialOrd + SimdFloat,
         <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
@@ -313,8 +340,9 @@ impl<const W: usize> AabbPacked<W> {
     }
 
     /// Single-ray AABB hit test against slot 0. Returns true if the ray segment
-    /// [ray_t.min, ray_t.max] intersects slot 0's AABB.
-    pub fn hit_single(&self, ray: &Ray, ray_t: &Interval) -> bool {
+    /// [ray_t.min, ray_t.max] intersects slot 0's AABB. Operates on lane 0 of
+    /// the (possibly packed) ray.
+    pub fn hit_single<const N: usize>(&self, ray: &RayPacked<N>, ray_t: &Interval<1>) -> bool {
         // Inline slab test for slot 0.
         let ox = ray.origin().x();
         let oy = ray.origin().y();
@@ -322,8 +350,8 @@ impl<const W: usize> AabbPacked<W> {
         let idx = ray.inverse_direction().x();
         let idy = ray.inverse_direction().y();
         let idz = ray.inverse_direction().z();
-        let tmin = ray_t.min;
-        let tmax = ray_t.max;
+        let tmin = ray_t.min_value();
+        let tmax = ray_t.max_value();
 
         let mut lo = tmin;
         let mut hi = tmax;

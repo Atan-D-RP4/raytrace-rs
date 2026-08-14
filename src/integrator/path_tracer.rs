@@ -295,7 +295,7 @@ impl Integrator for PathTracingIntegrator {
                 let shadow_ray = Ray::new_with_time(si.point(), light_unit, ray.time());
                 let far = (sample.distance - 0.001).max(0.001);
                 let shadow_ray_interval = Interval::from(0.001, far);
-                let occluded = world.occluded(&shadow_ray, shadow_ray_interval);
+                let occluded = world.occluded(&shadow_ray, shadow_ray_interval)[0];
                 if !occluded {
                     // Unoccluded — compute direct lighting contribution.
                     // Area-sampling form: L ≈ f_r · L_e · |cos θ_s| · |cos θ_l| · V / (p_A · d²)

@@ -1,27 +1,23 @@
-/// A simple interval struct that represents a range of values between a minimum and maximum value.
+/// A packed interval: N (min, max) pairs in lane-major SoA form.
+///
+/// `data[0]` holds all N minimums and `data[1]` all N maximums, so a SIMD
+/// slab test can load `Simd::from_array(ray_t.min())` in one register load,
+/// mirroring the axis-major layout of `RayPacked<N>` and `AabbPacked`.
 #[derive(Debug, Clone, Copy)]
-pub struct Interval {
-    /// The minimum value of the interval.
-    pub min: f32,
-    /// The maximum value of the interval.
-    pub max: f32,
+pub struct Interval<const N: usize> {
+    /// data[0] = all N mins, data[1] = all N maxs.
+    data: [[f32; N]; 2],
 }
 
-impl Default for Interval {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Interval {
-    pub const EMPTY: Interval = Interval {
-        min: f32::INFINITY,
-        max: f32::NEG_INFINITY,
+impl<const N: usize> Interval<N> {
+    /// Empty interval: min = +inf, max = -inf (all lanes).
+    pub const EMPTY: Interval<N> = Interval {
+        data: [[f32::INFINITY; N], [f32::NEG_INFINITY; N]],
     };
 
-    pub const UNIVERSE: Interval = Interval {
-        min: f32::NEG_INFINITY,
-        max: f32::INFINITY,
+    /// Universe interval: min = -inf, max = +inf (all lanes).
+    pub const UNIVERSE: Interval<N> = Interval {
+        data: [[f32::NEG_INFINITY; N], [f32::INFINITY; N]],
     };
 
     #[inline]
@@ -29,66 +25,83 @@ impl Interval {
         Self::EMPTY
     }
 
-    #[inline]
-    pub const fn min(&self, other: &Interval) -> Self {
-        let min = self.min.min(other.min);
-        let max = self.max.min(other.max);
-        Self { min, max }
-    }
-
-    #[inline]
-    pub const fn max(&self, other: &Interval) -> Self {
-        let min = self.min.max(other.min);
-        let max = self.max.max(other.max);
-        Self { min, max }
-    }
-
-    #[inline]
-    pub const fn from_intervals(a: &Interval, b: &Interval) -> Self {
-        let min = a.min.min(b.min);
-        let max = a.max.max(b.max);
-        Self { min, max }
-    }
-
+    /// Broadcasts a scalar interval to all N lanes.
     #[inline]
     pub const fn from(min: f32, max: f32) -> Self {
-        Self { min, max }
-    }
-
-    #[inline]
-    pub const fn size(&self) -> f32 {
-        if self.max > self.min {
-            self.max - self.min
-        } else {
-            0.0
+        Self {
+            data: [[min; N], [max; N]],
         }
     }
 
+    /// Builds a packed interval from per-lane minimums and maximums.
     #[inline]
-    pub const fn contains(&self, value: f32) -> bool {
-        self.min <= value && value <= self.max
+    pub const fn from_array(min: [f32; N], max: [f32; N]) -> Self {
+        Self { data: [min, max] }
     }
 
+    /// All N minimums.
     #[inline]
-    pub const fn surrounds(&self, value: f32) -> bool {
-        self.min < value && value < self.max
+    pub const fn min(&self) -> [f32; N] {
+        self.data[0]
     }
 
+    /// All N maximums.
     #[inline]
-    pub const fn clamp(&self, value: f32) -> f32 {
-        if value < self.min {
-            self.min
-        } else if value > self.max {
-            self.max
+    pub const fn max(&self) -> [f32; N] {
+        self.data[1]
+    }
+
+    /// Extracts lane `i` as a scalar interval.
+    #[inline]
+    pub const fn lane(&self, i: usize) -> Interval<1> {
+        Interval {
+            data: [[self.data[0][i]], [self.data[1][i]]],
+        }
+    }
+
+    /// Lane-0 minimum (scalar consumers).
+    #[inline]
+    pub const fn min_value(&self) -> f32 {
+        self.data[0][0]
+    }
+
+    /// Lane-0 maximum (scalar consumers).
+    #[inline]
+    pub const fn max_value(&self) -> f32 {
+        self.data[1][0]
+    }
+
+    /// Lane-0 contains check.
+    #[inline]
+    pub const fn contains_value(&self, value: f32) -> bool {
+        self.data[0][0] <= value && value <= self.data[1][0]
+    }
+
+    /// Lane-0 clamp.
+    #[inline]
+    pub const fn clamp_value(&self, value: f32) -> f32 {
+        if value < self.data[0][0] {
+            self.data[0][0]
+        } else if value > self.data[1][0] {
+            self.data[1][0]
         } else {
             value
         }
     }
 
+    /// Lane-0 size.
     #[inline]
-    pub const fn expand(&mut self, delta: f32) {
-        let padding = delta / 2.0;
-        self.min -= padding;
-        self.max += padding;
+    pub const fn size_value(&self) -> f32 {
+        if self.data[1][0] > self.data[0][0] {
+            self.data[1][0] - self.data[0][0]
+        } else {
+            0.0
+        }
+    }
+}
+
+impl<const N: usize> Default for Interval<N> {
+    fn default() -> Self {
+        Self::new()
     }
 }

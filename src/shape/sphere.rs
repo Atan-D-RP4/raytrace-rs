@@ -4,13 +4,14 @@ use std::f32::consts::PI;
 use glam::Vec3;
 
 use crate::bvh::aabb::Aabb;
+use crate::intersect::Bounded;
 use crate::intersect::interaction::Hit;
 use crate::light::LightSample;
 use crate::material::Material;
 use crate::math::interval::Interval;
 use crate::math::onb::Onb;
 use crate::math::vec3::{Color3, Direction3, Point3};
-use crate::ray::{ParametricCurve, Ray};
+use crate::ray::{ParametricCurve, RayPacked};
 use crate::sampling::pdf::AreaPdf;
 use crate::shape::{Shape3D, ShapeObject, ShapeSurfaceSampling};
 use crate::texture::UVDifferentiable;
@@ -110,7 +111,11 @@ impl UVDifferentiable for SphereShape {
 }
 
 impl Shape3D for SphereShape {
-    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
+    fn intersect_shape<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> Option<Hit> {
         // Quadratic form with h = dot(d, oc). Near root first, far root fallback.
         let current_center = self.center.at(ray.time());
         let oc = current_center - ray.origin();
@@ -126,9 +131,9 @@ impl Shape3D for SphereShape {
         let sqrtd = discriminant.sqrt();
 
         let mut root = (h - sqrtd) / a;
-        if ray_t.max <= root || root <= ray_t.min {
+        if ray_t.max_value() <= root || root <= ray_t.min_value() {
             root = (h + sqrtd) / a;
-            if ray_t.max <= root || root <= ray_t.min {
+            if ray_t.max_value() <= root || root <= ray_t.min_value() {
                 return None;
             }
         }
@@ -152,7 +157,9 @@ impl Shape3D for SphereShape {
         hit.curvature = 1.0 / self.radius; // Igehy curvature term for ray differential propagation
         Some(hit)
     }
+}
 
+impl Bounded for SphereShape {
     fn bounding_box(&self) -> Aabb {
         let rvec = Point3::splat(self.radius);
         let local = Aabb::from_corners(-rvec, rvec);

@@ -3,11 +3,12 @@ use std::borrow::Borrow;
 use glam::Vec3;
 
 use crate::bvh::aabb::Aabb;
+use crate::intersect::Bounded;
 use crate::intersect::interaction::Hit;
 use crate::material::Material;
 use crate::math::interval::Interval;
 use crate::math::vec3::{Direction3, Point3};
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 use crate::texture::UVDifferentiable;
 
 use super::{Shape3D, ShapeObject, ShapeSurfaceSampling};
@@ -75,7 +76,11 @@ impl BoxShape {
     /// along that axis (t_near, t_far). The 3D intersection is the overlap of all
     /// three axis intervals. The axis that produced `t_enter` tells us which face
     /// was hit.
-    fn intersect_faces(&self, ray: &Ray, ray_t: Interval) -> Option<(usize, f32, f32, f32)> {
+    fn intersect_faces<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> Option<(usize, f32, f32, f32)> {
         let inv_d = ray.inverse_direction().into_inner();
 
         let origin = ray.origin().into_inner();
@@ -94,13 +99,17 @@ impl BoxShape {
         let t_exit = t_far.min_element();
 
         // If the ray misses the box or is outside the valid t range, return None.
-        if t_enter >= t_exit || t_exit <= ray_t.min || t_enter >= ray_t.max {
+        if t_enter >= t_exit || t_exit <= ray_t.min_value() || t_enter >= ray_t.max_value() {
             return None;
         }
 
         // Determine the actual hit time within the ray's valid interval.
-        let t = if t_enter > ray_t.min { t_enter } else { t_exit };
-        if t <= ray_t.min || t >= ray_t.max {
+        let t = if t_enter > ray_t.min_value() {
+            t_enter
+        } else {
+            t_exit
+        };
+        if t <= ray_t.min_value() || t >= ray_t.max_value() {
             return None;
         }
 
@@ -167,7 +176,11 @@ impl UVDifferentiable for BoxShape {
 }
 
 impl Shape3D for BoxShape {
-    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
+    fn intersect_shape<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> Option<Hit> {
         let (face, t, a, b) = self.intersect_faces(ray, ray_t)?;
         let point = ray.at(t);
 
@@ -185,7 +198,9 @@ impl Shape3D for BoxShape {
         let hit = Hit::new(t, point, point, normal, Some((a, b)), None);
         Some(hit)
     }
+}
 
+impl Bounded for BoxShape {
     fn bounding_box(&self) -> Aabb {
         Aabb::from_corners(self.min, self.max)
     }

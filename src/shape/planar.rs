@@ -1,11 +1,12 @@
 use glam::Vec3;
 
 use crate::bvh::aabb::Aabb;
+use crate::intersect::Bounded;
 use crate::intersect::interaction::Hit;
 use crate::light::LightSample;
 use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
-use crate::ray::Ray;
+use crate::ray::RayPacked;
 use crate::sampling::pdf::AreaPdf;
 use crate::shape::regions::{
     AnnulusRegion, EllipseRegion, FunctionRegion, PolygonRegion, QuadRegion, RoundedRectRegion,
@@ -238,7 +239,11 @@ impl PlanarShape {
 
     /// Returns the intersection of the ray with the plane of the patch, if there is any, alongside
     /// the (a, b) coordinates in parametric space.
-    fn hit_plane(&self, ray: &Ray, ray_t: Interval) -> Option<PlanarHit> {
+    fn hit_plane<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> Option<PlanarHit> {
         let denom = self.normal.dot(ray.direction().into_inner());
 
         if denom.abs() < 1e-8 {
@@ -246,7 +251,7 @@ impl PlanarShape {
         }
 
         let t = (self.d - self.normal.dot(ray.origin().into_inner())) / denom;
-        if !ray_t.contains(t) {
+        if !ray_t.contains_value(t) {
             return None;
         }
 
@@ -287,7 +292,11 @@ impl UVDifferentiable for PlanarShape {
 }
 
 impl Shape3D for PlanarShape {
-    fn intersect_shape(&self, ray: &Ray, ray_t: Interval) -> Option<Hit> {
+    fn intersect_shape<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> Option<Hit> {
         let planar_hit = self.hit_plane(ray, ray_t)?;
 
         if !self.region.contains(planar_hit.a, planar_hit.b) {
@@ -305,7 +314,9 @@ impl Shape3D for PlanarShape {
             None,
         ))
     }
+}
 
+impl Bounded for PlanarShape {
     fn bounding_box(&self) -> Aabb {
         self.bbox
     }
