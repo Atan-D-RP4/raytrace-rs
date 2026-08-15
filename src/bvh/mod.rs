@@ -664,7 +664,15 @@ where
         Simd<f32, N>: SimdPartialOrd + SimdFloat,
         <Simd<f32, N> as SimdPartialEq>::Mask: Into<Mask<i32, N>>,
     {
-        self.intersect_packet(ray, ray_t)
+        if N == 1 {
+            // N is a const generic, so this branch is resolved at compile
+            // time: the N=1 specialization uses the dedicated scalar
+            // traversal (no packet machinery, no per-lane masks).
+            let lanes: [RayPacked<1>; N] = (*ray).into();
+            core::array::from_fn(|i| self.intersect_scalar_traversal(&lanes[i], ray_t.lane(i)))
+        } else {
+            self.intersect_packet(ray, ray_t)
+        }
     }
 
     fn occluded<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> [bool; N] {
@@ -790,7 +798,6 @@ where
         best_hit
     }
 
-    #[allow(dead_code)]
     fn intersect_scalar_traversal<'a>(
         &'a self,
         ray: &RayPacked<1>,
@@ -831,7 +838,7 @@ where
                 let count = node.prim_count();
                 for i in start..start + count {
                     if let Some(mat_hit) =
-                        self.primitives[i].intersect(ray, Interval::from(tmin, best_t))[0]
+                        self.primitives[i].intersect_scalar(ray, Interval::from(tmin, best_t))
                         && mat_hit.hit.time < best_t
                     {
                         best_t = mat_hit.hit.time;
@@ -863,7 +870,8 @@ where
                         let prim_start = node.child_offset[i];
                         let prim_count = node.leaf_info[i] as usize;
                         for p in &self.primitives[prim_start as usize..][..prim_count] {
-                            if let Some(mat_hit) = p.intersect(ray, Interval::from(tmin, best_t))[0]
+                            if let Some(mat_hit) =
+                                p.intersect_scalar(ray, Interval::from(tmin, best_t))
                                 && mat_hit.hit.time < best_t
                             {
                                 best_t = mat_hit.hit.time;
@@ -943,7 +951,7 @@ where
                 let count = node.prim_count();
                 if self.primitives[start..start + count]
                     .iter()
-                    .any(|p| p.occluded(ray, Interval::from(tmin, tmax))[0])
+                    .any(|p| p.occluded_scalar(ray, Interval::from(tmin, tmax)))
                 {
                     return true;
                 }
@@ -971,7 +979,7 @@ where
                         let prim_count = node.leaf_info[i] as usize;
                         if self.primitives[prim_start as usize..][..prim_count]
                             .iter()
-                            .any(|p| p.occluded(ray, Interval::from(tmin, tmax))[0])
+                            .any(|p| p.occluded_scalar(ray, Interval::from(tmin, tmax)))
                         {
                             return true;
                         }

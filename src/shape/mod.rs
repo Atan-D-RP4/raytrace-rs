@@ -19,6 +19,9 @@ pub(crate) mod regions;
 mod sdf;
 mod sphere;
 
+#[cfg(test)]
+mod tests;
+
 pub use box3d::{Box3D, BoxShape, shape_box3d};
 pub use constructors::*;
 pub use planar::PlanarShape;
@@ -76,16 +79,48 @@ pub trait Region2D: Send + Sync {
 pub trait Shape3D: Bounded + UVDifferentiable + Send + Sync {
     /// Intersect a ray in local space. Returns a bare [`Hit`] for the caller to wrap in
     /// [`MaterialHit`]. `N` is the ray-pack width; scalar shapes operate on lane 0.
+    ///
+    /// This is the scalar entry point required by the trait contract (a single `Hit`).
+    /// Packet consumers should prefer [`intersect_shape_packed`](Self::intersect_shape_packed),
+    /// which processes every lane with the shape's SIMD-capable kernel.
     fn intersect_shape<const N: usize>(
         &self,
         ray: &RayPacked<N>,
         ray_t: Interval<N>,
     ) -> Option<Hit>;
 
+    /// Intersect a packet of rays, returning one optional [`Hit`] per lane.
+    ///
+    /// The default implementation scatters the packet into scalar rays and fans out to
+    /// [`intersect_shape`](Self::intersect_shape). Shapes with SIMD-capable kernels override
+    /// this to process all lanes at once.
+    fn intersect_shape_packed<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<Hit>; N] {
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        core::array::from_fn(|i| self.intersect_shape(&lanes[i], ray_t.lane(i)))
+    }
+
     /// Returns true if the ray is occluded by the shape. Default implementation calls
     /// [`intersect_shape`] and returns true if a hit is found.
     fn occluded_shape<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> bool {
         self.intersect_shape(ray, ray_t).is_some()
+    }
+
+    /// Packet occlusion test: one boolean per lane.
+    ///
+    /// The default implementation scatters to [`occluded_shape`](Self::occluded_shape).
+    /// Shapes with SIMD-capable kernels override this to run the (cheap, boolean-only)
+    /// intersection test across all lanes without building full [`Hit`] records.
+    fn occluded_shape_packed<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [bool; N] {
+        let lanes: [RayPacked<1>; N] = (*ray).into();
+        core::array::from_fn(|i| self.occluded_shape(&lanes[i], ray_t.lane(i)))
     }
 }
 
@@ -227,9 +262,12 @@ impl<Sh: Shape3D + Clone, M: Borrow<Material> + Send + Sync> Intersectable for S
         ray: &RayPacked<N>,
         ray_t: Interval<N>,
     ) -> [Option<MaterialHit<'a>>; N] {
-        let lanes: [RayPacked<1>; N] = (*ray).into();
+        // Packet path: the shape's SIMD-capable kernel processes all N lanes at once
+        // (no per-lane scatter). The scalar fallback lives in the trait default of
+        // `intersect_shape_packed` for shapes without a packet kernel.
+        let hits = self.shape.intersect_shape_packed(ray, ray_t);
         core::array::from_fn(|i| {
-            let mut hit = self.shape.intersect_shape(&lanes[i], ray_t.lane(i))?;
+            let mut hit = hits[i]?;
             // Precompute UV derivatives for texture filtering.
             hit.uv_gradients = Some(self.shape.uv_gradient(&hit.mapping_point));
             Some(MaterialHit {
@@ -240,8 +278,9 @@ impl<Sh: Shape3D + Clone, M: Borrow<Material> + Send + Sync> Intersectable for S
     }
 
     fn occluded<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> [bool; N] {
-        let lanes: [RayPacked<1>; N] = (*ray).into();
-        core::array::from_fn(|i| self.shape.occluded_shape(&lanes[i], ray_t.lane(i)))
+        // Boolean-only packet occlusion: shapes skip UV/curvature work when only a
+        // hit/miss decision is needed.
+        self.shape.occluded_shape_packed(ray, ray_t)
     }
 }
 

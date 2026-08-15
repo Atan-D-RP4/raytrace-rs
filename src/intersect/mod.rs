@@ -62,7 +62,10 @@ impl<T: Intersectable> Intersectable for Vec<T> {
         let mut result = None;
 
         for object in self {
-            if let Some(mat_hit) = object.intersect_scalar(ray, ray_t)
+            // Tighten the interval to the current closest hit so later
+            // primitives can cull hits beyond it (mirrors the packet path).
+            if let Some(mat_hit) =
+                object.intersect_scalar(ray, Interval::from(ray_t.min_value(), closest))
                 && mat_hit.hit.time < closest
             {
                 closest = mat_hit.hit.time;

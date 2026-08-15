@@ -297,7 +297,20 @@ impl<I, const B: usize> WavefrontRenderer<I, B>
 where
     I: Integrator,
 {
+    /// Compile-time guard on the wavefront batch width.
+    ///
+    /// Packet traversal (`Bvh::intersect_packet`) supports at most 16 lanes:
+    /// the per-lane active mask is a `u16` and `AabbPacked::hit` returns
+    /// `[u16; W]` bitmasks. Referencing this const forces the assertion to
+    /// be evaluated at compile time for every instantiated `B`.
+    const ASSERT_BATCH_WIDTH: () = assert!(
+        B <= 16,
+        "wavefront batch size must be <= 16 (packet traversal supports 1..=16 lanes)"
+    );
+
     pub fn new(samples_per_pixel: u32, integrator: I) -> Self {
+        // Force the compile-time width assertion for this B.
+        Self::ASSERT_BATCH_WIDTH;
         assert!(B > 0, "wavefront batch size must be greater than zero");
         Self {
             samples_per_pixel,

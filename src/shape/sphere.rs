@@ -80,6 +80,63 @@ impl SphereShape {
     }
 }
 
+impl SphereShape {
+    /// SIMD packet kernel: per-lane quadratic root selection and hit mask.
+    ///
+    /// For each lane this computes the sphere quadratic `a·t² − 2h·t + c = 0`, prefers
+    /// the near root `(h − √d)/a` and falls back to the far root `(h + √d)/a` exactly
+    /// like the scalar path (reject when `t ≤ min` or `t ≥ max`, i.e. a root must lie
+    /// strictly inside the interval). Returns the chosen root per lane and the hit mask;
+    /// lanes that miss are marked false with an unspecified root.
+    fn sphere_roots<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> ([f32; N], [bool; N]) {
+        use std::simd::StdFloat;
+        use std::simd::prelude::*;
+
+        // Per-lane sphere center at the ray's time. The center is a scalar
+        // ParametricCurve (N=1) broadcast across all lanes.
+        let time = Simd::from_array(ray.time);
+        let cx =
+            Simd::splat(self.center.origin[0][0]) + Simd::splat(self.center.velocity[0][0]) * time;
+        let cy =
+            Simd::splat(self.center.origin[1][0]) + Simd::splat(self.center.velocity[1][0]) * time;
+        let cz =
+            Simd::splat(self.center.origin[2][0]) + Simd::splat(self.center.velocity[2][0]) * time;
+
+        let ox = Simd::from_array(ray.origin[0]);
+        let oy = Simd::from_array(ray.origin[1]);
+        let oz = Simd::from_array(ray.origin[2]);
+        let dx = Simd::from_array(ray.direction[0]);
+        let dy = Simd::from_array(ray.direction[1]);
+        let dz = Simd::from_array(ray.direction[2]);
+        let tmin = Simd::from_array(ray_t.min());
+        let tmax = Simd::from_array(ray_t.max());
+
+        let ocx = cx - ox;
+        let ocy = cy - oy;
+        let ocz = cz - oz;
+        let a = dx * dx + dy * dy + dz * dz;
+        let h = dx * ocx + dy * ocy + dz * ocz;
+        let c = ocx * ocx + ocy * ocy + ocz * ocz - Simd::splat(self.radius * self.radius);
+        let disc = h * h - a * c;
+        let sqrtd = disc.sqrt();
+        let near = (h - sqrtd) / a;
+        let far = (h + sqrtd) / a;
+
+        // Roots must lie strictly inside the interval (min < t < max), matching the
+        // scalar reject-on-boundary behavior. The `disc >= 0` gate keeps degenerate
+        // (zero-length direction) lanes from producing NaN hits.
+        let near_valid = near.simd_gt(tmin) & near.simd_lt(tmax);
+        let far_valid = far.simd_gt(tmin) & far.simd_lt(tmax);
+        let hit = disc.simd_ge(Simd::splat(0.0)) & (near_valid | far_valid);
+        let root = near_valid.select(near, far);
+        (root.to_array(), hit.to_array())
+    }
+}
+
 impl UVDifferentiable for SphereShape {
     /// Returns (∂u/∂p, ∂v/∂p) where `p` is the **world-space** hit position.
     ///
@@ -116,6 +173,8 @@ impl Shape3D for SphereShape {
         ray: &RayPacked<N>,
         ray_t: Interval<N>,
     ) -> Option<Hit> {
+        // Scalar reference path (lane 0) — kept as the exact-behavior baseline that the
+        // packet kernel below is verified against.
         // Quadratic form with h = dot(d, oc). Near root first, far root fallback.
         let current_center = self.center.at(ray.time());
         let oc = current_center - ray.origin();
@@ -156,6 +215,55 @@ impl Shape3D for SphereShape {
         );
         hit.curvature = 1.0 / self.radius; // Igehy curvature term for ray differential propagation
         Some(hit)
+    }
+
+    fn intersect_shape_packed<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<Hit>; N] {
+        let (roots, hit) = self.sphere_roots(ray, ray_t);
+        let points: [Point3; N] = ray.at_packed(roots);
+        let centers: [Point3; N] = core::array::from_fn(|i| {
+            Point3::new(
+                self.center.origin[0][0] + self.center.velocity[0][0] * ray.time[i],
+                self.center.origin[1][0] + self.center.velocity[1][0] * ray.time[i],
+                self.center.origin[2][0] + self.center.velocity[2][0] * ray.time[i],
+            )
+        });
+        core::array::from_fn(|i| {
+            if !hit[i] {
+                return None;
+            }
+            let point = points[i];
+            // Normalize to guarantee a unit-length normal (same as the scalar path).
+            let outward_normal = (point - centers[i]).normalize();
+            let mapping_point = Point3(outward_normal.into_inner());
+            let (u, v) = Self::get_sphere_uv(&mapping_point);
+            let mut hit = Hit::new(
+                roots[i],
+                point,
+                mapping_point,
+                outward_normal,
+                Some((u, v)),
+                None,
+            );
+            hit.curvature = 1.0 / self.radius;
+            Some(hit)
+        })
+    }
+
+    fn occluded_shape<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> bool {
+        // Boolean-only: skip the UV/mapping/curvature work of the full hit.
+        self.sphere_roots(ray, ray_t).1[0]
+    }
+
+    fn occluded_shape_packed<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [bool; N] {
+        self.sphere_roots(ray, ray_t).1
     }
 }
 

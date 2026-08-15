@@ -310,3 +310,166 @@ fn widen_w2_is_identity() {
         );
     }
 }
+
+/// The scalar traversal (`intersect::<1>`, which dispatches to
+/// `intersect_scalar_traversal`) must produce identical results to the packet
+/// traversal (`intersect::<N>`) lane-by-lane, including closest-hit selection
+/// across overlapping primitives. Verified for both the binary (W=2) and
+/// widened (W=4) layouts.
+#[test]
+fn scalar_traversal_matches_packet_intersection() {
+    let make_sphere = |center, color| -> Primitive {
+        sphere(center, 0.5, Material::from(DiffuseReflector::new(color))).into()
+    };
+    // Two spheres overlap along -Z (z=-2 and z=-3): the closer one must win
+    // in both the scalar and packet paths.
+    let mut objects: Vec<Primitive> = vec![
+        make_sphere(Point3::new(0., 0., -3.), Color3::new(1., 0., 0.)),
+        make_sphere(Point3::new(0., 0., -2.), Color3::new(0., 1., 0.)),
+        make_sphere(Point3::new(2., 0., -3.), Color3::new(0., 0., 1.)),
+    ];
+    let binary = Bvh::<2, _>::from(TreeBuilder::new(&mut objects));
+    let wide: Bvh<4, Primitive> = Bvh::<2, Primitive>::from(TreeBuilder::new(&mut objects)).widen();
+
+    let rays: [RayPacked<1>; 4] = [
+        // Hits the closer overlapping sphere at z=-2.
+        Ray::new_with_time(Point3::ZERO, Direction3::new(0., 0., -1.).normalize(), 0.0),
+        Ray::new_with_time(Point3::ZERO, Direction3::new(-2., 0., -3.).normalize(), 0.0),
+        Ray::new_with_time(Point3::ZERO, Direction3::new(2., 0., -3.).normalize(), 0.0),
+        // Misses everything.
+        Ray::new_with_time(Point3::ZERO, Direction3::new(0., 10., 0.).normalize(), 0.0),
+    ];
+    let interval = Interval::from(0.001, f32::INFINITY);
+
+    // Run the same check for both the binary (W=2) and widened (W=4) BVHs.
+    // A macro is used because the two BVHs are distinct types.
+    macro_rules! check_scalar_vs_packet {
+        ($bvh:expr) => {{
+            let packet: RayPacked<4> = rays.into();
+            let packet_hits = $bvh.intersect(&packet, interval);
+            for (i, ray) in rays.iter().enumerate() {
+                // N=1 dispatch must take the dedicated scalar traversal.
+                let scalar = $bvh.intersect(ray, interval.lane(i))[0];
+                assert_eq!(scalar.is_some(), packet_hits[i].is_some(), "lane {i}");
+                if let (Some(s), Some(p)) = (scalar, packet_hits[i]) {
+                    assert!(
+                        (s.hit.time - p.hit.time).abs() < 1e-6,
+                        "lane {i}: scalar t={} packet t={}",
+                        s.hit.time,
+                        p.hit.time
+                    );
+                }
+            }
+        }};
+    }
+    check_scalar_vs_packet!(binary);
+    check_scalar_vs_packet!(wide);
+}
+
+/// `occluded_scalar` must agree with the packet `occluded::<N>` lane-by-lane
+/// for both the binary and widened BVH layouts.
+#[test]
+fn scalar_occlusion_matches_packet_occlusion() {
+    let make_sphere = |center, color| -> Primitive {
+        sphere(center, 0.5, Material::from(DiffuseReflector::new(color))).into()
+    };
+    let mut objects: Vec<Primitive> = vec![
+        make_sphere(Point3::new(-2., 0., -3.), Color3::new(1., 0., 0.)),
+        make_sphere(Point3::new(0., 0., -3.), Color3::new(0., 1., 0.)),
+        make_sphere(Point3::new(2., 0., -3.), Color3::new(0., 0., 1.)),
+    ];
+    let binary = Bvh::<2, _>::from(TreeBuilder::new(&mut objects));
+    let wide: Bvh<4, Primitive> = Bvh::<2, Primitive>::from(TreeBuilder::new(&mut objects)).widen();
+
+    let rays: [RayPacked<1>; 4] = [
+        Ray::new_with_time(Point3::ZERO, Direction3::new(-2., 0., -3.).normalize(), 0.0),
+        Ray::new_with_time(Point3::ZERO, Direction3::new(0., 0., -3.).normalize(), 0.0),
+        Ray::new_with_time(Point3::ZERO, Direction3::new(2., 0., -3.).normalize(), 0.0),
+        Ray::new_with_time(Point3::ZERO, Direction3::new(0., 10., 0.).normalize(), 0.0),
+    ];
+    let interval = Interval::from(0.001, f32::INFINITY);
+
+    macro_rules! check_scalar_vs_packet_occ {
+        ($bvh:expr) => {{
+            let packet: RayPacked<4> = rays.into();
+            let packet_occ = $bvh.occluded(&packet, interval);
+            for (i, ray) in rays.iter().enumerate() {
+                let scalar_occ = $bvh.occluded_scalar(ray, interval.lane(i));
+                assert_eq!(scalar_occ, packet_occ[i], "lane {i}");
+            }
+        }};
+    }
+    check_scalar_vs_packet_occ!(binary);
+    check_scalar_vs_packet_occ!(wide);
+}
+
+/// `Vec<T>::intersect_scalar` must tighten the search interval as it finds
+/// closer hits, returning the closest hit among overlapping primitives — and
+/// must agree with the packet `Vec<T>::intersect` lane-by-lane.
+#[test]
+fn vec_intersect_scalar_tightens_interval() {
+    let make_sphere = |center, color| -> Primitive {
+        sphere(center, 0.5, Material::from(DiffuseReflector::new(color))).into()
+    };
+    // Two overlapping spheres along -Z: the closer one (z=-2) must win.
+    let objects: Vec<Primitive> = vec![
+        make_sphere(Point3::new(0., 0., -3.), Color3::new(1., 0., 0.)),
+        make_sphere(Point3::new(0., 0., -2.), Color3::new(0., 1., 0.)),
+    ];
+
+    let ray = Ray::new_with_time(Point3::ZERO, Direction3::NEG_Z, 0.0);
+
+    // Closest hit is the sphere at z=-2 (t = 2 - 0.5 = 1.5).
+    let scalar_hit = objects
+        .intersect_scalar(&ray, Interval::from(0.001, f32::INFINITY))
+        .expect("closer sphere should be hit");
+    assert!(
+        (scalar_hit.hit.time - 1.5).abs() < 1e-4,
+        "expected t≈1.5, got {}",
+        scalar_hit.hit.time
+    );
+
+    // The packet path must agree.
+    let packet: RayPacked<2> = [ray, Ray::new_with_time(Point3::ZERO, Direction3::X, 0.0)].into();
+    let packet_hits = objects.intersect(&packet, Interval::from(0.001, f32::INFINITY));
+    let packet_hit = packet_hits[0].expect("closer sphere should be hit");
+    assert!((packet_hit.hit.time - scalar_hit.hit.time).abs() < 1e-6);
+    assert!(packet_hits[1].is_none());
+}
+
+/// The packet traversal supports up to 16 lanes (the per-lane active mask is
+/// a `u16`); the widest supported packet must still match the scalar
+/// traversal lane-by-lane.
+#[test]
+fn packet_width_16_matches_scalar() {
+    let make_sphere = |center, color| -> Primitive {
+        sphere(center, 0.5, Material::from(DiffuseReflector::new(color))).into()
+    };
+    let mut objects: Vec<Primitive> = vec![
+        make_sphere(Point3::new(-2., 0., -3.), Color3::new(1., 0., 0.)),
+        make_sphere(Point3::new(0., 0., -3.), Color3::new(0., 1., 0.)),
+        make_sphere(Point3::new(2., 0., -3.), Color3::new(0., 0., 1.)),
+    ];
+    let bvh = Bvh::<2, _>::from(TreeBuilder::new(&mut objects));
+
+    let rays: [RayPacked<1>; 16] = core::array::from_fn(|i| {
+        let f = i as f32;
+        let dir = match i % 3 {
+            0 => Direction3::new(-2., 0., -3.).normalize(),
+            1 => Direction3::new(0., 0., -3.).normalize(),
+            _ => Direction3::new(2., 0., -3.).normalize(),
+        };
+        Ray::new_with_time(Point3::new(f * 0.01, 0., 0.), dir, 0.0)
+    });
+    let interval = Interval::from(0.001, f32::INFINITY);
+    let packet: RayPacked<16> = rays.into();
+    let packet_hits = bvh.intersect(&packet, interval);
+
+    for (i, ray) in rays.iter().enumerate() {
+        let scalar = bvh.intersect(ray, interval.lane(i))[0];
+        assert_eq!(scalar.is_some(), packet_hits[i].is_some(), "lane {i}");
+        if let (Some(s), Some(p)) = (scalar, packet_hits[i]) {
+            assert!((s.hit.time - p.hit.time).abs() < 1e-6, "lane {i}");
+        }
+    }
+}

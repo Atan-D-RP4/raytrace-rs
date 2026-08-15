@@ -36,6 +36,19 @@ pub struct BoxShape {
     dz: f32,
 }
 
+/// Per-lane Kay–Kajiya slab results: the chosen hit time, the entry time, the
+/// per-axis near times (needed to determine which face was hit), and the hit mask.
+struct SlabResult<const N: usize> {
+    /// Chosen hit time per lane (entry time when the ray starts outside, exit time when inside).
+    t: [f32; N],
+    /// The slab entry time `t_enter` per lane.
+    t_enter: [f32; N],
+    /// The per-axis near times `t_near` per lane (axis-major: `[axis][lane]`).
+    t_near: [[f32; N]; 3],
+    /// Hit mask per lane.
+    hit: [bool; N],
+}
+
 impl BoxShape {
     /// Creates an axis-aligned box from two corner points.
     /// The corners are sorted internally so `min` ≤ `max` on every axis.
@@ -65,6 +78,66 @@ impl BoxShape {
             dx,
             dy,
             dz,
+        }
+    }
+
+    /// SIMD packet slab test: per-lane entry/exit times and hit mask.
+    ///
+    /// Replicates the scalar accept logic exactly, including its NaN behavior:
+    /// the reject conditions are expressed with negated comparisons so that a NaN
+    /// `t_enter` (ray origin exactly on a face with a zero direction component)
+    /// falls through to the exit-time fallback instead of being spuriously rejected.
+    fn slab_hits<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> SlabResult<N> {
+        use std::simd::prelude::*;
+
+        let ox = Simd::from_array(ray.origin[0]);
+        let oy = Simd::from_array(ray.origin[1]);
+        let oz = Simd::from_array(ray.origin[2]);
+        let idx = Simd::from_array(ray.inverse_direction[0]);
+        let idy = Simd::from_array(ray.inverse_direction[1]);
+        let idz = Simd::from_array(ray.inverse_direction[2]);
+        let tmin = Simd::from_array(ray_t.min());
+        let tmax = Simd::from_array(ray_t.max());
+
+        let minx = Simd::splat(self.min.x());
+        let maxx = Simd::splat(self.max.x());
+        let miny = Simd::splat(self.min.y());
+        let maxy = Simd::splat(self.max.y());
+        let minz = Simd::splat(self.min.z());
+        let maxz = Simd::splat(self.max.z());
+
+        // Slab intersection for each axis (simd_min/max are NaN-ignoring, matching
+        // the scalar f32::min/f32::max used by the reference path).
+        let t1x = (minx - ox) * idx;
+        let t2x = (maxx - ox) * idx;
+        let tnx = t1x.simd_min(t2x);
+        let tfx = t1x.simd_max(t2x);
+        let t1y = (miny - oy) * idy;
+        let t2y = (maxy - oy) * idy;
+        let tny = t1y.simd_min(t2y);
+        let tfy = t1y.simd_max(t2y);
+        let t1z = (minz - oz) * idz;
+        let t2z = (maxz - oz) * idz;
+        let tnz = t1z.simd_min(t2z);
+        let tfz = t1z.simd_max(t2z);
+
+        let t_enter = tnx.simd_max(tny).simd_max(tnz);
+        let t_exit = tfx.simd_min(tfy).simd_min(tfz);
+
+        // Scalar: reject if `t_enter >= t_exit || t_exit <= min || t_enter >= max`.
+        // Negated form keeps NaN lanes from being rejected (matches the reference).
+        let step1 = !(t_enter.simd_ge(t_exit)) & !(t_exit.simd_le(tmin)) & !(t_enter.simd_ge(tmax));
+        // Scalar: `t = if t_enter > min { t_enter } else { t_exit }`.
+        let t = (t_enter.simd_gt(tmin)).select(t_enter, t_exit);
+        // Scalar: reject if `t <= min || t >= max`.
+        let step3 = !(t.simd_le(tmin)) & !(t.simd_ge(tmax));
+        let hit = step1 & step3;
+
+        SlabResult {
+            t: t.to_array(),
+            t_enter: t_enter.to_array(),
+            t_near: [tnx.to_array(), tny.to_array(), tnz.to_array()],
+            hit: hit.to_array(),
         }
     }
 
@@ -181,6 +254,8 @@ impl Shape3D for BoxShape {
         ray: &RayPacked<N>,
         ray_t: Interval<N>,
     ) -> Option<Hit> {
+        // Scalar reference path (lane 0) — kept as the exact-behavior baseline that the
+        // packet kernel below is verified against.
         let (face, t, a, b) = self.intersect_faces(ray, ray_t)?;
         let point = ray.at(t);
 
@@ -197,6 +272,76 @@ impl Shape3D for BoxShape {
 
         let hit = Hit::new(t, point, point, normal, Some((a, b)), None);
         Some(hit)
+    }
+
+    fn intersect_shape_packed<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<Hit>; N] {
+        let slab = self.slab_hits(ray, ray_t);
+        let points: [Point3; N] = ray.at_packed(slab.t);
+        core::array::from_fn(|i| {
+            if !slab.hit[i] {
+                return None;
+            }
+            let point = points[i];
+            let t_enter = slab.t_enter[i];
+            let is_entry = slab.t[i] == t_enter;
+
+            // Entry face mapping (Kay–Kajiya), mirroring intersect_faces:
+            //   dir.x > 0 → entry at min.x → -X face (1); dir.x < 0 → +X face (0).
+            // Same pattern for Y and Z. XOR 1 flips entry→exit face for inside-box rays.
+            let inv_d = [
+                ray.inverse_direction[0][i],
+                ray.inverse_direction[1][i],
+                ray.inverse_direction[2][i],
+            ];
+            let (enter, a, b) = if t_enter == slab.t_near[0][i] {
+                let a = (point.y() - self.min.y()) / self.dy;
+                let b = (point.z() - self.min.z()) / self.dz;
+                (if inv_d[0] > 0.0 { 1 } else { 0 }, a, b)
+            } else if t_enter == slab.t_near[1][i] {
+                let a = (point.x() - self.min.x()) / self.dx;
+                let b = (point.z() - self.min.z()) / self.dz;
+                (if inv_d[1] > 0.0 { 3 } else { 2 }, a, b)
+            } else {
+                let a = (point.x() - self.min.x()) / self.dx;
+                let b = (point.y() - self.min.y()) / self.dy;
+                (if inv_d[2] > 0.0 { 5 } else { 4 }, a, b)
+            };
+            let face = if is_entry { enter } else { enter ^ 1 };
+
+            let normal = match face {
+                0 => Direction3::X,
+                1 => Direction3::NEG_X,
+                2 => Direction3::Y,
+                3 => Direction3::NEG_Y,
+                4 => Direction3::Z,
+                _ => Direction3::NEG_Z,
+            };
+            Some(Hit::new(
+                slab.t[i],
+                point,
+                point,
+                normal,
+                Some((a, b)),
+                None,
+            ))
+        })
+    }
+
+    fn occluded_shape<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> bool {
+        // Boolean-only: slab test, no face/UV work.
+        self.slab_hits(ray, ray_t).hit[0]
+    }
+
+    fn occluded_shape_packed<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [bool; N] {
+        self.slab_hits(ray, ray_t).hit
     }
 }
 

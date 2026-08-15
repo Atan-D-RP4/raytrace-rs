@@ -237,6 +237,40 @@ impl PlanarShape {
         Self::from_region(corner, side_a, side_b, Region::Function(region))
     }
 
+    /// SIMD packet kernel: per-lane plane intersection + interval test.
+    ///
+    /// For each lane computes the plane parameter `t = (d − n·o)/(n·dir)`, rejects
+    /// rays nearly parallel to the plane (`|n·dir| < 1e-8`) and requires
+    /// `min ≤ t ≤ max` (inclusive — matching the scalar `Interval::contains_value`).
+    /// Returns the per-lane `t` and the hit mask; lanes that miss are marked false
+    /// with an unspecified `t`.
+    fn plane_hits<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> ([f32; N], [bool; N]) {
+        use std::simd::prelude::*;
+
+        let nx = Simd::splat(self.normal.x);
+        let ny = Simd::splat(self.normal.y);
+        let nz = Simd::splat(self.normal.z);
+        let ox = Simd::from_array(ray.origin[0]);
+        let oy = Simd::from_array(ray.origin[1]);
+        let oz = Simd::from_array(ray.origin[2]);
+        let dx = Simd::from_array(ray.direction[0]);
+        let dy = Simd::from_array(ray.direction[1]);
+        let dz = Simd::from_array(ray.direction[2]);
+        let tmin = Simd::from_array(ray_t.min());
+        let tmax = Simd::from_array(ray_t.max());
+
+        let denom = nx * dx + ny * dy + nz * dz;
+        let parallel = denom.abs().simd_lt(Simd::splat(1e-8));
+        let t = (Simd::splat(self.d) - (nx * ox + ny * oy + nz * oz)) / denom;
+        let in_interval = t.simd_ge(tmin) & t.simd_le(tmax);
+        let hit = !parallel & in_interval;
+        (t.to_array(), hit.to_array())
+    }
+
     /// Returns the intersection of the ray with the plane of the patch, if there is any, alongside
     /// the (a, b) coordinates in parametric space.
     fn hit_plane<const N: usize>(
@@ -297,6 +331,8 @@ impl Shape3D for PlanarShape {
         ray: &RayPacked<N>,
         ray_t: Interval<N>,
     ) -> Option<Hit> {
+        // Scalar reference path (lane 0) — kept as the exact-behavior baseline that the
+        // packet kernel below is verified against.
         let planar_hit = self.hit_plane(ray, ray_t)?;
 
         if !self.region.contains(planar_hit.a, planar_hit.b) {
@@ -313,6 +349,67 @@ impl Shape3D for PlanarShape {
             Some(uv),
             None,
         ))
+    }
+
+    fn intersect_shape_packed<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [Option<Hit>; N] {
+        let (ts, hit) = self.plane_hits(ray, ray_t);
+        let points: [Point3; N] = ray.at_packed(ts);
+        core::array::from_fn(|i| {
+            if !hit[i] {
+                return None;
+            }
+            let point = points[i];
+            let offset = point - self.corner;
+            let a = self.w.dot(offset.cross(self.side_b).into_inner());
+            let b = self.w.dot(self.side_a.cross(offset.into_inner()));
+            if !self.region.contains(a, b) {
+                return None;
+            }
+            let uv = self.region.uv(a, b);
+            Some(Hit::new(
+                ts[i],
+                point,
+                point,
+                Direction3(self.normal),
+                Some(uv),
+                None,
+            ))
+        })
+    }
+
+    fn occluded_shape<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> bool {
+        // Boolean-only: plane test + region containment, no UV computation.
+        let (ts, hit) = self.plane_hits(ray, ray_t);
+        if !hit[0] {
+            return false;
+        }
+        let point = ray.at(ts[0]);
+        let offset = point - self.corner;
+        let a = self.w.dot(offset.cross(self.side_b).into_inner());
+        let b = self.w.dot(self.side_a.cross(offset.into_inner()));
+        self.region.contains(a, b)
+    }
+
+    fn occluded_shape_packed<const N: usize>(
+        &self,
+        ray: &RayPacked<N>,
+        ray_t: Interval<N>,
+    ) -> [bool; N] {
+        let (ts, hit) = self.plane_hits(ray, ray_t);
+        let points: [Point3; N] = ray.at_packed(ts);
+        core::array::from_fn(|i| {
+            if !hit[i] {
+                return false;
+            }
+            let offset = points[i] - self.corner;
+            let a = self.w.dot(offset.cross(self.side_b).into_inner());
+            let b = self.w.dot(self.side_a.cross(offset.into_inner()));
+            self.region.contains(a, b)
+        })
     }
 }
 

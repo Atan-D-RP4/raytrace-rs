@@ -1,3 +1,6 @@
+use std::simd::num::SimdFloat;
+use std::simd::prelude::*;
+
 use glam::{Affine3A, Mat3A, Quat, Vec3, Vec3A};
 
 use crate::bvh::aabb::Aabb;
@@ -6,7 +9,9 @@ use crate::intersect::{Bounded, Intersectable};
 use crate::light::{LightSample, Sampleable};
 use crate::math::interval::Interval;
 use crate::math::vec3::{Direction3, Point3};
-use crate::ray::{Ray, RayDifferentials, RayPacked};
+#[cfg(test)]
+use crate::ray::{Ray, RayDifferentials};
+use crate::ray::{RayDifferentialsPacked, RayPacked};
 
 /// A spatial transform that can be applied to intersectable objects.
 /// Implementations may be static (one matrix) or animated (interpolated over time).
@@ -50,6 +55,170 @@ pub trait Transform: Send + Sync + Clone + 'static {
         let dy_transformed = self.transform_normal(dy, time);
         (dx_transformed, dy_transformed)
     }
+}
+
+// ── SoA affine kernels ──────────────────────────────────────────────────────
+// The static path applies one lane-invariant matrix to all N lanes with
+// `std::simd` registers; the animated path falls back to a per-lane scalar
+// loop (per-lane matrices prevent splatting). Both use the same left-
+// associative op order as glam's `mul_vec3a` (+ translation), so the results
+// are bit-exact with the scalar reference.
+
+/// out[a] = ((m[0][a]·x + m[1][a]·y) + m[2][a]·z) + t[a], all lanes.
+#[inline]
+fn affine_point_axes<const N: usize>(
+    m: &Mat3A,
+    x: Simd<f32, N>,
+    y: Simd<f32, N>,
+    z: Simd<f32, N>,
+    t: [f32; 3],
+) -> [Simd<f32, N>; 3] {
+    [
+        Simd::splat(m.col(0)[0]) * x
+            + Simd::splat(m.col(1)[0]) * y
+            + Simd::splat(m.col(2)[0]) * z
+            + Simd::splat(t[0]),
+        Simd::splat(m.col(0)[1]) * x
+            + Simd::splat(m.col(1)[1]) * y
+            + Simd::splat(m.col(2)[1]) * z
+            + Simd::splat(t[1]),
+        Simd::splat(m.col(0)[2]) * x
+            + Simd::splat(m.col(1)[2]) * y
+            + Simd::splat(m.col(2)[2]) * z
+            + Simd::splat(t[2]),
+    ]
+}
+
+/// out[a] = ((m[0][a]·x + m[1][a]·y) + m[2][a]·z), all lanes (no translation).
+#[inline]
+fn affine_vector_axes<const N: usize>(
+    m: &Mat3A,
+    x: Simd<f32, N>,
+    y: Simd<f32, N>,
+    z: Simd<f32, N>,
+) -> [Simd<f32, N>; 3] {
+    [
+        Simd::splat(m.col(0)[0]) * x + Simd::splat(m.col(1)[0]) * y + Simd::splat(m.col(2)[0]) * z,
+        Simd::splat(m.col(0)[1]) * x + Simd::splat(m.col(1)[1]) * y + Simd::splat(m.col(2)[1]) * z,
+        Simd::splat(m.col(0)[2]) * x + Simd::splat(m.col(1)[2]) * y + Simd::splat(m.col(2)[2]) * z,
+    ]
+}
+
+/// out[a] = ((m[0][a]·v[0] + m[1][a]·v[1]) + m[2][a]·v[2]) + t[a], lane `i`.
+#[inline]
+fn affine_point_lane(m: &Mat3A, v: [f32; 3], t: [f32; 3]) -> [f32; 3] {
+    [
+        m.col(0)[0] * v[0] + m.col(1)[0] * v[1] + m.col(2)[0] * v[2] + t[0],
+        m.col(0)[1] * v[0] + m.col(1)[1] * v[1] + m.col(2)[1] * v[2] + t[1],
+        m.col(0)[2] * v[0] + m.col(1)[2] * v[1] + m.col(2)[2] * v[2] + t[2],
+    ]
+}
+
+/// out[a] = ((m[0][a]·v[0] + m[1][a]·v[1]) + m[2][a]·v[2]), lane `i` (no translation).
+#[inline]
+fn affine_vector_lane(m: &Mat3A, v: [f32; 3]) -> [f32; 3] {
+    [
+        m.col(0)[0] * v[0] + m.col(1)[0] * v[1] + m.col(2)[0] * v[2],
+        m.col(0)[1] * v[0] + m.col(1)[1] * v[1] + m.col(2)[1] * v[2],
+        m.col(0)[2] * v[0] + m.col(1)[2] * v[1] + m.col(2)[2] * v[2],
+    ]
+}
+
+/// Transform lane `i` of a packed ray with the world → object affine `inv`,
+/// writing origin, direction, and inverse direction directly into the packed
+/// output arrays (no gather/scatter round-trip through `RayPacked<1>`).
+#[inline]
+fn transform_ray_lane<const N: usize>(
+    inv: &Affine3A,
+    i: usize,
+    src: &RayPacked<N>,
+    origin: &mut [[f32; N]; 3],
+    direction: &mut [[f32; N]; 3],
+    inverse_direction: &mut [[f32; N]; 3],
+) {
+    let m = inv.matrix3;
+    let t = [inv.translation.x, inv.translation.y, inv.translation.z];
+    let o = affine_point_lane(
+        &m,
+        [src.origin[0][i], src.origin[1][i], src.origin[2][i]],
+        t,
+    );
+    let d = affine_vector_lane(
+        &m,
+        [
+            src.direction[0][i],
+            src.direction[1][i],
+            src.direction[2][i],
+        ],
+    );
+    origin[0][i] = o[0];
+    origin[1][i] = o[1];
+    origin[2][i] = o[2];
+    direction[0][i] = d[0];
+    direction[1][i] = d[1];
+    direction[2][i] = d[2];
+    inverse_direction[0][i] = d[0].recip();
+    inverse_direction[1][i] = d[1].recip();
+    inverse_direction[2][i] = d[2].recip();
+}
+
+/// Transform lane `i` of packed ray differentials with the world → object
+/// affine `inv`, writing into `out`.
+#[inline]
+fn transform_differentials_lane<const N: usize>(
+    inv: &Affine3A,
+    i: usize,
+    src: &RayDifferentialsPacked<N>,
+    out: &mut RayDifferentialsPacked<N>,
+) {
+    let m = inv.matrix3;
+    let t = [inv.translation.x, inv.translation.y, inv.translation.z];
+    let rx_o = affine_point_lane(
+        &m,
+        [
+            src.rx_origin[0][i],
+            src.rx_origin[1][i],
+            src.rx_origin[2][i],
+        ],
+        t,
+    );
+    let ry_o = affine_point_lane(
+        &m,
+        [
+            src.ry_origin[0][i],
+            src.ry_origin[1][i],
+            src.ry_origin[2][i],
+        ],
+        t,
+    );
+    let rx_d = affine_vector_lane(
+        &m,
+        [
+            src.rx_direction[0][i],
+            src.rx_direction[1][i],
+            src.rx_direction[2][i],
+        ],
+    );
+    let ry_d = affine_vector_lane(
+        &m,
+        [
+            src.ry_direction[0][i],
+            src.ry_direction[1][i],
+            src.ry_direction[2][i],
+        ],
+    );
+    out.rx_origin[0][i] = rx_o[0];
+    out.rx_origin[1][i] = rx_o[1];
+    out.rx_origin[2][i] = rx_o[2];
+    out.ry_origin[0][i] = ry_o[0];
+    out.ry_origin[1][i] = ry_o[1];
+    out.ry_origin[2][i] = ry_o[2];
+    out.rx_direction[0][i] = rx_d[0];
+    out.rx_direction[1][i] = rx_d[1];
+    out.rx_direction[2][i] = rx_d[2];
+    out.ry_direction[0][i] = ry_d[0];
+    out.ry_direction[1][i] = ry_d[1];
+    out.ry_direction[2][i] = ry_d[2];
 }
 
 /// A non-animated transform. Precomputes the inverse matrix at construction.
@@ -107,7 +276,9 @@ impl StaticTransform {
         Self::from_affine3a(parent * child)
     }
 
-    /// Scalar world → object ray transform (lane-0 body).
+    /// Scalar world → object ray transform (lane-0 body). Kept as the scalar
+    /// reference for the packet tests; the SIMD `ray` path is bit-exact with it.
+    #[cfg(test)]
     fn ray_scalar(&self, ray: &Ray) -> Ray {
         // World → object: apply inverse
         let origin = Point3(
@@ -160,11 +331,101 @@ impl Transform for StaticTransform {
         false
     }
 
+    #[inline]
     fn ray<const N: usize>(&self, ray: &RayPacked<N>) -> RayPacked<N> {
-        // Scatter to scalar lanes, transform each, gather back.
-        let lanes: [RayPacked<1>; N] = (*ray).into();
-        let transformed: [RayPacked<1>; N] = lanes.map(|lane| self.ray_scalar(&lane));
-        transformed.into()
+        // World → object: apply the precomputed inverse affine directly on the
+        // SoA axes. The matrix is lane-invariant, so each output axis is a
+        // splat-mul-add over the three input axis registers (same left-
+        // associative op order as glam's `mul_vec3a` + translation, so the
+        // results are bit-exact with the scalar reference).
+        let m = self.inverse.matrix3;
+        let t = self.inverse.translation;
+
+        let ox = Simd::from_array(ray.origin[0]);
+        let oy = Simd::from_array(ray.origin[1]);
+        let oz = Simd::from_array(ray.origin[2]);
+        let dx = Simd::from_array(ray.direction[0]);
+        let dy = Simd::from_array(ray.direction[1]);
+        let dz = Simd::from_array(ray.direction[2]);
+
+        let origin = affine_point_axes(&m, ox, oy, oz, [t.x, t.y, t.z]);
+        let direction = affine_vector_axes(&m, dx, dy, dz);
+
+        // Recompute the inverse direction once, from the transformed direction.
+        let inverse_direction = [
+            direction[0].recip().to_array(),
+            direction[1].recip().to_array(),
+            direction[2].recip().to_array(),
+        ];
+
+        // Differentials are all-or-nothing per pack: transform every field when
+        // present, keep `None` otherwise.
+        let differentials = ray.differentials.map(|rd| {
+            let rx_origin = affine_point_axes(
+                &m,
+                Simd::from_array(rd.rx_origin[0]),
+                Simd::from_array(rd.rx_origin[1]),
+                Simd::from_array(rd.rx_origin[2]),
+                [t.x, t.y, t.z],
+            );
+            let ry_origin = affine_point_axes(
+                &m,
+                Simd::from_array(rd.ry_origin[0]),
+                Simd::from_array(rd.ry_origin[1]),
+                Simd::from_array(rd.ry_origin[2]),
+                [t.x, t.y, t.z],
+            );
+            let rx_direction = affine_vector_axes(
+                &m,
+                Simd::from_array(rd.rx_direction[0]),
+                Simd::from_array(rd.rx_direction[1]),
+                Simd::from_array(rd.rx_direction[2]),
+            );
+            let ry_direction = affine_vector_axes(
+                &m,
+                Simd::from_array(rd.ry_direction[0]),
+                Simd::from_array(rd.ry_direction[1]),
+                Simd::from_array(rd.ry_direction[2]),
+            );
+            RayDifferentialsPacked {
+                rx_origin: [
+                    rx_origin[0].to_array(),
+                    rx_origin[1].to_array(),
+                    rx_origin[2].to_array(),
+                ],
+                ry_origin: [
+                    ry_origin[0].to_array(),
+                    ry_origin[1].to_array(),
+                    ry_origin[2].to_array(),
+                ],
+                rx_direction: [
+                    rx_direction[0].to_array(),
+                    rx_direction[1].to_array(),
+                    rx_direction[2].to_array(),
+                ],
+                ry_direction: [
+                    ry_direction[0].to_array(),
+                    ry_direction[1].to_array(),
+                    ry_direction[2].to_array(),
+                ],
+            }
+        });
+
+        RayPacked {
+            origin: [
+                origin[0].to_array(),
+                origin[1].to_array(),
+                origin[2].to_array(),
+            ],
+            direction: [
+                direction[0].to_array(),
+                direction[1].to_array(),
+                direction[2].to_array(),
+            ],
+            time: ray.time,
+            inverse_direction,
+            differentials,
+        }
     }
 
     fn hit(&self, hit: &mut Hit) {
@@ -300,7 +561,10 @@ impl AnimatedTransform {
         }
     }
 
-    /// Scalar world → object ray transform (lane-0 body).
+    /// Scalar world → object ray transform (lane-0 body). Kept as the scalar
+    /// reference for the packet tests; the animated `ray` path is bit-exact
+    /// with it.
+    #[cfg(test)]
     fn ray_scalar(&self, ray: &Ray) -> Ray {
         let inv = self.eval(ray.time()).inverse();
         let origin = Point3(
@@ -358,11 +622,50 @@ impl Transform for AnimatedTransform {
 
     /// Transform a ray from world space to object space using the inverse of the transform at
     /// `ray.time`.
+    #[inline]
     fn ray<const N: usize>(&self, ray: &RayPacked<N>) -> RayPacked<N> {
-        // Scatter to scalar lanes, transform each, gather back.
-        let lanes: [RayPacked<1>; N] = (*ray).into();
-        let transformed: [RayPacked<1>; N] = lanes.map(|lane| self.ray_scalar(&lane));
-        transformed.into()
+        // Per-lane inverse transforms: lane times differ and the SLERP
+        // recomposition can't be vectorized, so evaluate one inverse per lane
+        // (once, reused for the differentials), then apply each directly to the
+        // packed arrays — no gather/scatter round-trip through `RayPacked<1>`.
+        let invs: [Affine3A; N] = core::array::from_fn(|i| self.eval(ray.time[i]).inverse());
+
+        let mut origin = [[0.0; N]; 3];
+        let mut direction = [[0.0; N]; 3];
+        let mut inverse_direction = [[0.0; N]; 3];
+        for i in 0..N {
+            transform_ray_lane(
+                &invs[i],
+                i,
+                ray,
+                &mut origin,
+                &mut direction,
+                &mut inverse_direction,
+            );
+        }
+
+        // Differentials are all-or-nothing per pack: transform every field when
+        // present, keep `None` otherwise.
+        let differentials = ray.differentials.map(|rd| {
+            let mut out = RayDifferentialsPacked {
+                rx_origin: [[0.0; N]; 3],
+                ry_origin: [[0.0; N]; 3],
+                rx_direction: [[0.0; N]; 3],
+                ry_direction: [[0.0; N]; 3],
+            };
+            for i in 0..N {
+                transform_differentials_lane(&invs[i], i, &rd, &mut out);
+            }
+            out
+        });
+
+        RayPacked {
+            origin,
+            direction,
+            time: ray.time,
+            inverse_direction,
+            differentials,
+        }
     }
 
     /// Transform a Hit from object space to world space (point, normals, mapping_point).
@@ -659,6 +962,184 @@ impl<O: Sampleable + Intersectable, T: Transform> Sampleable for TransformObject
             distance: world_dir.length(),
             pdf: local_sample.pdf, // Area PDF is invariant under rigid transforms
             emission: local_sample.emission,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A ray with differentials, varying per lane.
+    fn test_ray_at(i: usize, time: f32) -> RayPacked<1> {
+        let f = i as f32;
+        RayPacked::new_with_differentials(
+            Point3::new(1.0 + f, 2.0, 3.0),
+            Direction3(Vec3::new(0.1 + f * 0.1, 0.2, 0.3).normalize()),
+            time,
+            Some(RayDifferentialsPacked::new(
+                Point3::new(1.1 + f, 2.1, 3.1),
+                Point3::new(1.2 + f, 2.2, 3.2),
+                Direction3(Vec3::new(0.4, 0.5, 0.6).normalize()),
+                Direction3(Vec3::new(0.7, 0.8, 0.9).normalize()),
+            )),
+        )
+    }
+
+    fn test_ray(i: usize) -> RayPacked<1> {
+        test_ray_at(i, 0.5 + i as f32)
+    }
+
+    /// Bit-exact comparison of every ray field, including differentials.
+    fn assert_ray_eq(a: &RayPacked<1>, b: &RayPacked<1>) {
+        assert_eq!(a.origin(), b.origin());
+        assert_eq!(a.direction(), b.direction());
+        assert_eq!(a.time(), b.time());
+        assert_eq!(a.inverse_direction(), b.inverse_direction());
+        match (a.differentials, b.differentials) {
+            (Some(ad), Some(bd)) => {
+                assert_eq!(ad.rx_origin(), bd.rx_origin());
+                assert_eq!(ad.ry_origin(), bd.ry_origin());
+                assert_eq!(ad.rx_direction(), bd.rx_direction());
+                assert_eq!(ad.ry_direction(), bd.ry_direction());
+            }
+            (None, None) => {}
+            _ => panic!("differential presence mismatch"),
+        }
+    }
+
+    fn static_xform() -> StaticTransform {
+        StaticTransform::from_affine3a(
+            Affine3A::from_rotation_y(0.7)
+                * Affine3A::from_scale(Vec3::new(1.5, 0.5, 2.0))
+                * Affine3A::from_translation(Vec3::new(1.0, -2.0, 3.0)),
+        )
+    }
+
+    fn animated_xform() -> AnimatedTransform {
+        AnimatedTransform::new(
+            Affine3A::from_rotation_y(0.3) * Affine3A::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+            Affine3A::from_rotation_y(1.2)
+                * Affine3A::from_scale(Vec3::new(2.0, 2.0, 2.0))
+                * Affine3A::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+        )
+    }
+
+    /// Every lane of a statically-transformed packet must match the scalar
+    /// transform bit-for-bit, including differentials and inverse directions.
+    #[test]
+    fn static_ray_packet_matches_scalar() {
+        let xform = static_xform();
+        let rays: [RayPacked<1>; 4] = core::array::from_fn(test_ray);
+        let packed: RayPacked<4> = rays.into();
+        let transformed = xform.ray(&packed);
+        let lanes: [RayPacked<1>; 4] = transformed.into();
+        for (i, lane) in lanes.iter().enumerate() {
+            assert_ray_eq(lane, &xform.ray_scalar(&rays[i]));
+        }
+    }
+
+    /// A differential-less pack must stay `None` through the static transform.
+    #[test]
+    fn static_ray_packet_without_differentials_stays_none() {
+        let xform = static_xform();
+        let rays: [RayPacked<1>; 4] = core::array::from_fn(|i| {
+            RayPacked::new_with_time(
+                Point3::new(1.0 + i as f32, 2.0, 3.0),
+                Direction3(Vec3::new(0.1, 0.2, 0.3).normalize()),
+                0.25 * i as f32,
+            )
+        });
+        let packed: RayPacked<4> = rays.into();
+        assert!(packed.differentials.is_none());
+        let transformed = xform.ray(&packed);
+        assert!(transformed.differentials.is_none());
+        let lanes: [RayPacked<1>; 4] = transformed.into();
+        for (i, lane) in lanes.iter().enumerate() {
+            assert_ray_eq(lane, &xform.ray_scalar(&rays[i]));
+        }
+    }
+
+    /// N=1 (the scalar alias) must go through the same SIMD path and match the
+    /// scalar reference.
+    #[test]
+    fn static_ray_n1_matches_scalar() {
+        let xform = static_xform();
+        let ray = test_ray(2);
+        assert_ray_eq(&xform.ray(&ray), &xform.ray_scalar(&ray));
+    }
+
+    /// Non-power-of-two lane counts (e.g. the tail chunk of a wavefront batch)
+    /// must go through the same SIMD path.
+    #[test]
+    fn static_ray_packet_n3_matches_scalar() {
+        let xform = static_xform();
+        let rays: [RayPacked<1>; 3] = core::array::from_fn(test_ray);
+        let packed: RayPacked<3> = rays.into();
+        let transformed = xform.ray(&packed);
+        let lanes: [RayPacked<1>; 3] = transformed.into();
+        for (i, lane) in lanes.iter().enumerate() {
+            assert_ray_eq(lane, &xform.ray_scalar(&rays[i]));
+        }
+    }
+
+    /// Animated packets at endpoint (0.0, 1.0) and interior (0.25, 0.5) times
+    /// must match the scalar per-lane transform, including differentials.
+    #[test]
+    fn animated_ray_packet_matches_scalar() {
+        let xform = animated_xform();
+        let times = [0.0, 0.25, 0.5, 1.0];
+        let rays: [RayPacked<1>; 4] = core::array::from_fn(|i| test_ray_at(i, times[i]));
+        let packed: RayPacked<4> = rays.into();
+        let transformed = xform.ray(&packed);
+        let lanes: [RayPacked<1>; 4] = transformed.into();
+        for (i, lane) in lanes.iter().enumerate() {
+            assert_ray_eq(lane, &xform.ray_scalar(&rays[i]));
+        }
+    }
+
+    /// N=1 animated ray at an interior time.
+    #[test]
+    fn animated_ray_n1_matches_scalar() {
+        let xform = animated_xform();
+        let ray = test_ray_at(1, 0.37);
+        assert_ray_eq(&xform.ray(&ray), &xform.ray_scalar(&ray));
+    }
+
+    /// The inverse direction must be recomputed from the transformed direction
+    /// (a non-uniform scale changes the direction magnitude), not carried over.
+    #[test]
+    fn static_inverse_direction_matches_recip_of_transformed_direction() {
+        let xform = StaticTransform::from_affine3a(
+            Affine3A::from_scale(Vec3::new(2.0, 0.5, 1.0)) * Affine3A::from_rotation_z(0.4),
+        );
+        let rays: [RayPacked<1>; 4] = core::array::from_fn(test_ray);
+        let packed: RayPacked<4> = rays.into();
+        let transformed = xform.ray(&packed);
+        for axis in 0..3 {
+            for i in 0..4 {
+                let d = transformed.direction[axis][i];
+                assert_eq!(transformed.inverse_direction[axis][i], d.recip());
+            }
+        }
+    }
+
+    /// Same invariant for the animated path (scale changes over time).
+    #[test]
+    fn animated_inverse_direction_matches_recip_of_transformed_direction() {
+        let xform = AnimatedTransform::new(
+            Affine3A::from_rotation_y(0.3),
+            Affine3A::from_scale(Vec3::new(2.0, 2.0, 2.0)) * Affine3A::from_rotation_y(1.2),
+        );
+        let times = [0.0, 0.25, 0.5, 1.0];
+        let rays: [RayPacked<1>; 4] = core::array::from_fn(|i| test_ray_at(i, times[i]));
+        let packed: RayPacked<4> = rays.into();
+        let transformed = xform.ray(&packed);
+        for axis in 0..3 {
+            for i in 0..4 {
+                let d = transformed.direction[axis][i];
+                assert_eq!(transformed.inverse_direction[axis][i], d.recip());
+            }
         }
     }
 }
