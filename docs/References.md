@@ -55,6 +55,14 @@
       tracing applications.
 
 # Online Resources
+- **[Self-Learning Graphics](https://raynmetal.github.io/blog/technical/2026/08/10/self-learning-graphics.html)** by Rayn Metal.
+    - This blog post provides a comprehensive guide to self-learning computer
+      graphics, including ray tracing, rendering techniques, and shading
+      concepts. It includes links to various resources and tutorials for further
+      learning.
+- **[Scratchapixel](https://www.scratchapixel.com/)** by Scratchapixel.
+    - This website provides tutorials and explanations on computer graphics
+      concepts, including ray tracing, rendering techniques, and shading
 - **[The Graphics Pipeline](https://fgiesen.wordpress.com/category/graphics-pipeline/)** by Fabian Giesen.
     - This blog series provides an in-depth look at the graphics pipeline,
       including rasterization, shading, and ray tracing techniques.
@@ -65,7 +73,7 @@
     - This online book provides a hands-on approach to learning computer
       graphics, including ray tracing, by building a renderer from scratch in
       C++.
-- **[ Ray Marching Distance Functions ](https://iquilezles.org/articles/raymarchingdf/)** by Iñigo Quilez.
+- **[Ray Marching Distance Functions](https://iquilezles.org/articles/raymarchingdf/)** by Iñigo Quilez.
     - This article explains the concept of ray marching and how to use distance
       functions for rendering implicit surfaces, which is a technique related to
       ray tracing.
