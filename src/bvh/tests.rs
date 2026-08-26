@@ -2,7 +2,7 @@ use glam::Vec3;
 use std::sync::Arc;
 
 use crate::bvh::TreeBuilder;
-use crate::bvh::{Bvh, BvhNode};
+use crate::bvh::{Aabb, Bvh, BvhNode, BvhPolicy, DefaultBvhPolicy, HitRecord};
 use crate::intersect::{Bounded, Intersectable};
 use crate::material::{DiffuseReflector, Material};
 use crate::math::interval::Interval;
@@ -394,7 +394,7 @@ fn scalar_occlusion_matches_packet_occlusion() {
             let packet: RayPacked<4> = rays.into();
             let packet_occ = $bvh.occluded(&packet, interval);
             for (i, ray) in rays.iter().enumerate() {
-                let scalar_occ = $bvh.occluded_scalar(ray, interval.lane(i));
+                let scalar_occ = $bvh.occluded_scalar(ray, interval.lane(i), &DefaultBvhPolicy);
                 assert_eq!(scalar_occ, packet_occ[i], "lane {i}");
             }
         }};
@@ -471,5 +471,163 @@ fn packet_width_16_matches_scalar() {
         if let (Some(s), Some(p)) = (scalar, packet_hits[i]) {
             assert!((s.hit.time - p.hit.time).abs() < 1e-6, "lane {i}");
         }
+    }
+}
+
+/// A tiny geometry-only primitive for exercising the policy contract without
+/// meshes: a sphere represented as center + radius. The policy computes its
+/// AABB and analytic sphere intersection itself — no `Intersectable`.
+#[derive(Copy, Clone, Debug)]
+struct SpherePrim {
+    center: Point3,
+    radius: f32,
+}
+
+/// Custom hit payload: the BVH only needs the ray parameter.
+#[derive(Copy, Clone, Debug)]
+struct SphereHit {
+    t: f32,
+}
+
+impl HitRecord for SphereHit {
+    #[inline]
+    fn time(&self) -> f32 {
+        self.t
+    }
+}
+
+/// A policy that accelerates `SpherePrim` without the scene `Intersectable`
+/// contract — the same shape of contract `MeshPolicy` will provide for
+/// `TriangleIndex` primitives.
+struct SpherePolicy;
+
+impl BvhPolicy<SpherePrim> for SpherePolicy {
+    type Hit<'a>
+        = SphereHit
+    where
+        SpherePrim: 'a;
+
+    fn bounds(&self, p: &SpherePrim) -> Aabb {
+        let r = Vec3::splat(p.radius);
+        Aabb::from_corners(p.center - r, p.center + r)
+    }
+
+    fn intersect<'a>(
+        &self,
+        p: &'a SpherePrim,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<SphereHit>
+    where
+        SpherePrim: 'a,
+    {
+        // Analytic ray-sphere intersection (lane 0), closest t within range.
+        let oc = ray.origin().0 - p.center.0;
+        let a = ray.direction().0.length_squared();
+        let b = oc.dot(ray.direction().0);
+        let c = oc.length_squared() - p.radius * p.radius;
+        let disc = b * b - a * c;
+        if disc < 0.0 {
+            return None;
+        }
+        let sqrt_disc = disc.sqrt();
+        let t0 = (-b - sqrt_disc) / a;
+        let t1 = (-b + sqrt_disc) / a;
+        let tmin = ray_t.min_value();
+        let tmax = ray_t.max_value();
+        let t = if t0 >= tmin && t0 <= tmax {
+            t0
+        } else if t1 >= tmin && t1 <= tmax {
+            t1
+        } else {
+            return None;
+        };
+        Some(SphereHit { t })
+    }
+
+    fn occluded(&self, p: &SpherePrim, ray: &RayPacked<1>, ray_t: Interval<1>) -> bool {
+        self.intersect(p, ray, ray_t).is_some()
+    }
+}
+
+/// M1/M2 contract proof: a custom policy must drive the generic BVH
+/// end-to-end — build (`new_with_policy`), scalar intersect and occlusion
+/// (`intersect_with`/`occluded_with`), and widening — with a non-`MaterialHit`
+/// payload. Cross-checked against a brute-force reference loop.
+#[test]
+fn custom_policy_drives_generic_bvh() {
+    let mut prims = [
+        SpherePrim {
+            center: Point3::new(-1., 0., -3.),
+            radius: 0.5,
+        },
+        SpherePrim {
+            center: Point3::new(1., 0., -3.),
+            radius: 0.5,
+        },
+        SpherePrim {
+            center: Point3::new(0., 1., -3.),
+            radius: 0.5,
+        },
+    ];
+    let bvh = Bvh::<2, _>::new_with_policy(&mut prims, &SpherePolicy);
+    // `widen` consumes its receiver, so build the wide BVH from a fresh tree.
+    let wide: Bvh<4, SpherePrim> = Bvh::<2, _>::new_with_policy(&mut prims, &SpherePolicy).widen();
+
+    let cases = [
+        (
+            Point3::ZERO,
+            Direction3::new(-1., 0., -3.).normalize(),
+            true,
+        ),
+        (Point3::ZERO, Direction3::new(1., 0., -3.).normalize(), true),
+        (Point3::ZERO, Direction3::new(0., 1., -3.).normalize(), true),
+        (
+            Point3::ZERO,
+            Direction3::new(0., 10., 0.).normalize(),
+            false,
+        ),
+    ];
+    let interval = Interval::from(0.001, f32::INFINITY);
+
+    // Brute-force closest-t reference over the raw primitives.
+    let brute_t = |origin: Point3, dir: Direction3| -> Option<f32> {
+        let ray = Ray::new_with_time(origin, dir, 0.0);
+        prims
+            .iter()
+            .filter_map(|p| SpherePolicy.intersect(p, &ray, interval).map(|h| h.t))
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+    };
+
+    for (origin, dir, should_hit) in cases {
+        let ray = Ray::new_with_time(origin, dir, 0.0);
+
+        macro_rules! check_policy_bvh {
+            ($b:expr, $label:expr) => {{
+                let hit = $b.intersect_with(&ray, interval, &SpherePolicy);
+                assert_eq!(
+                    hit.is_some(),
+                    should_hit,
+                    "{}: hit expected={should_hit}",
+                    $label
+                );
+                if let Some(expected_t) = brute_t(origin, dir) {
+                    assert!(
+                        (hit.unwrap().t - expected_t).abs() < 1e-5,
+                        "{}: t={} expected={expected_t}",
+                        $label,
+                        hit.unwrap().t
+                    );
+                }
+                assert_eq!(
+                    $b.occluded_with(&ray, interval, &SpherePolicy),
+                    should_hit,
+                    "{}: occlusion",
+                    $label
+                );
+            }};
+        }
+        check_policy_bvh!(&bvh, "binary");
+        check_policy_bvh!(&wide, "wide");
     }
 }

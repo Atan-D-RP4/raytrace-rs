@@ -3,7 +3,9 @@ use std::cmp::Ordering;
 use tracing::trace;
 
 use crate::bvh::aabb::Aabb;
-use crate::bvh::{BVH_BIN_SIZE, BVH_LEAF_THRESHOLD, BVH_PARALLEL_THRESHOLD};
+use crate::bvh::{
+    BvhPolicy, DefaultBvhPolicy, BVH_BIN_SIZE, BVH_LEAF_THRESHOLD, BVH_PARALLEL_THRESHOLD,
+};
 use crate::intersect::interaction::MaterialHit;
 use crate::intersect::{Bounded, Intersectable};
 use crate::math::interval::Interval;
@@ -14,7 +16,7 @@ use crate::ray::RayPacked;
 /// No generic parameter needed — leaf objects are trait-object slices
 /// that provide both `Intersectable` and `Bounded`.
 #[derive(Clone)]
-pub enum TreeBuilder<P: Clone + Intersectable + Bounded> {
+pub enum TreeBuilder<P: Clone> {
     /// An empty BVH node, used for empty scenes or empty child nodes.
     Empty,
     /// An interior BVH node with two child nodes and a bounding box that encloses both children.
@@ -44,20 +46,25 @@ pub enum TreeBuilder<P: Clone + Intersectable + Bounded> {
     },
 }
 
-impl<P: Clone + Intersectable + Bounded> TreeBuilder<P> {
-    /// Builds a BVH subtree from `objects` (a mutable slice).
+impl<P: Clone + Send> TreeBuilder<P> {
+    /// Builds a BVH subtree from `objects` (a mutable slice) using a policy.
     ///
-    /// Strategy:
-    /// - compute merged bounds for all objects,
+    /// Strategy (same binned SAH + rayon as [`TreeBuilder::new`]):
+    /// - compute merged bounds for all objects via `policy.bounds()`,
     /// - bin centroids on each axis and evaluate SAH cost,
     /// - split at cheapest partition, recurse.
-    pub fn new(objects: &mut [P]) -> Self {
+    ///
+    /// The policy replaces the scene-facing `Bounded` bound, so indexed mesh
+    /// primitives — which are not `Intersectable`/`Bounded` — can be
+    /// accelerated. `P: Send` and `Pol: Sync` are required only for the
+    /// `rayon::join` parallel build path.
+    pub fn new_with<Pol: BvhPolicy<P> + Sync>(objects: &mut [P], policy: &Pol) -> Self {
         let obj_span = objects.len();
 
         let mut centroids = objects
             .iter()
             .map(|object| {
-                let object_bbox = object.bounding_box();
+                let object_bbox = policy.bounds(object);
                 (object.clone(), object_bbox, object_bbox.centroid())
             })
             .collect::<Vec<_>>();
@@ -171,12 +178,18 @@ impl<P: Clone + Intersectable + Bounded> TreeBuilder<P> {
                 if best_cost.is_finite() && best_cost + trav_cost < leaf_cost {
                     trace!(
                         object_count = obj_span,
-                        best_cost, best_axis, best_split, "splitting bvh node with SAH"
+                        best_cost,
+                        best_axis,
+                        best_split,
+                        "splitting bvh node with SAH"
                     );
                 } else {
                     trace!(
                         object_count = obj_span,
-                        best_cost, best_axis, best_split, "not splitting bvh node with SAH"
+                        best_cost,
+                        best_axis,
+                        best_split,
+                        "not splitting bvh node with SAH"
                     );
                     // Not worth splitting — pack into a multi-object leaf.
                     // Only pack if we can fit all objects; otherwise force split below.
@@ -195,7 +208,9 @@ impl<P: Clone + Intersectable + Bounded> TreeBuilder<P> {
 
                 trace!(
                     object_count = obj_span,
-                    best_axis, best_split, "splitting bvh node with SAH"
+                    best_axis,
+                    best_split,
+                    "splitting bvh node with SAH"
                 );
 
                 // Sort objects by centroid along the best axis, then split at the best point.
@@ -216,15 +231,15 @@ impl<P: Clone + Intersectable + Bounded> TreeBuilder<P> {
                     Ordering::Less => {
                         // For small node sizes, build sequentially to avoid thread overhead.
                         (
-                            Box::new(Self::new(left_half)),
-                            Box::new(Self::new(right_half)),
+                            Box::new(Self::new_with(left_half, policy)),
+                            Box::new(Self::new_with(right_half, policy)),
                         )
                     }
                     Ordering::Greater | Ordering::Equal => {
                         // For larger node sizes, build in parallel using rayon.
                         rayon::join(
-                            || Box::new(Self::new(left_half)),
-                            || Box::new(Self::new(right_half)),
+                            || Box::new(Self::new_with(left_half, policy)),
+                            || Box::new(Self::new_with(right_half, policy)),
                         )
                     }
                 };
@@ -235,6 +250,16 @@ impl<P: Clone + Intersectable + Bounded> TreeBuilder<P> {
                 }
             }
         }
+    }
+}
+
+impl<P: Clone + Intersectable + Bounded> TreeBuilder<P> {
+    /// Builds a BVH subtree from scene primitives using the default policy.
+    ///
+    /// Convenience wrapper over [`Self::new_with`] for the existing scene path;
+    /// the default policy forwards to `Bounded`/`Intersectable`.
+    pub fn new(objects: &mut [P]) -> Self {
+        Self::new_with(objects, &DefaultBvhPolicy)
     }
 }
 
@@ -299,12 +324,25 @@ impl<P: Clone + Intersectable + Bounded> Intersectable for TreeBuilder<P> {
     }
 }
 
-impl<P: Clone + Intersectable + Bounded> Bounded for TreeBuilder<P> {
-    fn bounding_box(&self) -> Aabb {
+impl<P: Clone> TreeBuilder<P> {
+    /// The bounding box stored on this tree node.
+    ///
+    /// Inherent accessor, separate from the scene-facing [`Bounded`] trait:
+    /// flattening a finished tree only needs the stored bounds, and staying
+    /// off `Bounded` keeps storage-only operations at `P: Clone` (the
+    /// `Bounded` supertraits would otherwise require `P: Send + Sync`).
+    pub(crate) fn bbox(&self) -> Aabb {
         match self {
             Self::Empty => Aabb::empty(),
-            Self::Interior { bbox, .. } | Self::Leaf { bbox, .. } => *bbox,
-            Self::LeafN { bbox, .. } => *bbox,
+            Self::Interior { bbox, .. } | Self::Leaf { bbox, .. } | Self::LeafN { bbox, .. } => {
+                *bbox
+            }
         }
+    }
+}
+
+impl<P: Clone + Send + Sync> Bounded for TreeBuilder<P> {
+    fn bounding_box(&self) -> Aabb {
+        self.bbox()
     }
 }

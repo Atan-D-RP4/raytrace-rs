@@ -33,7 +33,7 @@ use std::simd::{Mask, Simd};
 
 use tracing::info;
 
-use crate::intersect::interaction::MaterialHit;
+use crate::intersect::interaction::{MaterialHit, MeshHit};
 use crate::intersect::{Bounded, Intersectable};
 use crate::math::interval::Interval;
 use crate::ray::RayPacked;
@@ -58,6 +58,101 @@ const BVH_PARALLEL_THRESHOLD: usize = 64;
 /// The threshold number of objects in a BVH node below which we will create a leaf node instead
 /// of splitting further. This is a tradeoff between tree depth and leaf size.
 const BVH_LEAF_THRESHOLD: usize = 4;
+
+// ---------------------------------------------------------------------------
+// Acceleration policy contract
+//
+// The BVH node format, SAH builder, and traversal are shared between the
+// scene path and the mesh path. What differs is the *payload*: what a
+// primitive is and what a hit record carries. `BvhPolicy<P>` is that seam.
+//
+// - `DefaultBvhPolicy` forwards to the scene-facing `Bounded`/`Intersectable`
+//   methods and returns `MaterialHit<'a>` (the current scene behavior).
+// - `MeshPolicy` (M3, in `crate::bvh::mesh`) maps a `TriangleIndex` through
+//   `MeshData` and returns a geometry-only `MeshHit`.
+//
+// The BVH only consumes `HitRecord::time()` for closest-hit selection; the
+// policy owns bounds, intersection, occlusion, and the hit payload. This keeps
+// the geometry `Hit` free of material/primitive identity and preserves the
+// object-safe `Intersectable` / `Arc<dyn Intersectable>` escape hatch.
+// ---------------------------------------------------------------------------
+
+/// A record produced by intersecting a BVH primitive. The BVH only needs the
+/// closest-hit comparison; the policy owns the payload.
+pub trait HitRecord: Copy {
+    /// Ray parameter `t` of the hit.
+    fn time(&self) -> f32;
+}
+
+impl HitRecord for MaterialHit<'_> {
+    #[inline]
+    fn time(&self) -> f32 {
+        self.hit.time
+    }
+}
+
+impl HitRecord for MeshHit {
+    #[inline]
+    fn time(&self) -> f32 {
+        self.hit.time
+    }
+}
+
+/// Acceleration policy: the BVH's contract for bounds, primitive
+/// intersection, and occlusion.
+pub trait BvhPolicy<P> {
+    /// The hit record produced by intersecting a primitive of type `P`.
+    type Hit<'a>: HitRecord
+    where
+        P: 'a;
+
+    /// Conservative AABB of a primitive, used for SAH construction.
+    fn bounds(&self, primitive: &P) -> Aabb;
+
+    /// Closest-hit query against a single primitive.
+    fn intersect<'a>(
+        &self,
+        primitive: &'a P,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<Self::Hit<'a>>
+    where
+        P: 'a;
+
+    /// Boolean occlusion query against a single primitive.
+    fn occluded(&self, primitive: &P, ray: &RayPacked<1>, ray_t: Interval<1>) -> bool;
+}
+
+/// Default scene policy: forwards to the existing `Bounded`/`Intersectable`
+/// methods and returns [`MaterialHit`], preserving the current scene behavior
+/// and the `Arc<dyn Intersectable>` escape hatch.
+pub struct DefaultBvhPolicy;
+
+impl<P: Bounded + Intersectable> BvhPolicy<P> for DefaultBvhPolicy {
+    type Hit<'a> = MaterialHit<'a>
+    where
+        P: 'a;
+
+    fn bounds(&self, primitive: &P) -> Aabb {
+        primitive.bounding_box()
+    }
+
+    fn intersect<'a>(
+        &self,
+        primitive: &'a P,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+    ) -> Option<MaterialHit<'a>>
+    where
+        P: 'a,
+    {
+        primitive.intersect_scalar(ray, ray_t)
+    }
+
+    fn occluded(&self, primitive: &P, ray: &RayPacked<1>, ray_t: Interval<1>) -> bool {
+        primitive.occluded_scalar(ray, ray_t)
+    }
+}
 
 /// Inline slab AABB test. Returns true if the ray segment [tmin, tmax] intersects the AABB.
 ///
@@ -232,10 +327,11 @@ impl<const W: usize> BvhNode<W> {
 }
 
 /// Flat BVH container: array-of-nodes + flat primitive list.
-pub struct Bvh<const W: usize, P>
-where
-    P: Intersectable + Bounded + Clone,
-{
+///
+/// Storage is policy-agnostic: building, flattening, and widening only need
+/// `P: Clone`. The scene-facing `Intersectable`/`Bounded` impls add their
+/// bounds via the default policy; mesh primitives use `new_with_policy`.
+pub struct Bvh<const W: usize, P: Clone> {
     /// Contiguous array of flat BVH nodes in DFS (pre-order) layout.
     nodes: Vec<BvhNode<W>>,
     /// Scene primitives in the order they appear in the flat leaf nodes.
@@ -255,9 +351,27 @@ impl<const W: usize, P: Intersectable + Bounded + Clone> Bvh<W, P> {
     }
 }
 
+impl<const W: usize, P: Clone + Send> Bvh<W, P> {
+    /// Creates a BVH from a list of primitives using a custom acceleration
+    /// policy.
+    ///
+    /// The policy owns bounds, primitive intersection, and the hit payload;
+    /// the BVH only needs a comparable `time()` for closest-hit selection.
+    /// Indexed mesh primitives (`TriangleIndex`) use this with `MeshPolicy`.
+    pub fn new_with_policy<Pol: BvhPolicy<P> + Sync>(objects: &mut [P], policy: &Pol) -> Self {
+        // Force const evaluation of BvhNode<W>'s width assertion.
+        BvhNode::<W>::ASSERT;
+        info!(object_count = objects.len(), "building bvh");
+        let tree = TreeBuilder::new_with(objects, policy);
+        let bvh = Bvh::from(tree);
+        info!(object_count = objects.len(), "bvh built");
+        bvh
+    }
+}
+
 impl<const W: usize, P> From<TreeBuilder<P>> for Bvh<W, P>
 where
-    P: Intersectable + Bounded + Clone,
+    P: Clone,
 {
     /// Builds a flat BVH from a tree BVH.
     ///
@@ -281,7 +395,7 @@ where
 
 impl<const W: usize, P> Bvh<W, P>
 where
-    P: Intersectable + Bounded + Clone,
+    P: Clone,
 {
     /// Recursively flattens a tree BVH node into the flat array.
     ///
@@ -306,8 +420,8 @@ where
                 // child_aabb(0) on a flat interior node only gives the first
                 // grandchild's AABB — not the union — so we must capture the
                 // TreeBuilder's own bbox (the true union) before flattening.
-                let left_bbox = left.bounding_box();
-                let right_bbox = right.bounding_box();
+                let left_bbox = left.bbox();
+                let right_bbox = right.bbox();
 
                 let idx = flat_nodes.len() as u32;
                 // Reserve slot; children will be emitted next, then we patch.
@@ -407,7 +521,7 @@ where
 
 impl<P> Bvh<2, P>
 where
-    P: Intersectable + Bounded + Clone,
+    P: Clone,
 {
     /// Widen this binary BVH to a wide BVH of width W.
     ///
@@ -648,12 +762,14 @@ where
     <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
     P: Intersectable + Bounded + Clone,
 {
+    /// Default-policy adapter: the scene-facing traversal forwards to the
+    /// [`DefaultBvhPolicy`] so the existing scene behavior is unchanged.
     fn intersect_scalar<'a>(
         &'a self,
         ray: &RayPacked<1>,
         ray_t: Interval<1>,
     ) -> Option<MaterialHit<'a>> {
-        self.intersect_scalar_traversal(ray, ray_t)
+        self.intersect_scalar_traversal(ray, ray_t, &DefaultBvhPolicy)
     }
 
     fn intersect<'a, const N: usize>(
@@ -670,15 +786,17 @@ where
             // time: the N=1 specialization uses the dedicated scalar
             // traversal (no packet machinery, no per-lane masks).
             let lanes: [RayPacked<1>; N] = (*ray).into();
-            core::array::from_fn(|i| self.intersect_scalar_traversal(&lanes[i], ray_t.lane(i)))
+            core::array::from_fn(|i| {
+                self.intersect_scalar_traversal(&lanes[i], ray_t.lane(i), &DefaultBvhPolicy)
+            })
         } else {
-            self.intersect_packet(ray, ray_t)
+            self.intersect_packet(ray, ray_t, &DefaultBvhPolicy)
         }
     }
 
     fn occluded<const N: usize>(&self, ray: &RayPacked<N>, ray_t: Interval<N>) -> [bool; N] {
         let lanes: [RayPacked<1>; N] = (*ray).into();
-        core::array::from_fn(|i| self.occluded_scalar(&lanes[i], ray_t.lane(i)))
+        core::array::from_fn(|i| self.occluded_scalar(&lanes[i], ray_t.lane(i), &DefaultBvhPolicy))
     }
 }
 
@@ -686,13 +804,38 @@ impl<const W: usize, P> Bvh<W, P>
 where
     Simd<f32, W>: SimdPartialOrd + SimdFloat,
     <Simd<f32, W> as SimdPartialEq>::Mask: Into<Mask<i32, W>>,
-    P: Intersectable + Bounded + Clone,
+    P: Clone,
 {
-    fn intersect_packet<'a, const N: usize>(
+    /// Closest-hit query through a custom policy (scalar ray).
+    ///
+    /// The policy decides the hit payload; the BVH only consumes
+    /// `HitRecord::time()` for closest-hit selection. This is the entry point
+    /// the mesh path uses (`MeshShape` → `MeshBvh` → `intersect_with`).
+    pub fn intersect_with<'a, Pol: BvhPolicy<P>>(
+        &'a self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+        policy: &Pol,
+    ) -> Option<Pol::Hit<'a>> {
+        self.intersect_scalar_traversal(ray, ray_t, policy)
+    }
+
+    /// Occlusion query through a custom policy (scalar ray).
+    pub fn occluded_with<Pol: BvhPolicy<P>>(
+        &self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+        policy: &Pol,
+    ) -> bool {
+        self.occluded_scalar(ray, ray_t, policy)
+    }
+
+    fn intersect_packet<'a, const N: usize, Pol: BvhPolicy<P>>(
         &'a self,
         ray: &RayPacked<N>,
         ray_t: Interval<N>,
-    ) -> [Option<MaterialHit<'a>>; N]
+        policy: &Pol,
+    ) -> [Option<Pol::Hit<'a>>; N]
     where
         Simd<f32, N>: SimdPartialOrd + SimdFloat,
         <Simd<f32, N> as SimdPartialEq>::Mask: Into<Mask<i32, N>>,
@@ -705,7 +848,7 @@ where
         let lanes: [RayPacked<1>; N] = (*ray).into();
         let tmin = ray_t.min();
         let mut best_t = ray_t.max();
-        let mut best_hit: [Option<MaterialHit<'a>>; N] = [None; N];
+        let mut best_hit: [Option<Pol::Hit<'a>>; N] = [None; N];
         let all_lanes = if N == 16 { u16::MAX } else { (1u16 << N) - 1 };
         let mut stack = [(0u32, 0u16); MAX_STACK];
         let mut sp = 1usize;
@@ -733,11 +876,11 @@ where
                         continue;
                     }
                     for primitive in &self.primitives[start..start + count] {
-                        if let Some(hit) = primitive
-                            .intersect(&lanes[lane], Interval::from(tmin[lane], best_t[lane]))[0]
-                            && hit.hit.time < best_t[lane]
+                        if let Some(hit) = policy
+                            .intersect(primitive, &lanes[lane], Interval::from(tmin[lane], best_t[lane]))
+                            && hit.time() < best_t[lane]
                         {
-                            best_t[lane] = hit.hit.time;
+                            best_t[lane] = hit.time();
                             best_hit[lane] = Some(hit);
                         }
                     }
@@ -765,12 +908,13 @@ where
                                 continue;
                             }
                             for primitive in &self.primitives[start..start + count] {
-                                if let Some(hit) = primitive.intersect(
+                                if let Some(hit) = policy.intersect(
+                                    primitive,
                                     &lanes[lane],
                                     Interval::from(tmin[lane], best_t[lane]),
-                                )[0] && hit.hit.time < best_t[lane]
+                                ) && hit.time() < best_t[lane]
                                 {
-                                    best_t[lane] = hit.hit.time;
+                                    best_t[lane] = hit.time();
                                     best_hit[lane] = Some(hit);
                                 }
                             }
@@ -799,17 +943,18 @@ where
         best_hit
     }
 
-    fn intersect_scalar_traversal<'a>(
+    fn intersect_scalar_traversal<'a, Pol: BvhPolicy<P>>(
         &'a self,
         ray: &RayPacked<1>,
         ray_t: Interval<1>,
-    ) -> Option<MaterialHit<'a>> {
+        policy: &Pol,
+    ) -> Option<Pol::Hit<'a>> {
         if self.nodes.is_empty() {
             return None;
         }
 
         let mut best_t = ray_t.max_value();
-        let mut best_hit: Option<MaterialHit<'a>> = None;
+        let mut best_hit: Option<Pol::Hit<'a>> = None;
 
         // Iterative stack-based traversal — no recursion, no allocation.
         let mut stack = [0u32; MAX_STACK];
@@ -838,12 +983,12 @@ where
                 let start = node.prim_start();
                 let count = node.prim_count();
                 for i in start..start + count {
-                    if let Some(mat_hit) =
-                        self.primitives[i].intersect_scalar(ray, Interval::from(tmin, best_t))
-                        && mat_hit.hit.time < best_t
+                    if let Some(hit) =
+                        policy.intersect(&self.primitives[i], ray, Interval::from(tmin, best_t))
+                        && hit.time() < best_t
                     {
-                        best_t = mat_hit.hit.time;
-                        best_hit = Some(mat_hit);
+                        best_t = hit.time();
+                        best_hit = Some(hit);
                     }
                 }
                 continue;
@@ -871,12 +1016,12 @@ where
                         let prim_start = node.child_offset[i];
                         let prim_count = node.leaf_info[i] as usize;
                         for p in &self.primitives[prim_start as usize..][..prim_count] {
-                            if let Some(mat_hit) =
-                                p.intersect_scalar(ray, Interval::from(tmin, best_t))
-                                && mat_hit.hit.time < best_t
+                            if let Some(hit) =
+                                policy.intersect(p, ray, Interval::from(tmin, best_t))
+                                && hit.time() < best_t
                             {
-                                best_t = mat_hit.hit.time;
-                                best_hit = Some(mat_hit);
+                                best_t = hit.time();
+                                best_hit = Some(hit);
                             }
                         }
                     } else {
@@ -921,7 +1066,12 @@ where
         best_hit
     }
 
-    fn occluded_scalar(&self, ray: &RayPacked<1>, ray_t: Interval<1>) -> bool {
+    fn occluded_scalar<Pol: BvhPolicy<P>>(
+        &self,
+        ray: &RayPacked<1>,
+        ray_t: Interval<1>,
+        policy: &Pol,
+    ) -> bool {
         if self.nodes.is_empty() {
             return false;
         }
@@ -952,7 +1102,7 @@ where
                 let count = node.prim_count();
                 if self.primitives[start..start + count]
                     .iter()
-                    .any(|p| p.occluded_scalar(ray, Interval::from(tmin, tmax)))
+                    .any(|p| policy.occluded(p, ray, Interval::from(tmin, tmax)))
                 {
                     return true;
                 }
@@ -980,7 +1130,7 @@ where
                         let prim_count = node.leaf_info[i] as usize;
                         if self.primitives[prim_start as usize..][..prim_count]
                             .iter()
-                            .any(|p| p.occluded_scalar(ray, Interval::from(tmin, tmax)))
+                            .any(|p| policy.occluded(p, ray, Interval::from(tmin, tmax)))
                         {
                             return true;
                         }
@@ -1028,7 +1178,7 @@ where
 
 impl<const W: usize, P> Bounded for Bvh<W, P>
 where
-    P: Intersectable + Bounded + Clone,
+    P: Clone + Send + Sync,
 {
     fn bounding_box(&self) -> Aabb {
         if self.nodes.is_empty() {

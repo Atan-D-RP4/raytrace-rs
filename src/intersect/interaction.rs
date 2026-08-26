@@ -1,3 +1,4 @@
+use crate::bvh::mesh::TriangleIndex;
 use crate::material::Material;
 use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::Ray;
@@ -250,4 +251,15 @@ pub struct MaterialHit<'a> {
     pub hit: Hit,
     /// Reference to the material of the intersected surface.
     pub material: &'a Material,
+}
+
+/// A mesh intersection record: triangle identity + geometric hit.
+///
+/// [`Hit`] carries the geometry; [`TriangleIndex`] carries the mesh-specific
+/// identity. No material — material stays outside the geometry BVH so one mesh
+/// can be shared by instances with different materials.
+#[derive(Copy, Clone)]
+pub struct MeshHit {
+    pub tri_index: TriangleIndex,
+    pub hit: Hit,
 }

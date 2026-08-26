@@ -22,6 +22,7 @@ mod sphere;
 
 pub use box3d::{Box3D, BoxShape, shape_box3d};
 pub use constructors::*;
+pub use mesh::{MeshData, MeshShape};
 pub use planar::PlanarShape;
 pub use sdf::dual::Scalar;
 pub use sdf::{

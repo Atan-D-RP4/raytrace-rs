@@ -1,8 +1,8 @@
 use std::borrow::Borrow;
 use std::sync::Arc;
 
-use crate::bvh::Bvh;
 use crate::bvh::aabb::Aabb;
+use crate::bvh::Bvh;
 use crate::const_medium::ConstantMedium;
 use crate::intersect::interaction::MaterialHit;
 use crate::intersect::{Bounded, Intersectable};
@@ -13,7 +13,7 @@ use crate::math::interval::Interval;
 use crate::math::vec3::{Color3, Direction3, Point3};
 use crate::ray::RayPacked;
 use crate::sampling::pdf::AreaPdf;
-use crate::shape::{BoxShape, PlanarShape, SdfExpr, SdfShape, ShapeObject, SphereShape};
+use crate::shape::{BoxShape, MeshShape, PlanarShape, SdfExpr, SdfShape, ShapeObject, SphereShape};
 use crate::transform::{AnimatedTransform, StaticTransform, TransformObject};
 
 #[derive(Clone)]
@@ -21,14 +21,15 @@ pub enum Primitive {
     Empty,                                                         // 0 — BVH leaf-packing sentinel
     Sphere(ShapeObject<SphereShape, Arc<Material>>),               // 1
     MovingSphere(ShapeObject<SphereShape, Arc<Material>>),         // 2 — SphereShape::new_moving
-    Planar(ShapeObject<PlanarShape, Arc<Material>>),               // 3
-    Box(ShapeObject<BoxShape, Arc<Material>>),                     // 4
-    Sdf(ShapeObject<SdfShape<SdfExpr>, Arc<Material>>),            // 5 — F: data-only SdfFn struct
-    Transformed(TransformObject<Box<Primitive>, StaticTransform>), // 6
-    Animated(TransformObject<Box<Primitive>, AnimatedTransform>),  // 7
-    Volume(ConstantMedium<Arc<Primitive>, true>),                  // 8
-    Aggregate(Arc<Bvh<2, Box<Primitive>>>),                        // 9
-    Custom(Arc<dyn Intersectable>),                                // 10 — dynamic CPU escape hatch
+    TriangleMesh(ShapeObject<MeshShape, Arc<Material>>),           // 3 — MeshShape::from_data
+    Planar(ShapeObject<PlanarShape, Arc<Material>>),               // 4
+    Box(ShapeObject<BoxShape, Arc<Material>>),                     // 5
+    Sdf(ShapeObject<SdfShape<SdfExpr>, Arc<Material>>),            // 6 — F: data-only SdfFn struct
+    Transformed(TransformObject<Box<Primitive>, StaticTransform>), // 7
+    Animated(TransformObject<Box<Primitive>, AnimatedTransform>),  // 8
+    Volume(ConstantMedium<Arc<Primitive>, true>),                  // 9
+    Aggregate(Arc<Bvh<2, Box<Primitive>>>),                        // 10
+    Custom(Arc<dyn Intersectable>),                                // 11 — dynamic CPU escape hatch
 }
 
 impl Intersectable for Primitive {
@@ -41,6 +42,7 @@ impl Intersectable for Primitive {
             Primitive::Empty => None,
             Primitive::Sphere(s) => s.intersect_scalar(ray, ray_t),
             Primitive::MovingSphere(s) => s.intersect_scalar(ray, ray_t),
+            Primitive::TriangleMesh(s) => s.intersect_scalar(ray, ray_t),
             Primitive::Planar(p) => p.intersect_scalar(ray, ray_t),
             Primitive::Box(b) => b.intersect_scalar(ray, ray_t),
             Primitive::Sdf(s) => s.intersect_scalar(ray, ray_t),
@@ -61,6 +63,7 @@ impl Intersectable for Primitive {
             Primitive::Empty => [None; N],
             Primitive::Sphere(s) => s.intersect(ray, ray_t),
             Primitive::MovingSphere(s) => s.intersect(ray, ray_t),
+            Primitive::TriangleMesh(s) => s.intersect(ray, ray_t),
             Primitive::Planar(p) => p.intersect(ray, ray_t),
             Primitive::Box(b) => b.intersect(ray, ray_t),
             Primitive::Sdf(s) => s.intersect(ray, ray_t),
@@ -82,6 +85,7 @@ impl Bounded for Primitive {
             Primitive::Empty => Aabb::empty(),
             Primitive::Sphere(s) => s.bounding_box(),
             Primitive::MovingSphere(s) => s.bounding_box(),
+            Primitive::TriangleMesh(s) => s.bounding_box(),
             Primitive::Planar(p) => p.bounding_box(),
             Primitive::Box(b) => b.bounding_box(),
             Primitive::Sdf(s) => s.bounding_box(),
@@ -108,6 +112,11 @@ impl Sampleable for Primitive {
 
             Primitive::Sphere(s) => s.pdf_value(origin, direction, time),
             Primitive::MovingSphere(s) => s.pdf_value(origin, direction, time),
+            Primitive::TriangleMesh(_) => {
+                // Phase 1: MeshShape has no ShapeSurfaceSampling impl — not a
+                // light, no surface to sample. Emissive meshes land in Phase 2.
+                0.0
+            }
             Primitive::Planar(p) => p.pdf_value(origin, direction, time),
             Primitive::Box(b) => b.pdf_value(origin, direction, time),
             Primitive::Sdf(s) => s.pdf_value(origin, direction, time),
@@ -128,6 +137,10 @@ impl Sampleable for Primitive {
             }
             Primitive::Sphere(s) => s.random_direction(origin, u, v, time),
             Primitive::MovingSphere(s) => s.random_direction(origin, u, v, time),
+            Primitive::TriangleMesh(_) => {
+                // Phase 1: not a light (see pdf_value).
+                Direction3::ZERO
+            }
             Primitive::Planar(p) => p.random_direction(origin, u, v, time),
             Primitive::Box(b) => b.random_direction(origin, u, v, time),
             Primitive::Sdf(s) => s.random_direction(origin, u, v, time),
@@ -154,6 +167,16 @@ impl Sampleable for Primitive {
             }
             Primitive::Sphere(s) => s.sample_light(origin, u, v, time),
             Primitive::MovingSphere(s) => s.sample_light(origin, u, v, time),
+            Primitive::TriangleMesh(_) => {
+                // Phase 1: not a light (see pdf_value).
+                LightSample {
+                    direction: Direction3::ZERO,
+                    normal: Direction3::ZERO,
+                    distance: 0.0,
+                    pdf: AreaPdf(0.0),
+                    emission: Color3::ZERO,
+                }
+            }
             Primitive::Planar(p) => p.sample_light(origin, u, v, time),
             Primitive::Box(b) => b.sample_light(origin, u, v, time),
             Primitive::Sdf(s) => s.sample_light(origin, u, v, time),
