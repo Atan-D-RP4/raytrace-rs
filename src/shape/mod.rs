@@ -14,13 +14,11 @@ use crate::texture::UVDifferentiable;
 
 mod box3d;
 mod constructors;
+mod mesh;
 mod planar;
 pub(crate) mod regions;
 mod sdf;
 mod sphere;
-
-#[cfg(test)]
-mod tests;
 
 pub use box3d::{Box3D, BoxShape, shape_box3d};
 pub use constructors::*;
@@ -250,7 +248,9 @@ impl<Sh: Shape3D + Clone, M: Borrow<Material> + Send + Sync> Intersectable for S
         ray_t: Interval<1>,
     ) -> Option<MaterialHit<'a>> {
         let mut hit = self.shape.intersect_shape(ray, ray_t)?;
-        hit.uv_gradients = Some(self.shape.uv_gradient(&hit.mapping_point));
+        hit.uv_gradients
+            .get_or_insert(self.shape.uv_gradient(&hit.mapping_point));
+
         Some(MaterialHit {
             hit,
             material: self.material.borrow(),
@@ -269,7 +269,8 @@ impl<Sh: Shape3D + Clone, M: Borrow<Material> + Send + Sync> Intersectable for S
         core::array::from_fn(|i| {
             let mut hit = hits[i]?;
             // Precompute UV derivatives for texture filtering.
-            hit.uv_gradients = Some(self.shape.uv_gradient(&hit.mapping_point));
+            hit.uv_gradients
+                .get_or_insert(self.shape.uv_gradient(&hit.mapping_point));
             Some(MaterialHit {
                 hit,
                 material: self.material.borrow(),

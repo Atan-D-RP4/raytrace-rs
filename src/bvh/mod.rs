@@ -40,6 +40,7 @@ use crate::ray::RayPacked;
 
 pub mod aabb;
 pub mod builder;
+pub mod mesh;
 #[cfg(test)]
 mod tests;
 

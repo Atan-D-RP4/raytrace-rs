@@ -29,6 +29,8 @@ profile-with-optick = ["profiling/profile-with-optick"]
 
 [profile.dev]
 codegen-backend = "cranelift"
+debug = "line-tables-only"
+rustflags = ["-Z", "threads=8"]
 
 [profile.release]
 codegen-units = 1
@@ -40,3 +42,4 @@ rustflags = ["-C", "target-cpu=native"]
 inherits = "release"
 # Skip native CPU optimizations for dist builds to avoid issues with cross-compilation.
 rustflags = []
+lto = "fat"
